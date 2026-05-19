@@ -122,11 +122,21 @@ export class TileRenderer {
    * Utile pour re-render complet.
    */
   clearAll(): void {
-    // On garde un pattern de nommage pour identifier les sprites de tile
-    this.scene.children.getAll()
-      .filter(child => child instanceof Phaser.GameObjects.Image)
-      .filter((img: Phaser.GameObjects.Image) => img.name.startsWith('tile_'))
-      .forEach((img: Phaser.GameObjects.Image) => img.destroy());
+    const children = this.scene.children.getAll();
+    // Nettoie les images de tuiles (sol + décorations)
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i];
+      if (child instanceof Phaser.GameObjects.Image && child.name.startsWith('tile_')) {
+        child.destroy();
+      }
+    }
+    // Nettoie les graphics (murs) — on les identifie par leur depth > 100
+    for (let i = this.scene.children.length - 1; i >= 0; i--) {
+      const child = this.scene.children.list[i];
+      if (child instanceof Phaser.GameObjects.Graphics && child.name === '') {
+        child.destroy();
+      }
+    }
   }
 
   // ================================================================
