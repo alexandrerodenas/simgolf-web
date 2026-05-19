@@ -97,25 +97,15 @@ export class IsometricRenderer {
    *   Y : [ -maxElev*TD  , 2*(N-1)*TH/2 ]
    */
   private autoFit(): void {
-    const { width: sw, height: sh } = this.scene.scale;
     const N = MAP_SIZE - 1;
 
     const mapLeft = -N * (TILE_W / 2);
-    const mapRight = N * (TILE_W / 2);
-    const mapTop = -10 * TILE_D; // hauteur max = 10
-    const mapBottom = N * TILE_H;
+    const mapTop = -10 * TILE_D;
 
-    const mapW = mapRight - mapLeft;
-    const mapH = mapBottom - mapTop;
-
-    // Zoom pour que la carte remplisse l'écran
-    const zoomX = sw / mapW;
-    const zoomY = sh / mapH;
-    this.config.zoom = Math.min(zoomX, zoomY);
+    // Zoom à 1 (inchangé) — le scroll est positionné
+    // pour que le coin haut-gauche de la carte affleure
+    // le bord haut-gauche de l'écran.
     this.camera.setZoom(this.config.zoom);
-
-    // Scroll pour que le coin haut-gauche de la carte soit en
-    // haut-gauche de l'écran (pas de padding)
     this.camera.setScroll(mapLeft, mapTop);
   }
 
