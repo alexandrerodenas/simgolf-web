@@ -5,7 +5,8 @@
  * diamant extraite du jeu original. La texture est sélectionnée
  * par le TileShapeMapper en fonction des 4 hauteurs réelles.
  *
- * Underground : stacking optionnel de diamants DIRT.
+ * Mode debug : affiche la variante (A0001, B0003…) au centre
+ * de chaque tuile.
  */
 
 import Phaser from 'phaser';
@@ -14,7 +15,7 @@ import { DiamondTextureFactory } from './DiamondTextureFactory';
 import { mapToScreen, TILE_D } from './CoordinateSystem';
 
 // ================================================================
-// Mapping TileType → nom de palette
+// Mapping TileType → nom de palette pour les textures
 // ================================================================
 
 const TYPE_TO_PALETTE: Record<TileType, string> = {
@@ -45,6 +46,8 @@ export class TileRenderer {
   private terrain: TerrainEngine;
   private diamondFactory: DiamondTextureFactory;
   private tileImages: Phaser.GameObjects.Image[] = [];
+  private debugLabels: Phaser.GameObjects.Text[] = [];
+  private showDebug = false;
 
   constructor(
     scene: Phaser.Scene,
@@ -56,9 +59,17 @@ export class TileRenderer {
     this.diamondFactory = diamondFactory;
   }
 
+  /** Active/désactive l'affichage du numéro de variante sur chaque tuile */
+  setDebug(active: boolean): void {
+    this.showDebug = active;
+  }
+
+  isDebug(): boolean {
+    return this.showDebug;
+  }
+
   /**
-   * Rend toutes les tuiles visibles.
-   * Détruit les anciennes Images et en crée de nouvelles.
+   * Rend toutes les tuiles.
    */
   renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
     this.clearAll();
@@ -79,35 +90,54 @@ export class TileRenderer {
       hTL, hTR, hBR, hBL, paletteName, x, y,
     );
 
-    // 3. Position écran (isométrique, décalée par l'élévation)
+    // 3. Position écran
     const origin = mapToScreen(0, 0);
     const { screenX, screenY } = mapToScreen(x, y, 0);
     const sx = screenX - origin.screenX;
     const sy = screenY - origin.screenY - avgH * TILE_D;
 
-    // 4. Création de l'Image
+    // 4. Image de la tuile
     const img = this.scene.add.image(sx, sy, textureKey);
     img.setOrigin(0.5, 0.5);
     img.setDepth(this.computeDepth(x, y, avgH));
     img.setName(`tile_${x}_${y}`);
-
     this.tileImages.push(img);
+
+    // 5. Debug : numéro de variante au centre
+    if (this.showDebug) {
+      const variant = this.extractVariant(textureKey);
+      const txt = this.scene.add.text(sx, sy, variant, {
+        fontFamily: 'monospace',
+        fontSize: '7px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 2,
+      });
+      txt.setOrigin(0.5, 0.5);
+      txt.setDepth(this.computeDepth(x, y, avgH) + 1);
+      txt.setName(`debug_${x}_${y}`);
+      this.debugLabels.push(txt);
+    }
   }
 
   /**
-   * Profondeur pour le painter's algorithm.
+   * Extrait le numéro de variante (ex: B0003) depuis une clé de texture.
    */
+  private extractVariant(textureKey: string): string {
+    // textureKey = "diamond_RoughB0003" → "B0003"
+    const match = textureKey.match(/[A-E]\d{4}/);
+    return match ? match[0] : '?';
+  }
+
   private computeDepth(x: number, y: number, avgH: number): number {
     return (x + y) * 16 + avgH * 10;
   }
 
-  /**
-   * Détruit toutes les Images.
-   */
   clearAll(): void {
-    for (const img of this.tileImages) {
-      img.destroy();
-    }
+    for (const img of this.tileImages) img.destroy();
     this.tileImages = [];
+
+    for (const txt of this.debugLabels) txt.destroy();
+    this.debugLabels = [];
   }
 }

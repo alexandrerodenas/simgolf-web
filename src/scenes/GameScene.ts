@@ -38,6 +38,13 @@ export class GameScene extends Phaser.Scene {
     });
     this.isoRenderer.init();
     this.isoRenderer.enableDebug();
+
+    // Touche D : toggle debug des variantes
+    if (this.input.keyboard) {
+      this.input.keyboard.on('keydown-D', () => {
+        this.isoRenderer.toggleDebugVariants();
+      });
+    }
   }
 
   update(): void {

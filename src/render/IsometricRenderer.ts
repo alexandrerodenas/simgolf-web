@@ -285,4 +285,10 @@ export class IsometricRenderer {
   getConfig(): Readonly<IsometricConfig> {
     return this.config;
   }
+
+  /** Active/désactive l'affichage des numéros de variante */
+  toggleDebugVariants(): void {
+    this.tileRenderer.setDebug(!this.tileRenderer.isDebug());
+    this.fullRender();
+  }
 }
