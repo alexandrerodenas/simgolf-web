@@ -75,8 +75,8 @@ export class TileRenderer {
     // 5. Texture pré-calculée pour cette forme
     const texKey = this.textureGen.getTextureKey(hTL, hTR, hBR, hBL);
 
-    // 6. Image texturée
-    const img = this.scene.add.image(cx, cy, texKey);
+    // 6. Image texturée — position arrondie (anti sub-pixel gap)
+    const img = this.scene.add.image(Math.round(cx), Math.round(cy), texKey);
     img.setOrigin(0.5, 0.5);
     img.setDepth(depth);
     img.setName(`tile_${x}_${y}`);

@@ -1,20 +1,20 @@
 /**
- * SlopedTextureGenerator — Génère des textures de tuile pentues
- * en mappant la texture d'herbe du jeu sur un quadrilatère quelconque.
+ * SlopedTextureGenerator — Génère des textures de tuile pentues.
  *
- * Pour chaque forme géométrique unique (définie par les 4 hauteurs),
- * on pré-calcule une texture en dessinant l'herbe avec un transform
- * affine par triangle (Canvas 2D). Pas de diagonale visible.
+ * Mappe la texture d'herbe du jeu sur le quadrilatère formé par
+ * les 4 sommets (2 triangles affines, diagonale invisible).
  *
- * Résultat : ~20 textures pré-calculées, réutilisées par toutes les tuiles.
+ * Anti-gap :
+ *   1. Remplissage opaque du quad avant le texturing
+ *   2. Bleed de 1px vers l'extérieur sur chaque sommet
+ *   3. Pas de stroke/bordure
  */
 
 import Phaser from 'phaser';
 import { mapToScreen } from './CoordinateSystem';
-import { TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
 
 // ================================================================
-// ShapeKey → identifiant unique pour une configuration de hauteurs
+// ShapeKey
 // ================================================================
 
 export function shapeKey(
@@ -26,23 +26,21 @@ export function shapeKey(
 }
 
 // ================================================================
-// Générateur de textures pentues
+// Générateur
 // ================================================================
 
 export class SlopedTextureGenerator {
   private scene: Phaser.Scene;
   private cache = new Map<string, string>();
   private readonly sourceTextureKey: string;
+  /** Couleur unie de remplissage anti-gap (vert herbe moyen) */
+  private readonly fillColor = '#4a8f4a';
 
   constructor(scene: Phaser.Scene, sourceTextureKey = 'RoughA0001') {
     this.scene = scene;
     this.sourceTextureKey = sourceTextureKey;
   }
 
-  /**
-   * Retourne la clé de texture pour une configuration de hauteurs donnée.
-   * Génère et met en cache la texture si elle n'existe pas encore.
-   */
   getTextureKey(
     hTL: number, hTR: number, hBR: number, hBL: number,
   ): string {
@@ -52,116 +50,124 @@ export class SlopedTextureGenerator {
     if (this.scene.textures.exists(texKey)) return texKey;
     if (this.cache.has(key)) return this.cache.get(key)!;
 
-    this.generate(key, texKey, hTL, hTR, hBR, hBL);
+    this.generate(texKey, hTL, hTR, hBR, hBL);
     this.cache.set(key, texKey);
 
     return texKey;
   }
 
   // ================================================================
-  // Génération d'une texture
+  // Génération
   // ================================================================
 
   private generate(
-    key: string,
     texKey: string,
     hTL: number, hTR: number, hBR: number, hBL: number,
   ): void {
-    // Positions écran des 4 sommets (relatives à l'origine)
     const origin = mapToScreen(0, 0);
     const vert = (vx: number, vy: number, h: number) => {
       const p = mapToScreen(vx, vy, h);
       return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
     };
 
-    // Les 4 sommets de la tuile à LEURS hauteurs réelles
+    // 4 sommets à leurs hauteurs réelles
     const tl = vert(0, 0, hTL);
     const tr = vert(1, 0, hTR);
     const br = vert(1, 1, hBR);
     const bl = vert(0, 1, hBL);
     const corners = [tl, tr, br, bl];
 
-    // Bounding box
-    const minX = Math.min(...corners.map(c => c.x));
-    const maxX = Math.max(...corners.map(c => c.x));
-    const minY = Math.min(...corners.map(c => c.y));
-    const maxY = Math.max(...corners.map(c => c.y));
+    // Centre pour le calcul du bleed
+    const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+    const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+
+    // Bleed : pousse chaque sommet de 1px vers l'extérieur
+    const bleed = 1;
+    const expand = (p: { x: number; y: number }) => {
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 0.001) return p;
+      return {
+        x: p.x + (dx / len) * bleed,
+        y: p.y + (dy / len) * bleed,
+      };
+    };
+    const pts = corners.map(expand);
+
+    // Bounding box avec marge
+    const minX = Math.min(...pts.map(p => p.x));
+    const maxX = Math.max(...pts.map(p => p.x));
+    const minY = Math.min(...pts.map(p => p.y));
+    const maxY = Math.max(...pts.map(p => p.y));
 
     const margin = 2;
     const canvasW = Math.ceil(maxX - minX) + margin * 2;
     const canvasH = Math.ceil(maxY - minY) + margin * 2;
 
-    // Décaler les sommets pour qu'ils tiennent dans le canvas
     const offsetX = minX - margin;
     const offsetY = minY - margin;
-    const pts = corners.map(c => ({
-      x: c.x - offsetX,
-      y: c.y - offsetY,
+    const shifted = pts.map(p => ({
+      x: p.x - offsetX,
+      y: p.y - offsetY,
     }));
 
     // Créer le canvas Phaser
     const canvas = this.scene.textures.createCanvas(texKey, canvasW, canvasH);
     if (!canvas) return;
-
     const ctx = canvas.context;
     ctx.clearRect(0, 0, canvasW, canvasH);
 
-    // Source texture (64×64 grass)
+    // === Étape 1 : Remplissage opaque du quad (anti-gap) ===
+    const [pTL, pTR, pBR, pBL] = shifted;
+    ctx.fillStyle = this.fillColor;
+    ctx.beginPath();
+    ctx.moveTo(pTL.x, pTL.y);
+    ctx.lineTo(pTR.x, pTR.y);
+    ctx.lineTo(pBR.x, pBR.y);
+    ctx.lineTo(pBL.x, pBL.y);
+    ctx.closePath();
+    ctx.fill();
+
+    // === Étape 2 : Texture mappée par triangles affines ===
     const srcTex = this.scene.textures.get(this.sourceTextureKey);
     const srcImg = srcTex.getSourceImage() as CanvasImageSource;
-
     if (!srcImg) {
       console.warn(`[SlopedTexture] Source manquante: ${this.sourceTextureKey}`);
       return;
     }
 
-    // === Dessiner les 2 triangles avec affine transform ===
-
     // Triangle 1 : TL → TR → BR
-    this.drawTexturedTriangle(
-      ctx, srcImg,
-      pts[0].x, pts[0].y,  // TL
-      pts[1].x, pts[1].y,  // TR
-      pts[2].x, pts[2].y,  // BR
-      0, 0, 1, 0, 1, 1,    // UV: (0,0), (1,0), (1,1)
-    );
+    this.drawTexturedTriangle(ctx, srcImg,
+      pTL.x, pTL.y, pTR.x, pTR.y, pBR.x, pBR.y,
+      0, 0, 1, 0, 1, 1);
 
     // Triangle 2 : TL → BR → BL
-    this.drawTexturedTriangle(
-      ctx, srcImg,
-      pts[0].x, pts[0].y,  // TL
-      pts[2].x, pts[2].y,  // BR
-      pts[3].x, pts[3].y,  // BL
-      0, 0, 1, 1, 0, 1,    // UV: (0,0), (1,1), (0,1)
-    );
+    this.drawTexturedTriangle(ctx, srcImg,
+      pTL.x, pTL.y, pBR.x, pBR.y, pBL.x, pBL.y,
+      0, 0, 1, 1, 0, 1);
 
     canvas.refresh();
   }
 
   /**
-   * Dessine un triangle avec texture mappée via affine transform.
-   *
-   * Le transform affine est calculé pour mapper l'UV (u,v) → (x,y)
-   * de sorte que les 3 coins UV tombent exactement sur les 3 sommets.
+   * Triangle texturé via affine transform.
+   * Pas de clip() — on utilise le remplissage opaque pour les bords.
+   * Le transform est exact : le triangle source 64×64 est mappé
+   * sur le triangle cible.
    */
   private drawTexturedTriangle(
     ctx: CanvasRenderingContext2D,
     srcImg: CanvasImageSource,
-    x0: number, y0: number,  // Sommet 0
-    x1: number, y1: number,  // Sommet 1
-    x2: number, y2: number,  // Sommet 2
-    u0: number, v0: number,  // UV sommet 0
-    u1: number, v1: number,  // UV sommet 1
-    u2: number, v2: number,  // UV sommet 2
+    x0: number, y0: number,
+    x1: number, y1: number,
+    x2: number, y2: number,
+    u0: number, v0: number,
+    u1: number, v1: number,
+    u2: number, v2: number,
   ): void {
-    // Transformer UV → XY
-    // x = a*u + b*v + c
-    // y = d*u + e*v + f
-    //
-    // Avec UV(0,0) → (c, f) = (x0, y0)
-    // UV(1,0) → (a+c, d+f) = (x1-x0, y1-y0)
-    // UV(0,1) → (b+c, e+f) = (x2-x0, y2-y0)
-
+    // Matrice affine : x = a*u + b*v + c, y = d*u + e*v + f
+    // Avec les 3 contraintes UV → XY, on résout :
     const a = x1 - x0;
     const b = x2 - x0;
     const c = x0;
@@ -177,11 +183,11 @@ export class SlopedTextureGenerator {
     ctx.closePath();
     ctx.clip();
 
-    // Appliquer le transform affine inverse
-    // On mappe le rectangle source (0,0)-(64,64) vers le triangle
     ctx.setTransform(a, d, b, e, c, f);
     ctx.drawImage(srcImg, 0, 0, 64, 64);
 
     ctx.restore();
+
+    // Pas de stroke : lineWidth = 0, pas de bordure
   }
 }
