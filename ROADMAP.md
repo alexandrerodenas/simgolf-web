@@ -131,7 +131,40 @@
 
 ---
 
-## Phase 3 — Interaction tactile ⏳
+## Phase 3 — Interaction tactile ✅
+
+> Objectif : éditer le terrain au doigt, undo/redo, pinch zoom
+
+### P3-0 : Hit detection ✅
+- [x] Conversion tap→carte (screenToMap avec compensation caméra)
+- [x] Surbrillance hover (diamond jaune)
+- [x] Surbrillance sélection (diamond blanc avec point central)
+- [x] Indicateurs de côtés en mode wall
+
+### P3-1 : Outils d'édition ✅
+- [x] TerrainEditor avec undo/redo (200 actions max)
+- [x] Paint : changer type de sol (herbe, fairway, green, sable, eau)
+- [x] Elevate / Lower : modifier l'altitude
+- [x] Wall : toggle mur (détection automatique du côté via position du tap)
+- [x] Inspect : mode lecture seule
+
+### P3-2 : Toolbar UI ✅
+- [x] Barre d'outils horizontale (6 outils + undo/redo)
+- [x] Boutons interactifs avec hover
+- [x] Raccourcis clavier 1-6 + Ctrl+Z / Ctrl+Shift+Z
+
+### P3-3 : Pinch zoom ✅
+- [x] Zoom à 2 doigts (pinch-to-zoom)
+- [x] Clampé entre 0.4× et 2.5×
+
+### P3-4 : Undo/Redo ✅
+- [x] Piles undo/redo avec snapshots des tuiles modifiées
+- [x] Boutons UI + raccourcis clavier
+- [x] Re-render automatique après undo/redo
+
+### P3-5 : Fichiers créés
+- `src/core/TerrainEditor.ts` — moteur d'édition avec historique
+- `src/render/InputHandler.ts` — hit detection, pinch zoom, surbrillance
 
 ## Phase 4 — Simulation & Systèmes de jeu ⏳
 

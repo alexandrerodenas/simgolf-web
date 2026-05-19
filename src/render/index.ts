@@ -17,6 +17,8 @@ export { TextureManager } from './TextureManager';
 export { TileRenderer } from './TileRenderer';
 export { IsometricRenderer } from './IsometricRenderer';
 export type { IsometricConfig } from './IsometricRenderer';
+export { InputHandler } from './InputHandler';
+export type { InputHandlerConfig } from './InputHandler';
 export {
   computeNeighborMask,
   computeTransitionMask,
