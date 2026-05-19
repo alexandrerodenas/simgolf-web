@@ -9,7 +9,7 @@ import { BootScene } from './scenes/BootScene';
 import { GameScene } from './scenes/GameScene';
 
 const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.CANVAS,
+  type: Phaser.WEBGL,
   width: window.innerWidth,
   height: window.innerHeight,
   parent: document.body,
