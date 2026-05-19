@@ -13,15 +13,9 @@ export {
   ORIGIN_OFFSET_Y,
 } from './CoordinateSystem';
 export type { Viewport } from './CoordinateSystem';
-export { TextureManager } from './TextureManager';
 export { TileRenderer } from './TileRenderer';
 export { IsometricRenderer } from './IsometricRenderer';
 export type { IsometricConfig } from './IsometricRenderer';
 export { InputHandler } from './InputHandler';
 export type { InputHandlerConfig } from './InputHandler';
-export {
-  computeNeighborMask,
-  computeTransitionMask,
-  needsBorder,
-  NEIGHBOR_FLAGS,
-} from './AutotileRules';
+export { DiamondTextureFactory, getAllSourceKeys } from './DiamondTextureFactory';

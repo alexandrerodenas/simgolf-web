@@ -1,18 +1,21 @@
 /**
- * SimGolf Web — Isometric Renderer (vertex-based heightmap)
+ * SimGolf Web — Isometric Renderer
  *
- * Chef d'orchestre du rendu isométrique.
- * Utilise un unique Graphics batché pour tout le terrain.
- * Rendu dans l'ordre painter's algorithm (arrière → avant).
+ * Chef d'orchestre du rendu isométrique avec textures du jeu original.
  *
- * Caméra : scroll via drag + zoom roulette (Phaser native).
+ * Chaque tuile est une Image Phaser positionnée à la bonne hauteur
+ * (heightmap). La caméra gère scroll/drag/zoom nativement.
+ *
+ * Culling : seules les tuiles visibles sont rendues.
+ * Tri : painter's algorithm (arrière → avant).
  */
 
 import Phaser from 'phaser';
-import { TerrainEngine, TileData } from '../core';
+import { DiamondTextureFactory } from './DiamondTextureFactory';
 import { TileRenderer } from './TileRenderer';
 import { mapToScreen, TILE_W, TILE_H } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
+import type { TerrainEngine, TileData } from '../core';
 
 // ================================================================
 // Configuration
@@ -45,9 +48,6 @@ export class IsometricRenderer {
   private config: IsometricConfig;
   private camera: Phaser.Cameras.Scene2D.Camera;
 
-  // Graphics batch unique (recréé à chaque fullRender)
-  private gfx: Phaser.GameObjects.Graphics | null = null;
-
   // État du drag
   private isDragging = false;
   private dragStartScrollX = 0;
@@ -62,13 +62,14 @@ export class IsometricRenderer {
   constructor(
     scene: Phaser.Scene,
     terrain: TerrainEngine,
+    diamondFactory: DiamondTextureFactory,
     config: Partial<IsometricConfig> = {},
   ) {
     this.scene = scene;
     this.terrain = terrain;
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    this.tileRenderer = new TileRenderer(terrain);
+    this.tileRenderer = new TileRenderer(scene, terrain, diamondFactory);
     this.camera = scene.cameras.main;
   }
 
@@ -82,9 +83,7 @@ export class IsometricRenderer {
     this.setupInputs();
     this.fullRender();
 
-    console.log(
-      `[IsometricRenderer] Init zoom=${this.config.zoom}`,
-    );
+    console.log('[IsometricRenderer] Init ok');
   }
 
   // ================================================================
@@ -155,19 +154,10 @@ export class IsometricRenderer {
   }
 
   // ================================================================
-  // Rendu (batché)
+  // Rendu
   // ================================================================
 
   fullRender(): void {
-    // Détruit l'ancien Graphics
-    if (this.gfx) {
-      this.gfx.destroy();
-    }
-
-    // Crée un nouveau Graphics
-    this.gfx = this.scene.add.graphics();
-    this.gfx.setDepth(0);
-
     // Collecte les tuiles visibles
     const cam = this.camera;
     const vpLeft = cam.scrollX;
@@ -175,7 +165,7 @@ export class IsometricRenderer {
     const vpRight = vpLeft + cam.width / this.config.zoom;
     const vpBottom = vpTop + cam.height / this.config.zoom;
 
-    const tilesToDraw: Array<{ x: number; y: number; data: TileData; order: number }> = [];
+    const visibleTiles: Array<{ x: number; y: number; data: TileData }> = [];
     const origin = mapToScreen(0, 0);
 
     for (let y = 0; y < this.terrain.height; y++) {
@@ -189,23 +179,23 @@ export class IsometricRenderer {
 
         // Culling : rectangle englobant du diamond
         if (
-          tsx + 32 > vpLeft && tsx - 32 < vpRight &&
-          tsy + 16 > vpTop && tsy - 16 < vpBottom
+          tsx + TILE_W > vpLeft && tsx < vpRight &&
+          tsy + TILE_H > vpTop && tsy < vpBottom
         ) {
-          tilesToDraw.push({ x, y, data, order: (x + y) * 16 });
+          visibleTiles.push({ x, y, data });
         }
       }
     }
 
     // Tri painter's algorithm (arrière → avant)
-    tilesToDraw.sort((a, b) => a.order - b.order);
+    visibleTiles.sort((a, b) => {
+      if (a.y !== b.y) return a.y - b.y;
+      return a.x - b.x;
+    });
 
-    // Rendu batché sur le Graphics
-    this.renderedCount = 0;
-    for (const { x, y, data } of tilesToDraw) {
-      this.tileRenderer.drawTile(this.gfx!, x, y, data);
-      this.renderedCount++;
-    }
+    // Rendu batché
+    this.renderedCount = visibleTiles.length;
+    this.tileRenderer.renderAll(visibleTiles);
 
     this.updateDebug();
 
@@ -219,7 +209,7 @@ export class IsometricRenderer {
   }
 
   // ================================================================
-  // Zoom programmatique
+  // Zoom
   // ================================================================
 
   zoomIn(): void {
@@ -261,7 +251,7 @@ export class IsometricRenderer {
     if (!this.debugText) return;
     const cam = this.camera;
     this.debugText.setText([
-      `SimGolf Web — ${MAP_SIZE}×${MAP_SIZE} | zoom: ${this.config.zoom.toFixed(2)}`,
+      `SimGolf — ${MAP_SIZE}×${MAP_SIZE} | zoom: ${this.config.zoom.toFixed(2)}`,
       `Tuiles: ${this.renderedCount} / ${MAP_SIZE * MAP_SIZE}`,
       `Cam: (${Math.round(cam.scrollX)}, ${Math.round(cam.scrollY)})`,
     ].join('\n'));
