@@ -1,28 +1,17 @@
 /**
- * SimGolf Web — Isometric Renderer
+ * SimGolf Web — Isometric Renderer (vertex-based heightmap)
  *
  * Chef d'orchestre du rendu isométrique.
- * Combine TextureManager + TileRenderer + culling.
+ * Utilise un unique Graphics batché pour tout le terrain.
+ * Rendu dans l'ordre painter's algorithm (arrière → avant).
  *
- * Utilise le "painter's algorithm" : rendu ligne par ligne
- * (haut → bas), colonne par colonne (gauche → droite).
- *
- * Gère le scroll via la caméra Phaser native (camera.setScroll)
- * et le zoom via camera.setZoom.
- * Les sprites sont ajoutés DIRECTEMENT à la scène (pas de container)
- * pour que le scroll et le culling de la caméra fonctionnent.
+ * Caméra : scroll via drag + zoom roulette (Phaser native).
  */
 
 import Phaser from 'phaser';
-import { TerrainEngine } from '../core/TerrainEngine';
-import { TileData } from '../core/types';
-import { TextureManager } from './TextureManager';
+import { TerrainEngine, TileData } from '../core';
 import { TileRenderer } from './TileRenderer';
-import { computeNeighborMask } from './AutotileRules';
-import {
-  mapToScreen,
-  compareRenderOrder,
-} from './CoordinateSystem';
+import { mapToScreen, TILE_W, TILE_H } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 
 // ================================================================
@@ -52,10 +41,12 @@ const DEFAULT_CONFIG: IsometricConfig = {
 export class IsometricRenderer {
   private scene: Phaser.Scene;
   private terrain: TerrainEngine;
-  private textures: TextureManager;
   private tileRenderer: TileRenderer;
   private config: IsometricConfig;
   private camera: Phaser.Cameras.Scene2D.Camera;
+
+  // Graphics batch unique (recréé à chaque fullRender)
+  private gfx: Phaser.GameObjects.Graphics | null = null;
 
   // État du drag
   private isDragging = false;
@@ -64,7 +55,7 @@ export class IsometricRenderer {
   private dragStartPointerX = 0;
   private dragStartPointerY = 0;
 
-  // Stats debug
+  // Stats
   private renderedCount = 0;
   private debugText: Phaser.GameObjects.Text | null = null;
 
@@ -77,11 +68,8 @@ export class IsometricRenderer {
     this.terrain = terrain;
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    this.textures = new TextureManager(scene);
+    this.tileRenderer = new TileRenderer(terrain);
     this.camera = scene.cameras.main;
-
-    // PAS de container — les sprites vont directement dans la scène
-    this.tileRenderer = new TileRenderer(scene, this.textures);
   }
 
   // ================================================================
@@ -89,14 +77,13 @@ export class IsometricRenderer {
   // ================================================================
 
   init(): void {
-    this.textures.init();
     this.camera.setBackgroundColor('#1a2a1a');
     this.centerCamera();
     this.setupInputs();
     this.fullRender();
 
     console.log(
-      `[IsometricRenderer] Caméra centrée scroll=(${Math.round(this.camera.scrollX)}, ${Math.round(this.camera.scrollY)}) zoom=${this.config.zoom}`,
+      `[IsometricRenderer] Init zoom=${this.config.zoom}`,
     );
   }
 
@@ -106,7 +93,6 @@ export class IsometricRenderer {
 
   private centerCamera(): void {
     const { width, height } = this.scene.scale;
-    // Centre de la carte en coordonnées carte (MAP_SIZE/2, MAP_SIZE/2)
     const center = mapToScreen(MAP_SIZE / 2, MAP_SIZE / 2);
     this.camera.setScroll(
       center.screenX - width / 2,
@@ -169,20 +155,27 @@ export class IsometricRenderer {
   }
 
   // ================================================================
-  // Rendu
+  // Rendu (batché)
   // ================================================================
 
   fullRender(): void {
-    // Nettoie les anciens sprites (directement dans la scène)
-    this.tileRenderer.clearAll();
+    // Détruit l'ancien Graphics
+    if (this.gfx) {
+      this.gfx.destroy();
+    }
 
+    // Crée un nouveau Graphics
+    this.gfx = this.scene.add.graphics();
+    this.gfx.setDepth(0);
+
+    // Collecte les tuiles visibles
     const cam = this.camera;
     const vpLeft = cam.scrollX;
     const vpTop = cam.scrollY;
     const vpRight = vpLeft + cam.width / this.config.zoom;
     const vpBottom = vpTop + cam.height / this.config.zoom;
 
-    const tilesToRender: Array<{ x: number; y: number; data: TileData }> = [];
+    const tilesToDraw: Array<{ x: number; y: number; data: TileData; order: number }> = [];
     const origin = mapToScreen(0, 0);
 
     for (let y = 0; y < this.terrain.height; y++) {
@@ -194,38 +187,35 @@ export class IsometricRenderer {
         const tsx = screenX - origin.screenX;
         const tsy = screenY - origin.screenY;
 
-        // Rectangle englobant du diamant (64×32)
+        // Culling : rectangle englobant du diamond
         if (
           tsx + 32 > vpLeft && tsx - 32 < vpRight &&
           tsy + 16 > vpTop && tsy - 16 < vpBottom
         ) {
-          tilesToRender.push({ x, y, data });
+          tilesToDraw.push({ x, y, data, order: (x + y) * 16 });
         }
       }
     }
 
-    tilesToRender.sort((a, b) => compareRenderOrder(a, b));
+    // Tri painter's algorithm (arrière → avant)
+    tilesToDraw.sort((a, b) => a.order - b.order);
 
+    // Rendu batché sur le Graphics
     this.renderedCount = 0;
-    for (const { x, y, data } of tilesToRender) {
-      const { screenX, screenY } = mapToScreen(x, y, 0);
-      const autoTile = computeNeighborMask(this.terrain, x, y);
-      this.tileRenderer.renderTile(data,
-        screenX - origin.screenX,
-        screenY - origin.screenY,
-        autoTile);
+    for (const { x, y, data } of tilesToDraw) {
+      this.tileRenderer.drawTile(this.gfx!, x, y, data);
       this.renderedCount++;
     }
 
     this.updateDebug();
 
     if (this.renderedCount === 0) {
-      console.warn('[IsometricRenderer] Aucune tuile rendue — vérifie le culling');
+      console.warn('[IsometricRenderer] Aucune tuile visible');
     }
   }
 
   update(): void {
-    // Hook pour l'avenir
+    // Hook pour animations futures
   }
 
   // ================================================================
@@ -272,7 +262,7 @@ export class IsometricRenderer {
     const cam = this.camera;
     this.debugText.setText([
       `SimGolf Web — ${MAP_SIZE}×${MAP_SIZE} | zoom: ${this.config.zoom.toFixed(2)}`,
-      `Tuiles rendues: ${this.renderedCount} / ${MAP_SIZE * MAP_SIZE}`,
+      `Tuiles: ${this.renderedCount} / ${MAP_SIZE * MAP_SIZE}`,
       `Cam: (${Math.round(cam.scrollX)}, ${Math.round(cam.scrollY)})`,
     ].join('\n'));
   }

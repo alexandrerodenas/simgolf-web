@@ -345,10 +345,8 @@ export class InputHandler {
 
     const origin = mapToScreen(0, 0);
     const { screenX, screenY } = mapToScreen(target.x, target.y, 0);
-    const tile = this.terrain.tileAt(target.x, target.y);
-    const elev = tile
-      ? Math.round((tile.elevation[0]+tile.elevation[1]+tile.elevation[2]+tile.elevation[3])/4)
-      : 0;
+    const corners = this.terrain.getTileCorners(target.x, target.y);
+    const elev = Math.round((corners[0] + corners[1] + corners[2] + corners[3]) / 4);
 
     const sx = screenX - origin.screenX;
     const sy = screenY - origin.screenY - elev * TILE_D;

@@ -2,11 +2,13 @@
  * TerrainGenerator — Génération de terrain naturel.
  *
  * Pipeline complet :
- *   1. Bruit fractal 2D (permutation table, 5 octaves)
+ *   1. Bruit fractal 2D → heightmap (W+1)×(H+1)
  *   2. Quantification (arrondi entier 0..10)
  *   3. Lissage (|voisin − courant| ≤ 1)
  *   4. Classification (eau, sable, herbe)
  *   5. Végétation (arbres, buissons, fleurs)
+ *
+ * La heightmap est écrite directement dans TerrainEngine (source de vérité).
  */
 
 import { TerrainEngine } from './TerrainEngine';
@@ -27,12 +29,10 @@ export class TerrainGenerator {
     // 3. Lisser
     const smoothed = this.clampSlope(q);
 
-    // 4. Appliquer aux tuiles
-    for (let y = 0; y < terrain.height; y++) {
-      for (let x = 0; x < terrain.width; x++) {
-        const tile = terrain.tileAt(x, y);
-        if (!tile) continue;
-        tile.elevation = [smoothed[y][x], smoothed[y][x+1], smoothed[y+1][x+1], smoothed[y+1][x]];
+    // 4. Appliquer la heightmap au terrain
+    for (let vy = 0; vy <= terrain.height; vy++) {
+      for (let vx = 0; vx <= terrain.width; vx++) {
+        terrain.setVertex(vx, vy, smoothed[vy][vx]);
       }
     }
 
@@ -138,27 +138,38 @@ export class TerrainGenerator {
   // ================================================================
 
   private classify(terrain: TerrainEngine, rng: () => number): void {
-    // Eau (altitude ≤ 1)
-    for (let y = 1; y < terrain.height - 1; y++) {
-      for (let x = 1; x < terrain.width - 1; x++) {
+    const ht = terrain.height;
+    const wd = terrain.width;
+
+    // Eau (altitude moyenne ≤ 1)
+    for (let y = 1; y < ht - 1; y++) {
+      for (let x = 1; x < wd - 1; x++) {
         const tile = terrain.tileAt(x, y);
         if (!tile) continue;
-        if (this.avg(tile.elevation) <= 1) {
+        const corners = terrain.getTileCorners(x, y);
+        if (this.avg(corners) <= 1) {
           terrain.setTileType(x, y, TileType.WATER, 0);
-          tile.elevation = [0, 0, 0, 0];
+          // Mettre les 4 sommets à 0
+          terrain.setVertex(x, y, 0);
+          terrain.setVertex(x + 1, y, 0);
+          terrain.setVertex(x + 1, y + 1, 0);
+          terrain.setVertex(x, y + 1, 0);
         }
       }
     }
 
     // Nettoyer eau isolée (2 passes)
     for (let p = 0; p < 2; p++) {
-      for (let y = 1; y < terrain.height - 1; y++) {
-        for (let x = 1; x < terrain.width - 1; x++) {
+      for (let y = 1; y < ht - 1; y++) {
+        for (let x = 1; x < wd - 1; x++) {
           const t = terrain.tileAt(x, y);
           if (!t || t.type !== TileType.WATER) continue;
           if (this.countNeighbors(terrain, x, y, TileType.WATER) < 2) {
             terrain.setTileType(x, y, TileType.GRASS, 0);
-            t.elevation = [2, 2, 2, 2];
+            terrain.setVertex(x, y, 2);
+            terrain.setVertex(x + 1, y, 2);
+            terrain.setVertex(x + 1, y + 1, 2);
+            terrain.setVertex(x, y + 1, 2);
             t.variation = Math.floor(rng() * 9);
           }
         }
@@ -166,14 +177,14 @@ export class TerrainGenerator {
     }
 
     // Plages de sable (altitude ≤ 3, voisin eau)
-    for (let y = 1; y < terrain.height - 1; y++) {
-      for (let x = 1; x < terrain.width - 1; x++) {
+    for (let y = 1; y < ht - 1; y++) {
+      for (let x = 1; x < wd - 1; x++) {
         const tile = terrain.tileAt(x, y);
         if (!tile || tile.type !== TileType.GRASS) continue;
-        const a = this.avg(tile.elevation);
+        const corners = terrain.getTileCorners(x, y);
+        const a = this.avg(corners);
         if (a <= 3 && this.countNeighbors(terrain, x, y, TileType.WATER) > 0) {
           terrain.setTileType(x, y, TileType.SAND, Math.floor(rng() * 5));
-          tile.elevation = [a, a, a, a];
         }
       }
     }
