@@ -16,8 +16,3 @@ export type { Viewport } from './CoordinateSystem';
 export { TileRenderer } from './TileRenderer';
 export { IsometricRenderer } from './IsometricRenderer';
 export type { IsometricConfig } from './IsometricRenderer';
-export { InputHandler } from './InputHandler';
-export type { InputHandlerConfig } from './InputHandler';
-export { DiamondTextureFactory, getAllSourceKeys } from './DiamondTextureFactory';
-export { selectTileSprite } from './TileShapeMapper';
-export type { ShapeGroup, SpriteSelector } from './TileShapeMapper';

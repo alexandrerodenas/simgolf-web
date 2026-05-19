@@ -1,56 +1,48 @@
 /**
  * GameScene — Scène principale du jeu.
  *
- * Affiche le terrain 64×64 généré avec la texture grass du jeu,
- * chaque tuile utilisant la variante géométrique exacte selon
- * les 4 hauteurs de ses sommets (TileShapeMapper).
+ * Affiche le terrain 64×64 en rendu isométrique continu.
+ * Chaque tuile est un quadrilatère projeté à ses 4 hauteurs réelles
+ * → surface parfaitement jointive, sans escalier ni artefact.
  *
- * Navigation : drag pour scroller, molette pour zoomer.
+ * Navigation : drag scroll + zoom molette.
+ * Touche D / bouton DBG : toggle affichage des codes variante.
  */
 
 import Phaser from 'phaser';
 import { TerrainEngine, TerrainGenerator } from '../core';
 import { MAP_SIZE } from '../config';
-import { IsometricRenderer, DiamondTextureFactory } from '../render';
+import { IsometricRenderer } from '../render';
 
 export class GameScene extends Phaser.Scene {
   private isoRenderer!: IsometricRenderer;
-  private diamondFactory!: DiamondTextureFactory;
 
   constructor() {
     super({ key: 'GameScene' });
   }
 
   create(): void {
-    // Textures diamant
-    this.diamondFactory = new DiamondTextureFactory(this);
-    this.diamondFactory.init();
-
-    // Terrain généré
     const terrain = new TerrainEngine(MAP_SIZE, MAP_SIZE);
     const gen = new TerrainGenerator();
     gen.generateNatural(terrain);
 
-    // Rendu isométrique (drag + zoom)
-    this.isoRenderer = new IsometricRenderer(this, terrain, this.diamondFactory, {
+    this.isoRenderer = new IsometricRenderer(this, terrain, {
       zoom: 1,
       enableDrag: true,
     });
     this.isoRenderer.init();
     this.isoRenderer.enableDebug();
 
-    // Touche D : toggle debug des variantes
+    // Touche D
     if (this.input.keyboard) {
-      this.input.keyboard.on('keydown-D', () => {
-        this.toggleDebugBtn();
-      });
+      this.input.keyboard.on('keydown-D', () => this.toggleDebug());
     }
 
-    // Bouton debug variantes (mobile)
+    // Bouton DBG (mobile)
     this.createDebugButton();
   }
 
-  private toggleDebugBtn(): void {
+  private toggleDebug(): void {
     this.isoRenderer.toggleDebugVariants();
   }
 
@@ -66,7 +58,7 @@ export class GameScene extends Phaser.Scene {
     btn.setScrollFactor(0);
     btn.setDepth(10000);
     btn.setInteractive({ useHandCursor: true });
-    btn.on('pointerdown', () => this.toggleDebugBtn());
+    btn.on('pointerdown', () => this.toggleDebug());
   }
 
   update(): void {

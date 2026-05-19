@@ -11,9 +11,8 @@
  */
 
 import Phaser from 'phaser';
-import { DiamondTextureFactory } from './DiamondTextureFactory';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen, TILE_H, TILE_D, TILE_W } from './CoordinateSystem';
+import { mapToScreen, TILE_W, TILE_D } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -62,14 +61,13 @@ export class IsometricRenderer {
   constructor(
     scene: Phaser.Scene,
     terrain: TerrainEngine,
-    diamondFactory: DiamondTextureFactory,
     config: Partial<IsometricConfig> = {},
   ) {
     this.scene = scene;
     this.terrain = terrain;
     this.config = { ...DEFAULT_CONFIG, ...config };
 
-    this.tileRenderer = new TileRenderer(scene, terrain, diamondFactory);
+    this.tileRenderer = new TileRenderer(scene, terrain);
     this.camera = scene.cameras.main;
   }
 
