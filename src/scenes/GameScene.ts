@@ -42,9 +42,31 @@ export class GameScene extends Phaser.Scene {
     // Touche D : toggle debug des variantes
     if (this.input.keyboard) {
       this.input.keyboard.on('keydown-D', () => {
-        this.isoRenderer.toggleDebugVariants();
+        this.toggleDebugBtn();
       });
     }
+
+    // Bouton debug variantes (mobile)
+    this.createDebugButton();
+  }
+
+  private toggleDebugBtn(): void {
+    this.isoRenderer.toggleDebugVariants();
+  }
+
+  private createDebugButton(): void {
+    const btn = this.add.text(this.scale.width - 10, 10, 'DBG', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#ffcc00',
+      backgroundColor: 'rgba(0,0,0,0.7)',
+      padding: { x: 8, y: 6 },
+    });
+    btn.setOrigin(1, 0);
+    btn.setScrollFactor(0);
+    btn.setDepth(10000);
+    btn.setInteractive({ useHandCursor: true });
+    btn.on('pointerdown', () => this.toggleDebugBtn());
   }
 
   update(): void {
