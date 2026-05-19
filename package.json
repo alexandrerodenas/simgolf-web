@@ -1,0 +1,21 @@
+{
+  "name": "simgolf-web",
+  "version": "0.1.0",
+  "description": "SimGolf Web — Portage navigateur du jeu SimGolf (Firaxis, 2002)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "phaser": "^4.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.13"
+  }
+}
