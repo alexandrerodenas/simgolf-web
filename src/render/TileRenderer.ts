@@ -1,25 +1,24 @@
 /**
- * SimGolf Web — Tile Renderer (texturé)
+ * SimGolf Web — Tile Renderer (texturé, classification RE)
  *
- * Chaque tuile est rendue comme une Image Phaser utilisant une
- * texture pré-calculée où l'herbe du jeu est mappée sur le
- * quadrilatère exact formé par les 4 sommets à leurs hauteurs
- * réelles — via 2 triangles affines (Canvas 2D).
- *
- * Le rendu est continu, sans escalier, sans diagonale visible.
- *
- * Les textures sont générées une fois par forme géométrique
- * unique (~20 formes) par SlopedTextureGenerator.
+ * Pour chaque tuile :
+ *   1. Lit les 4 hauteurs (heightmap partagée)
+ *   2. Classe la forme A-E (ShapeClassifier)
+ *   3. Calcule la variante cosmétique déterministe
+ *   4. Construit le nom source (ex: RoughB0003)
+ *   5. Génère la texture mappée sur le quad (SlopedTextureGenerator)
+ *   6. Affiche en Image Phaser à la bonne position
  */
 
 import Phaser from 'phaser';
-import { TileData, TileType, TerrainEngine } from '../core';
+import { TileData, TerrainEngine } from '../core';
 import { SlopedTextureGenerator } from './SlopedTextureGenerator';
-import { mapToScreen, TILE_D } from './CoordinateSystem';
-
-// ================================================================
-// Tile Renderer
-// ================================================================
+import {
+  getShapeLetter,
+  getCosmeticVariant,
+  buildTextureSourceName,
+} from './ShapeClassifier';
+import { mapToScreen } from './CoordinateSystem';
 
 export class TileRenderer {
   private scene: Phaser.Scene;
@@ -31,7 +30,7 @@ export class TileRenderer {
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
     this.terrain = terrain;
-    this.textureGen = new SlopedTextureGenerator(scene, 'RoughA0001');
+    this.textureGen = new SlopedTextureGenerator(scene);
   }
 
   setDebug(active: boolean): void { this.showDebug = active; }
@@ -44,15 +43,16 @@ export class TileRenderer {
     }
   }
 
-  // ================================================================
-  // Rendu d'une tuile
-  // ================================================================
-
   private renderTile(x: number, y: number, _data: TileData): void {
     // 1. Hauteurs des 4 sommets (heightmap → continuité)
     const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
 
-    // 2. Positions écran des 4 sommets
+    // 2. Classification A-E + variante cosmétique
+    const letter = getShapeLetter(hTL, hTR, hBR, hBL);
+    const variant = getCosmeticVariant(x, y, 9);
+    const sourceKey = buildTextureSourceName('Rough', letter, variant);
+
+    // 3. Positions écran des 4 sommets
     const origin = mapToScreen(0, 0);
     const v = (vx: number, vy: number, h: number) => {
       const p = mapToScreen(vx, vy, h);
@@ -64,28 +64,24 @@ export class TileRenderer {
     const br = v(x + 1, y + 1, hBR);
     const bl = v(x,     y + 1, hBL);
 
-    // 3. Centre géométrique de la tuile
+    // 4. Centre géométrique
     const cx = (tl.x + tr.x + br.x + bl.x) / 4;
     const cy = (tl.y + tr.y + br.y + bl.y) / 4;
 
-    // 4. Profondeur painter's
+    // 5. Profondeur painter's
     const avgH = (hTL + hTR + hBR + hBL) / 4;
     const depth = (x + y) * 16 + Math.round(avgH) * 10;
 
-    // 5. Texture pré-calculée pour cette forme
-    const texKey = this.textureGen.getTextureKey(hTL, hTR, hBR, hBL);
+    // 6. Texture pré-calculée pour cette forme + source
+    const texKey = this.textureGen.getTextureKey(sourceKey, hTL, hTR, hBR, hBL);
 
-    // 6. Image texturée — position arrondie (anti sub-pixel gap)
+    // 7. Image — position arrondie anti-sub-pixel
     const img = this.scene.add.image(Math.round(cx), Math.round(cy), texKey);
     img.setOrigin(0.5, 0.5);
     img.setDepth(depth);
     img.setName(`tile_${x}_${y}`);
     this.tileImages.push(img);
   }
-
-  // ================================================================
-  // Nettoyage
-  // ================================================================
 
   clearAll(): void {
     for (const img of this.tileImages) img.destroy();

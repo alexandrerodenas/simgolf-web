@@ -16,3 +16,5 @@ export type { Viewport } from './CoordinateSystem';
 export { TileRenderer } from './TileRenderer';
 export { IsometricRenderer } from './IsometricRenderer';
 export type { IsometricConfig } from './IsometricRenderer';
+export { getShapeLetter, getCosmeticVariant, buildTextureSourceName } from './ShapeClassifier';
+export type { ShapeLetter } from './ShapeClassifier';
