@@ -36,7 +36,7 @@
 - [x] `src/scenes/` — BootScene, GameScene
 - [x] `src/core/` — moteurs de jeu (types, engine, generator, constants)
 - [x] `src/data/` — données (golfeurs stub)
-- [ ] `src/render/` — rendu isométrique
+- [x] `src/render/` — rendu isométrique
 - [ ] `src/ui/` — HUD, overlays
 
 ### P0-3 : Assets pipeline ⏳
@@ -87,17 +87,47 @@
 
 ---
 
-## Phase 2 — Rendu isométrique
+## Phase 2 — Rendu isométrique ✅
 
 > Objectif : afficher la carte en isométrique avec culling, zoom
 
-### P2-0 : Coordinate System ⏳
-### P2-1 : Phaser Camera setup ⏳
-### P2-2 : Rendu complet ⏳
-### P2-3 : Culling dynamique ⏳
-### P2-4 : Texture Manager ⏳
-### P2-5 : Tile renderer ⏳
-### P2-6 : Auto-tiling ⏳
+### P2-0 : Coordinate System ✅
+- [x] Conversion carte ↔ écran (mapToScreen, screenToMap)
+- [x] Ordre de rendu (Painter's algorithm)
+- [x] Culling spatial (rectangle englobant du diamant)
+
+### P2-1 : Phaser Camera setup ✅
+- [x] Scroll par drag (camera.setScroll)
+- [x] Zoom à la roulette (camera.setZoom)
+- [x] Centrage automatique sur la carte
+
+### P2-2 : Rendu complet ✅
+- [x] IsometricRenderer : orchestre TextureManager + TileRenderer
+- [x] Boucle de rendu avec tri isométrique
+- [x] World container pour le batching
+
+### P2-3 : Culling dynamique ✅
+- [x] Scan complet de la grille avec test de rectangle englobant
+- [x] Rendu uniquement des tuiles visibles
+- [x] Nettoyage des sprites avant re-render
+
+### P2-4 : Texture Manager ✅
+- [x] Génération procédurale de textures (canvas)
+- [x] 12 palettes de couleurs (herbe, sable, eau, fairway, green...)
+- [x] Dégradés diagonaux pour relief isométrique
+- [x] Variations aléatoires par type
+- [x] Textures de mur (pierre)
+
+### P2-5 : Tile renderer ✅
+- [x] Rendu diamond du sol avec empilement pour l'élévation
+- [x] Murs sur les 4 côtés (graphics primitives)
+- [x] Imposteurs arbres/buissons/fleurs
+- [x] Texture "dirt" pour les couches souterraines
+
+### P2-6 : Auto-tiling ✅
+- [x] Masque de voisinage (4 bits NSEW)
+- [x] Règles de transition (herbe↔eau, herbe↔sable, fairway↔green...)
+- [x] Intégration dans le pipeline de rendu
 
 ---
 
