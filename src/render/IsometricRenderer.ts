@@ -13,7 +13,7 @@
 import Phaser from 'phaser';
 import { DiamondTextureFactory } from './DiamondTextureFactory';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen, TILE_W, TILE_H } from './CoordinateSystem';
+import { mapToScreen, TILE_H, TILE_D, TILE_W } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -79,11 +79,44 @@ export class IsometricRenderer {
 
   init(): void {
     this.camera.setBackgroundColor('#1a2a1a');
-    this.centerCamera();
+    this.autoFit();
     this.setupInputs();
     this.fullRender();
 
     console.log('[IsometricRenderer] Init ok');
+  }
+
+  // ================================================================
+  // Caméra — ajustement automatique
+  // ================================================================
+
+  /**
+   * Ajuste zoom et scroll pour que la carte 64×64 remplisse
+   * l'écran sans padding. La carte tient dans :
+   *   X : [ -(N-1)*TW/2 , +(N-1)*TW/2 ]
+   *   Y : [ -maxElev*TD  , 2*(N-1)*TH/2 ]
+   */
+  private autoFit(): void {
+    const { width: sw, height: sh } = this.scene.scale;
+    const N = MAP_SIZE - 1;
+
+    const mapLeft = -N * (TILE_W / 2);
+    const mapRight = N * (TILE_W / 2);
+    const mapTop = -10 * TILE_D; // hauteur max = 10
+    const mapBottom = N * TILE_H;
+
+    const mapW = mapRight - mapLeft;
+    const mapH = mapBottom - mapTop;
+
+    // Zoom pour que la carte remplisse l'écran
+    const zoomX = sw / mapW;
+    const zoomY = sh / mapH;
+    this.config.zoom = Math.min(zoomX, zoomY);
+    this.camera.setZoom(this.config.zoom);
+
+    // Scroll pour que le coin haut-gauche de la carte soit en
+    // haut-gauche de l'écran (pas de padding)
+    this.camera.setScroll(mapLeft, mapTop);
   }
 
   // ================================================================
@@ -158,14 +191,8 @@ export class IsometricRenderer {
   // ================================================================
 
   fullRender(): void {
-    // Collecte les tuiles visibles
-    const cam = this.camera;
-    const vpLeft = cam.scrollX;
-    const vpTop = cam.scrollY;
-    const vpRight = vpLeft + cam.width / this.config.zoom;
-    const vpBottom = vpTop + cam.height / this.config.zoom;
-
-    const visibleTiles: Array<{ x: number; y: number; data: TileData }> = [];
+    // Pas de culling : toutes les tuiles sont toujours rendues
+    const allTiles: Array<{ x: number; y: number; data: TileData }> = [];
     const origin = mapToScreen(0, 0);
 
     for (let y = 0; y < this.terrain.height; y++) {
@@ -177,25 +204,19 @@ export class IsometricRenderer {
         const tsx = screenX - origin.screenX;
         const tsy = screenY - origin.screenY;
 
-        // Culling : rectangle englobant du diamond
-        if (
-          tsx + TILE_W > vpLeft && tsx < vpRight &&
-          tsy + TILE_H > vpTop && tsy < vpBottom
-        ) {
-          visibleTiles.push({ x, y, data });
-        }
+        allTiles.push({ x, y, data });
       }
     }
 
     // Tri painter's algorithm (arrière → avant)
-    visibleTiles.sort((a, b) => {
+    allTiles.sort((a, b) => {
       if (a.y !== b.y) return a.y - b.y;
       return a.x - b.x;
     });
 
     // Rendu batché
-    this.renderedCount = visibleTiles.length;
-    this.tileRenderer.renderAll(visibleTiles);
+    this.renderedCount = allTiles.length;
+    this.tileRenderer.renderAll(allTiles);
 
     this.updateDebug();
 
@@ -226,7 +247,7 @@ export class IsometricRenderer {
 
   resetZoom(): void {
     this.config.zoom = 1;
-    this.centerCamera();
+    this.autoFit();
     this.fullRender();
   }
 
