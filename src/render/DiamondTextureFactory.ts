@@ -8,7 +8,7 @@
 
 import Phaser from 'phaser';
 import { TILE_W, TILE_H } from './CoordinateSystem';
-import { selectTileSprite, createTileRng } from './TileShapeMapper';
+import { selectTileSprite } from './TileShapeMapper';
 
 // ================================================================
 // Texture sources (chemins réels vers les fichiers)
@@ -77,11 +77,9 @@ function getSourceNames(typeName: string): string[] {
 export class DiamondTextureFactory {
   private scene: Phaser.Scene;
   private ready = false;
-  private rng: () => number;
 
-  constructor(scene: Phaser.Scene, seed = 42) {
+  constructor(scene: Phaser.Scene) {
     this.scene = scene;
-    this.rng = createTileRng(seed);
   }
 
   init(): void {
@@ -107,14 +105,15 @@ export class DiamondTextureFactory {
   }
 
   /**
-   * Sélectionne la texture pour une tuile selon ses 4 hauteurs.
-   * Utilise le TileShapeMapper pour la forme géométrique exacte.
+   * Sélectionne la texture pour une tuile selon ses 4 hauteurs
+   * et sa position (pour le déterministe cosmétique).
    */
   getTextureKey(
     hTL: number, hTR: number, hBR: number, hBL: number,
     typeName: string,
+    tileX: number, tileY: number,
   ): string {
-    const selector = selectTileSprite(hTL, hTR, hBR, hBL, typeName, this.rng);
+    const selector = selectTileSprite(hTL, hTR, hBR, hBL, typeName, tileX, tileY);
 
     // Vérifier que la texture existe
     if (this.scene.textures.exists(selector.textureKey)) {

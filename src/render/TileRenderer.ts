@@ -73,10 +73,10 @@ export class TileRenderer {
     const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
     const avgH = Math.round((hTL + hTR + hBR + hBL) / 4);
 
-    // 2. Sélection du sprite géométrique exact
+    // 2. Sélection du sprite géométrique exact (déterministe par position)
     const paletteName = TYPE_TO_PALETTE[data.type] ?? 'GRASS';
     const textureKey = this.diamondFactory.getTextureKey(
-      hTL, hTR, hBR, hBL, paletteName,
+      hTL, hTR, hBR, hBL, paletteName, x, y,
     );
 
     // 3. Position écran (isométrique, décalée par l'élévation)

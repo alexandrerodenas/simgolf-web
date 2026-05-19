@@ -19,5 +19,5 @@ export type { IsometricConfig } from './IsometricRenderer';
 export { InputHandler } from './InputHandler';
 export type { InputHandlerConfig } from './InputHandler';
 export { DiamondTextureFactory, getAllSourceKeys } from './DiamondTextureFactory';
-export { selectTileSprite, createTileRng } from './TileShapeMapper';
+export { selectTileSprite } from './TileShapeMapper';
 export type { ShapeGroup, SpriteSelector } from './TileShapeMapper';
