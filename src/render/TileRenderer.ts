@@ -1,22 +1,20 @@
 /**
- * SimGolf Web — Tile Renderer (textures du jeu + heightmap)
+ * SimGolf Web — Tile Renderer
  *
- * Chaque tuile est rendue comme une Image Phaser avec la texture
- * diamant extraite du jeu original. La texture est sélectionnée
- * par le TileShapeMapper en fonction des 4 hauteurs réelles.
+ * Chaque tuile est rendue comme une Image Phaser positionnée
+ * au centre géométrique de la tuile (pas au TL vertex).
  *
- * Mode debug : affiche la variante (A0001, B0003…) au centre
- * de chaque tuile.
+ * Pour les tuiles pentues, un polygone de fond (Graphics) remplit
+ * l'espace entre les 4 sommets réels — la flat diamond ne couvre
+ * pas toujours toute la surface.
+ *
+ * Mode debug : affiche le code variante (A0001, B0003…) au centre.
  */
 
 import Phaser from 'phaser';
 import { TileData, TileType, TerrainEngine } from '../core';
 import { DiamondTextureFactory } from './DiamondTextureFactory';
-import { mapToScreen, TILE_D } from './CoordinateSystem';
-
-// ================================================================
-// Mapping TileType → nom de palette pour les textures
-// ================================================================
+import { mapToScreen, TILE_D, TILE_H } from './CoordinateSystem';
 
 const TYPE_TO_PALETTE: Record<TileType, string> = {
   [TileType.GRASS]:        'GRASS',
@@ -47,6 +45,7 @@ export class TileRenderer {
   private diamondFactory: DiamondTextureFactory;
   private tileImages: Phaser.GameObjects.Image[] = [];
   private debugLabels: Phaser.GameObjects.Text[] = [];
+  private fillGraphics: Phaser.GameObjects.Graphics[] = [];
   private showDebug = false;
 
   constructor(
@@ -59,7 +58,6 @@ export class TileRenderer {
     this.diamondFactory = diamondFactory;
   }
 
-  /** Active/désactive l'affichage du numéro de variante sur chaque tuile */
   setDebug(active: boolean): void {
     this.showDebug = active;
   }
@@ -68,45 +66,68 @@ export class TileRenderer {
     return this.showDebug;
   }
 
-  /**
-   * Rend toutes les tuiles.
-   */
   renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
     this.clearAll();
-
     for (const { x, y, data } of tiles) {
       this.renderTile(x, y, data);
     }
   }
 
   private renderTile(x: number, y: number, data: TileData): void {
-    // 1. Hauteurs des 4 sommets depuis la heightmap
     const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
     const avgH = Math.round((hTL + hTR + hBR + hBL) / 4);
 
-    // 2. Sélection du sprite géométrique exact (déterministe par position)
+    // Palette
     const paletteName = TYPE_TO_PALETTE[data.type] ?? 'GRASS';
     const textureKey = this.diamondFactory.getTextureKey(
       hTL, hTR, hBR, hBL, paletteName, x, y,
     );
 
-    // 3. Position écran
+    // === Positions écran ===
     const origin = mapToScreen(0, 0);
-    const { screenX, screenY } = mapToScreen(x, y, 0);
-    const sx = screenX - origin.screenX;
-    const sy = screenY - origin.screenY - avgH * TILE_D;
+    const rel = (vx: number, vy: number, h: number) => {
+      const p = mapToScreen(vx, vy, h);
+      return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
+    };
 
-    // 4. Image de la tuile
-    const img = this.scene.add.image(sx, sy, textureKey);
+    // 4 sommets de la tuile à leurs hauteurs réelles
+    const tl = rel(x,     y,     hTL);
+    const tr = rel(x + 1, y,     hTR);
+    const br = rel(x + 1, y + 1, hBR);
+    const bl = rel(x,     y + 1, hBL);
+
+    // Centre géométrique de la tuile (moyenne des 4 coins)
+    const cx = (tl.x + tr.x + br.x + bl.x) / 4;
+    const cy = (tl.y + tr.y + br.y + bl.y) / 4;
+
+    // Profondeur painter's
+    const depth = (x + y) * 16 + avgH * 10;
+
+    // === Polygone de fond (comble les vides sur les pentes) ===
+    const gfx = this.scene.add.graphics();
+    gfx.fillStyle(0x3a7d3a, 1); // vert herbe moyen
+    gfx.beginPath();
+    gfx.moveTo(tl.x, tl.y);
+    gfx.lineTo(tr.x, tr.y);
+    gfx.lineTo(br.x, br.y);
+    gfx.lineTo(bl.x, bl.y);
+    gfx.closePath();
+    gfx.fillPath();
+    gfx.setDepth(depth - 1);
+    gfx.setName(`fill_${x}_${y}`);
+    this.fillGraphics.push(gfx);
+
+    // === Image de la tuile (flat diamond texture) ===
+    const img = this.scene.add.image(cx, cy, textureKey);
     img.setOrigin(0.5, 0.5);
-    img.setDepth(this.computeDepth(x, y, avgH));
+    img.setDepth(depth);
     img.setName(`tile_${x}_${y}`);
     this.tileImages.push(img);
 
-    // 5. Debug : numéro de variante au centre
+    // === Debug : code variante ===
     if (this.showDebug) {
       const variant = this.extractVariant(textureKey);
-      const txt = this.scene.add.text(sx, sy, variant, {
+      const txt = this.scene.add.text(cx, cy, variant, {
         fontFamily: 'monospace',
         fontSize: '7px',
         color: '#ffffff',
@@ -114,23 +135,15 @@ export class TileRenderer {
         strokeThickness: 2,
       });
       txt.setOrigin(0.5, 0.5);
-      txt.setDepth(this.computeDepth(x, y, avgH) + 1);
+      txt.setDepth(depth + 1);
       txt.setName(`debug_${x}_${y}`);
       this.debugLabels.push(txt);
     }
   }
 
-  /**
-   * Extrait le numéro de variante (ex: B0003) depuis une clé de texture.
-   */
   private extractVariant(textureKey: string): string {
-    // textureKey = "diamond_RoughB0003" → "B0003"
     const match = textureKey.match(/[A-E]\d{4}/);
     return match ? match[0] : '?';
-  }
-
-  private computeDepth(x: number, y: number, avgH: number): number {
-    return (x + y) * 16 + avgH * 10;
   }
 
   clearAll(): void {
@@ -139,5 +152,8 @@ export class TileRenderer {
 
     for (const txt of this.debugLabels) txt.destroy();
     this.debugLabels = [];
+
+    for (const gfx of this.fillGraphics) gfx.destroy();
+    this.fillGraphics = [];
   }
 }
