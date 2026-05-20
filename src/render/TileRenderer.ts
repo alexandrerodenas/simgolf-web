@@ -1,16 +1,13 @@
 /**
- * SimGolf Web — Tile Renderer (sprites isométriques purs)
+ * SimGolf Web — Tile Renderer (pattern fill, géométrie continue)
  *
- * Chaque tuile est un Sprite 2D (Phaser Image) clipé en diamant,
- * positionné à sa coordonnée isométrique avec l'élévation du
- * sommet le plus bas comme référence.
+ * Chaque tuile est un quadrilatère aux 4 sommets projetés de leurs
+ * hauteurs réelles. Le remplissage utilise ctx.createPattern(texture, 'repeat')
+ * — la texture d'herbe n'est JAMAIS étirée ou déformée, elle se répète
+ * naturellement et se découpe sur la géométrie de la pente.
  *
- * Aucune transformation affine — les textures du jeu (RoughA-E)
- * sont des sprites pré-rendus : la pente est DANS l'image.
- *
- * L'ancrage setOrigin(0.5, 0.5) centre le diamant sur la position.
- * Le tri painter's algorithm gère le chevauchement : les tuiles
- * avec (x+y+avgHeight) plus grand sont dessinées après.
+ * Toutes les tuiles sont dessinées dans un CANVAS UNIQUE → zéro gap.
+ * Tri painter's algorithm par depth = x + y.
  */
 
 import Phaser from 'phaser';
@@ -21,9 +18,13 @@ import { getShapeLetter, getCosmeticVariant, buildTextureSourceName } from './Sh
 export class TileRenderer {
   private scene: Phaser.Scene;
   private terrain: TerrainEngine;
-  private tileImages: Phaser.GameObjects.Image[] = [];
-  private diamondCache = new Set<string>();
+  private mapImage: Phaser.GameObjects.Image | null = null;
+  private canvasKey = 'terrain_canvas';
   private showDebug = false;
+
+  /** Position du canvas dans le monde Phaser */
+  canvasOffsetX = 0;
+  canvasOffsetY = 0;
 
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
@@ -34,147 +35,222 @@ export class TileRenderer {
   isDebug(): boolean { return this.showDebug; }
 
   renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
+    if (tiles.length === 0) return;
     this.clearAll();
 
-    // 1. Collecter les infos de rendu pour chaque tuile
-    interface TileSprite {
+    // ================================================================
+    // 1. Collecter les 4 sommets de chaque tuile (hauteurs réelles)
+    // ================================================================
+    interface QuadTile {
       x: number; y: number;
-      hTL: number; hTR: number; hBR: number; hBL: number;
+      verts: Array<{ x: number; y: number }>;
       avgH: number;
-      baseH: number; // hauteur du sommet le plus bas (référence d'ancrage)
       sourceKey: string;
-      scrX: number; scrY: number;
     }
 
     const origin = mapToScreen(0, 0);
-    const sprites: TileSprite[] = [];
+    const quads: QuadTile[] = [];
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
 
     for (const { x, y } of tiles) {
       const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
       const avgH = (hTL + hTR + hBR + hBL) / 4;
-      const baseH = Math.min(hTL, hTR, hBR, hBL);
 
-      const letter = getShapeLetter(hTL, hTR, hBR, hBL);
-      const variant = getCosmeticVariant(x, y, 9);
-      const sourceKey = buildTextureSourceName('Rough', letter, variant);
+      // 4 sommets projetés avec leurs hauteurs individuelles
+      const verts = [
+        this.vert(x,     y,     hTL, origin), // TL
+        this.vert(x + 1, y,     hTR, origin), // TR
+        this.vert(x + 1, y + 1, hBR, origin), // BR
+        this.vert(x,     y + 1, hBL, origin), // BL
+      ];
 
-      // Position à l'écran : grille (x,y) + hauteur de référence (le point le plus bas)
-      const pos = mapToScreen(x, y, 0);
-      const scrX = pos.screenX - origin.screenX;
-      const scrY = pos.screenY - origin.screenY - baseH * TILE_D;
+      // Bounding box
+      for (const v of verts) {
+        if (v.x < minX) minX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y > maxY) maxY = v.y;
+      }
 
-      sprites.push({ x, y, hTL, hTR, hBR, hBL, avgH, baseH, sourceKey, scrX, scrY });
+      const sourceKey = buildTextureSourceName(
+        'Rough',
+        getShapeLetter(hTL, hTR, hBR, hBL),
+        getCosmeticVariant(x, y, 9),
+      );
+
+      quads.push({ x, y, verts, avgH, sourceKey });
     }
 
-    // 2. Tri painter's algorithm : arrière (petit x+y+avgH) → avant (grand)
-    sprites.sort((a, b) => {
-      const da = a.x + a.y + a.avgH;
-      const db = b.x + b.y + b.avgH;
+    // ================================================================
+    // 2. Tri painter's : depth = x + y
+    // ================================================================
+    quads.sort((a, b) => {
+      const da = a.x + a.y;
+      const db = b.x + b.y;
       if (da !== db) return da - db;
       return a.x - b.x;
     });
 
-    // 3. Créer chaque sprite
-    for (const s of sprites) {
-      const texKey = this.getOrCreateDiamond(s.sourceKey);
-      if (!texKey) continue;
-
-      const img = this.scene.add.image(s.scrX, s.scrY, texKey);
-      img.setOrigin(0.5, 0.5);
-      img.setDepth((s.x + s.y) * 16 + Math.round(s.avgH) * 10);
-      img.setName(`tile_${s.x}_${s.y}`);
-      this.tileImages.push(img);
-
-      // Debug
-      if (this.showDebug) {
-        const lbl = this.scene.add.text(s.scrX, s.scrY + 2, s.sourceKey, {
-          fontFamily: 'monospace', fontSize: '8px', color: '#ffcc00',
-          backgroundColor: 'rgba(0,0,0,0.6)', padding: { x: 2, y: 1 },
-        });
-        lbl.setOrigin(0.5, 0.5);
-        lbl.setDepth((s.x + s.y) * 16 + Math.round(s.avgH) * 10 + 5);
-        this.tileImages.push(lbl as unknown as Phaser.GameObjects.Image);
-      }
-    }
-  }
-
-  // ================================================================
-  // Texture diamant clipée
-  // ================================================================
-
-  /**
-   * Crée une texture diamant isométrique (64×32) depuis la texture
-   * source carrée du jeu (64×64). Le résultat est un canvas où
-   * seuls les pixels dans le diamant central sont conservés.
-   * Tout sprite, qu'il soit plat (A) ou pentu (B-E), est clipé
-   * exactement de la même manière → le point d'ancrage est identique.
-   */
-  private getOrCreateDiamond(sourceKey: string): string | null {
-    const diamondKey = `diamond_${sourceKey}`;
-
-    if (this.diamondCache.has(sourceKey) || this.scene.textures.exists(diamondKey)) {
-      this.diamondCache.add(sourceKey);
-      return diamondKey;
-    }
-
-    if (!this.scene.textures.exists(sourceKey)) return null;
-
-    const src = this.scene.textures.get(sourceKey).getSourceImage() as CanvasImageSource;
-    if (!src) return null;
-
-    // Canvas du diamant : 68×36 (64×32 + 2px marge)
+    // ================================================================
+    // 3. Création du canvas
+    // ================================================================
     const margin = 2;
-    const cw = TILE_W + margin * 2;  // 68
-    const ch = TILE_H + margin * 2;  // 36
-    const canvas = this.scene.textures.createCanvas(diamondKey, cw, ch);
-    if (!canvas) return null;
+    const cw = Math.ceil(maxX - minX) + margin * 2;
+    const ch = Math.ceil(maxY - minY) + margin * 2;
+
+    if (cw <= 0 || ch <= 0) return;
+
+    const offsetX = minX - margin;
+    const offsetY = minY - margin;
+    this.canvasOffsetX = offsetX;
+    this.canvasOffsetY = offsetY;
+
+    const canvas = this.scene.textures.createCanvas(this.canvasKey, cw, ch);
+    if (!canvas) return;
 
     const ctx = canvas.context;
     ctx.clearRect(0, 0, cw, ch);
+    ctx.translate(-offsetX, -offsetY);
 
-    const cx = cw / 2;   // 34 — centre du diamant
-    const cy = ch / 2;   // 18
-    const hw = TILE_W / 2;  // 32 — demi-largeur
-    const hh = TILE_H / 2;  // 16 — demi-hauteur
+    // ================================================================
+    // 4. Pattern fill pour chaque tuile
+    // ================================================================
+    // On crée UN pattern pour la texture de base et on le réutilise
+    // pour toutes les tuiles. Le pattern se répète dans le repère
+    // CANVAS → les tuiles adjacentes s'alignent parfaitement.
+    const pattern = this.createGrassPattern(ctx);
+    if (!pattern) return;
 
-    // Clip en diamant
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - hh); // haut
-    ctx.lineTo(cx + hw, cy); // droite
-    ctx.lineTo(cx, cy + hh); // bas
-    ctx.lineTo(cx - hw, cy); // gauche
-    ctx.closePath();
-    ctx.clip();
+    for (const q of quads) {
+      const [pTL, pTR, pBR, pBL] = q.verts;
 
-    // Texture source centrée — le centre (32,32) de l'image 64×64
-    // coïncide avec le centre (34,18) du diamant clipé
-    ctx.drawImage(src, cx - 32, cy - 32, 64, 64);
+      // Fond opaque (anti-gap de transparence)
+      ctx.fillStyle = '#4a8f4a';
+      ctx.beginPath();
+      ctx.moveTo(pTL.x, pTL.y);
+      ctx.lineTo(pTR.x, pTR.y);
+      ctx.lineTo(pBR.x, pBR.y);
+      ctx.lineTo(pBL.x, pBL.y);
+      ctx.closePath();
+      ctx.fill();
 
-    ctx.restore();
+      // Quadrilatère rempli avec le pattern (texture non déformée)
+      ctx.fillStyle = pattern;
+      ctx.beginPath();
+      ctx.moveTo(pTL.x, pTL.y);
+      ctx.lineTo(pTR.x, pTR.y);
+      ctx.lineTo(pBR.x, pBR.y);
+      ctx.lineTo(pBL.x, pBL.y);
+      ctx.closePath();
+      ctx.fill();
 
-    // Bordure subtile
-    ctx.strokeStyle = 'rgba(0,0,0,0.08)';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - hh);
-    ctx.lineTo(cx + hw, cy);
-    ctx.lineTo(cx, cy + hh);
-    ctx.lineTo(cx - hw, cy);
-    ctx.closePath();
-    ctx.stroke();
+      // Debug overlay
+      if (this.showDebug) {
+        const cx = (pTL.x + pTR.x + pBR.x + pBL.x) / 4;
+        const cy = (pTL.y + pTR.y + pBR.y + pBL.y) / 4;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(cx - 14, cy - 5, 28, 10);
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(q.sourceKey, cx, cy + 3);
+      }
+    }
 
     canvas.refresh();
-    this.diamondCache.add(sourceKey);
-    return diamondKey;
+
+    // ================================================================
+    // 5. Image Phaser unique
+    // ================================================================
+    this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
+    this.mapImage.setOrigin(0, 0);
+    this.mapImage.setDepth(0);
+  }
+
+  // ================================================================
+  // Pattern Fill
+  // ================================================================
+
+  /**
+   * Crée un CanvasPattern à partir de la texture de base (RoughA0001).
+   * Toutes les tuiles partagent le même pattern → jointure invisible.
+   *
+   * Fallback : si la texture n'est pas disponible en tant qu'image
+   * source (WebGL), on tente une image HTML classique.
+   */
+  private createGrassPattern(
+    ctx: CanvasRenderingContext2D,
+  ): CanvasPattern | null {
+    // On essaie d'abord via la texture Phaser
+    const srcKey = 'RoughA0001';
+    const tex = this.scene.textures.get(srcKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        if (p) return p;
+      } catch {
+        // Ignore — on tente le fallback
+      }
+    }
+
+    // Fallback : créer une texture d'herbe procédurale 64×64
+    // et l'utiliser comme pattern
+    console.warn('[TileRenderer] createPattern fallback — génération procédurale');
+    const patternCanvas = document.createElement('canvas');
+    patternCanvas.width = 64;
+    patternCanvas.height = 64;
+    const pctx = patternCanvas.getContext('2d')!;
+    this.drawFallbackGrass(pctx, 64, 64);
+    return ctx.createPattern(patternCanvas, 'repeat') || null;
+  }
+
+  private drawFallbackGrass(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    ctx.fillStyle = '#4a8f4a';
+    ctx.fillRect(0, 0, w, h);
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, 'rgba(255,255,255,0.12)');
+    grad.addColorStop(0.5, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.12)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(0,0,0,0.04)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 30; i++) {
+      const gx = (i * 17 + 3) % w;
+      const gy = (i * 13 + 7) % h;
+      ctx.beginPath();
+      ctx.moveTo(gx, gy);
+      ctx.lineTo(gx + 2, gy - 5);
+      ctx.stroke();
+    }
   }
 
   // ================================================================
   // Helpers
   // ================================================================
 
+  /**
+   * Projette un sommet (vx, vy, h) en coordonnées écran,
+   * relatif à mapToScreen(0, 0).
+   */
+  private vert(
+    vx: number, vy: number, h: number,
+    origin: { screenX: number; screenY: number },
+  ): { x: number; y: number } {
+    const p = mapToScreen(vx, vy, h);
+    return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
+  }
+
   clearAll(): void {
-    for (const img of this.tileImages) img.destroy();
-    this.tileImages = [];
+    if (this.mapImage) {
+      this.mapImage.destroy();
+      this.mapImage = null;
+    }
+    if (this.scene.textures.exists(this.canvasKey)) {
+      this.scene.textures.remove(this.canvasKey);
+    }
   }
 }

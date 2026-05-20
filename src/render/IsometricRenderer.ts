@@ -9,7 +9,7 @@
 
 import Phaser from 'phaser';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen, TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
+import { mapToScreen } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -86,15 +86,15 @@ export class IsometricRenderer {
   // ================================================================
 
   /**
-   * Ajuste le scroll pour que la carte remplisse l'écran.
-   * Coin haut-gauche de la carte en haut à gauche de l'écran.
+   * Ajuste le scroll pour que le coin haut-gauche du canvas
+   * soit en haut à gauche de l'écran.
    */
   private autoFit(): void {
-    // La carte 16×16 avec élévation max 10 et demi-diamant 32×16
-    const mapLeft = -MAP_SIZE * (TILE_W / 2) - TILE_W / 4;
-    const mapTop = -10 * TILE_D - TILE_H / 2;
     this.camera.setZoom(this.config.zoom);
-    this.camera.setScroll(mapLeft, mapTop);
+    this.camera.setScroll(
+      this.tileRenderer.canvasOffsetX,
+      this.tileRenderer.canvasOffsetY,
+    );
   }
 
   // ================================================================
