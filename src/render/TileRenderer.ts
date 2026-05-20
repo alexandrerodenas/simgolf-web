@@ -252,9 +252,10 @@ export class TileRenderer {
     ctx.closePath();
     ctx.clip();
 
-    // Transformée affine : mappe le rectangle UV (0..1) sur le triangle
+    // Transformée affine : mappe le repère UV (0..1) au triangle écran
     ctx.setTransform(a, d, b, e, x0, y0);
-    ctx.drawImage(srcImg, 0, 0, 64, 64);
+    // Destination 1×1 dans l'espace transformé → UV (0,0)-(1,1) = texture entière
+    ctx.drawImage(srcImg, 0, 0, 1, 1);
     ctx.restore();
   }
 
