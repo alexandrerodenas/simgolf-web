@@ -1,9 +1,10 @@
 /**
  * GameScene — Scène principale du jeu.
  *
- * Affiche le terrain 16×16 en maillage continu texturé.
- * Chaque tuile est un quadrilatère incliné dont les 4 sommets
- * sont à leur hauteur réelle (heightmap) → pentes lisses et continues.
+ * Affiche le terrain 16×16 en sprites isométriques 2D.
+ * Chaque tuile est un Sprite diamant clipé depuis les textures
+ * du jeu, positionné au point le plus bas de ses 4 sommets.
+ * Les pentes sont peintes DANS les sprites (pas de déformation).
  *
  * Navigation : drag scroll + zoom molette.
  * Touche D / bouton DBG : toggle affichage des codes variante.

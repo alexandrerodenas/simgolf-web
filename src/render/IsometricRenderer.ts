@@ -1,18 +1,15 @@
 /**
  * SimGolf Web — Isometric Renderer
  *
- * Chef d'orchestre du rendu isométrique avec textures du jeu original.
- *
- * Chaque tuile est une Image Phaser positionnée à la bonne hauteur
- * (heightmap). La caméra gère scroll/drag/zoom nativement.
- *
- * Culling : seules les tuiles visibles sont rendues.
- * Tri : painter's algorithm (arrière → avant).
+ * Chef d'orchestre du rendu 2D isométrique avec sprites du jeu original.
+ * Chaque tuile est un Sprite clipé en diamant positionné à sa hauteur
+ * de référence (le point le plus bas des 4 sommets).
+ * Tri painter's algorithm : arrière → avant.
  */
 
 import Phaser from 'phaser';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen } from './CoordinateSystem';
+import { mapToScreen, TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -89,12 +86,15 @@ export class IsometricRenderer {
   // ================================================================
 
   /**
-   * Ajuste le scroll pour que le coin haut-gauche du canvas
-   * soit en haut à gauche de l'écran.
+   * Ajuste le scroll pour que la carte remplisse l'écran.
+   * Coin haut-gauche de la carte en haut à gauche de l'écran.
    */
   private autoFit(): void {
+    // La carte 16×16 avec élévation max 10 et demi-diamant 32×16
+    const mapLeft = -MAP_SIZE * (TILE_W / 2) - TILE_W / 4;
+    const mapTop = -10 * TILE_D - TILE_H / 2;
     this.camera.setZoom(this.config.zoom);
-    this.camera.setScroll(this.tileRenderer.canvasOffsetX, this.tileRenderer.canvasOffsetY);
+    this.camera.setScroll(mapLeft, mapTop);
   }
 
   // ================================================================
