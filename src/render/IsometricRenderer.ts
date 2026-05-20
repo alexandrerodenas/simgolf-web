@@ -12,7 +12,7 @@
 
 import Phaser from 'phaser';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen, TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
+import { mapToScreen } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -89,14 +89,12 @@ export class IsometricRenderer {
   // ================================================================
 
   /**
-   * Ajuste le scroll pour que la carte remplisse l'écran.
-   * Coin haut-gauche du premier diamant en haut à gauche de l'écran.
+   * Ajuste le scroll pour que le coin haut-gauche du canvas
+   * soit en haut à gauche de l'écran.
    */
   private autoFit(): void {
-    const mapLeft = -MAP_SIZE * (TILE_W / 2) - TILE_W / 4;  // ≈ -528
-    const mapTop = -10 * TILE_D - TILE_H / 2;                // ≈ -176
     this.camera.setZoom(this.config.zoom);
-    this.camera.setScroll(mapLeft, mapTop);
+    this.camera.setScroll(this.tileRenderer.canvasOffsetX, this.tileRenderer.canvasOffsetY);
   }
 
   // ================================================================
@@ -173,17 +171,11 @@ export class IsometricRenderer {
   fullRender(): void {
     // Pas de culling : toutes les tuiles sont toujours rendues
     const allTiles: Array<{ x: number; y: number; data: TileData }> = [];
-    const origin = mapToScreen(0, 0);
 
     for (let y = 0; y < this.terrain.height; y++) {
       for (let x = 0; x < this.terrain.width; x++) {
         const data = this.terrain.tileAt(x, y);
         if (!data) continue;
-
-        const { screenX, screenY } = mapToScreen(x, y, 0);
-        const tsx = screenX - origin.screenX;
-        const tsy = screenY - origin.screenY;
-
         allTiles.push({ x, y, data });
       }
     }

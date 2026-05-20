@@ -1,15 +1,16 @@
 /**
- * SimGolf Web — Tile Renderer (diamants du jeu + murs relief)
+ * SimGolf Web — Tile Renderer (maillage continu)
  *
- * Chaque tuile est un diamant isométrique (64×32) affiché à sa hauteur
- * moyenne. Les textures du jeu (RoughA0001-E0005.png) sont clipées en
- * diamant et choisies selon la forme A-E + variante cosmétique.
+ * Rendu de terrain continu : chaque tuile est un quadrilatère texturé
+ * dont les 4 sommets sont projetés à LEUR hauteur réelle (heightmap).
  *
- * L'ordre painter's algorithm garantit que les tuiles plus hautes sont
- * dessinées PAR-DESSUS les plus basses.
+ * Les 4 hauteurs indépendantes (hTL, hTR, hBR, hBL) donnent 4 points 3D
+ * projetés en 2D via la formume isométrique. La texture du jeu est
+ * mappée par 2 triangles affines → surface inclinée continue.
  *
- * Murs de soutènement : des faces couleur terre sont ajoutées sur les
- * côtés où la tuile domine son voisin → le relief devient visible.
+ * Toutes les tuiles sont dessinées dans un CANVAS UNIQUE → pas de gaps.
+ * Tri painter's algorithm pour le chevauchement correct.
+ * Pas de murs marrons pour les pentes douces (diff ≤ 1).
  */
 
 import Phaser from 'phaser';
@@ -20,10 +21,14 @@ import { getShapeLetter, getCosmeticVariant, buildTextureSourceName } from './Sh
 export class TileRenderer {
   private scene: Phaser.Scene;
   private terrain: TerrainEngine;
-  private tileImages: Phaser.GameObjects.Image[] = [];
-  private wallsGfx: Phaser.GameObjects.Graphics | null = null;
+  private mapImage: Phaser.GameObjects.Image | null = null;
+  private canvasKey = 'terrain_canvas';
   private showDebug = false;
-  private diamondCache = new Map<string, string>();
+  private srcCache = new Map<string, CanvasImageSource | null>();
+
+  /** Position du canvas dans le monde Phaser (coin haut-gauche) */
+  canvasOffsetX = 0;
+  canvasOffsetY = 0;
 
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
@@ -34,232 +39,226 @@ export class TileRenderer {
   isDebug(): boolean { return this.showDebug; }
 
   renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
+    if (tiles.length === 0) return;
     this.clearAll();
 
-    // 1. Trier par profondeur painter's (y + x + hauteur)
-    tiles.sort((a, b) => {
-      const da = a.x + a.y + this.avgHeight(a.x, a.y);
-      const db = b.x + b.y + this.avgHeight(b.x, b.y);
-      if (da !== db) return da - db;
-      return a.x - b.x;
+    // ================================================================
+    // 1. Collecter les données de chaque tuile
+    // ================================================================
+    interface TileRenderData {
+      x: number; y: number;
+      hTL: number; hTR: number; hBR: number; hBL: number;
+      avgH: number;
+      /** 4 sommets du quad [TL, TR, BR, BL] */
+      verts: Array<{ x: number; y: number }>;
+    }
+
+    const data: TileRenderData[] = [];
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
+
+    for (const { x, y } of tiles) {
+      const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
+      const avgH = (hTL + hTR + hBR + hBL) / 4;
+
+      // 4 sommets projetés avec LEUR hauteur individuelle
+      const verts = [
+        this.vert(x,     y,     hTL), // TL
+        this.vert(x + 1, y,     hTR), // TR
+        this.vert(x + 1, y + 1, hBR), // BR
+        this.vert(x,     y + 1, hBL), // BL
+      ];
+
+      // Mise à jour bounding box (avec léger padding pour l'anti-aliasing)
+      for (const v of verts) {
+        if (v.x < minX) minX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y > maxY) maxY = v.y;
+      }
+
+      data.push({ x, y, hTL, hTR, hBR, hBL, avgH, verts });
+    }
+
+    // ================================================================
+    // 2. Tri painter's algorithm
+    // ================================================================
+    // L'ordre de rendu doit aller de l'arrière (haut-gauche, basse alt.)
+    // vers l'avant (bas-droite, haute alt.)
+    data.sort((a, b) => {
+      const da = a.x + a.y + a.avgH;
+      const db = b.x + b.y + b.avgH;
+      return da - db;
     });
 
-    // 2. Murs de soutènement (tous dessinés avant les diamants)
-    this.wallsGfx = this.scene.add.graphics();
-    this.wallsGfx.setDepth(0);
+    // ================================================================
+    // 3. Création du canvas
+    // ================================================================
+    const margin = 2; // anti-aliasing safety
+    const cw = Math.ceil(maxX - minX) + margin * 2;
+    const ch = Math.ceil(maxY - minY) + margin * 2;
 
-    const origin = mapToScreen(0, 0);
-    for (const { x, y } of tiles) {
-      this.drawSupportWalls(x, y, origin);
-    }
+    if (cw <= 0 || ch <= 0) return;
 
-    // 3. Diamants (par-dessus les murs)
-    for (const { x, y } of tiles) {
-      this.renderTile(x, y, origin);
-    }
-  }
+    const offsetX = minX - margin;
+    const offsetY = minY - margin;
+    this.canvasOffsetX = offsetX;
+    this.canvasOffsetY = offsetY;
 
-  // ================================================================
-  // Mur de soutènement
-  // ================================================================
-
-  /**
-   * Dessine un mur de terre sur les côtés où la tuile est plus haute
-   * que son voisin. Le mur est un quadrilatère vertical entre les
-   * deux niveaux d'élévation.
-   */
-  private drawSupportWalls(x: number, y: number, origin: { screenX: number; screenY: number }): void {
-    const g = this.wallsGfx!;
-    const myAvg = this.avgHeight(x, y);
-
-    // 4 directions
-    const neighbors = [
-      { dx: 0, dy: -1 }, // N
-      { dx: 1, dy: 0 },  // E
-      { dx: 0, dy: 1 },  // S
-      { dx: -1, dy: 0 }, // W
-    ];
-
-    // Les 4 sommets du diamond (positions relatives à mapToScreen(0,0))
-    const diamondVerts = this.getDiamondVerts(x, y, myAvg, origin);
-
-    // Pour chaque côté, l'arête du diamond (2 sommets consécutifs)
-    const edgeIndices = [
-      [0, 1], // N: top→right
-      [1, 2], // E: right→bottom
-      [2, 3], // S: bottom→left
-      [3, 0], // W: left→top
-    ];
-
-    for (let d = 0; d < 4; d++) {
-      const n = neighbors[d];
-      const nTile = this.terrain.tileAt(x + n.dx, y + n.dy);
-      if (!nTile) continue;
-
-      const nAvg = this.avgHeight(x + n.dx, y + n.dy);
-      if (myAvg <= nAvg) continue; // pas de mur si pas plus haut
-
-      // Les 2 sommets du diamond à cette arête
-      const e1 = diamondVerts[edgeIndices[d][0]];
-      const e2 = diamondVerts[edgeIndices[d][1]];
-
-      // Les mêmes points projetés à la hauteur du voisin
-      const nDiamond = this.getDiamondVerts(x, y, nAvg, origin);
-      const n1 = nDiamond[edgeIndices[d][0]];
-      const n2 = nDiamond[edgeIndices[d][1]];
-
-      // Quadrilatère du mur : dessus (haut) → dessous (bas voisin)
-      g.fillStyle(0x8B7355, 1); // terre
-      g.beginPath();
-      g.moveTo(e1.x, e1.y);
-      g.lineTo(e2.x, e2.y);
-      g.lineTo(n2.x, n2.y);
-      g.lineTo(n1.x, n1.y);
-      g.closePath();
-      g.fillPath();
-
-      // Bordure foncée sur l'arête supérieure
-      g.lineStyle(1, 0x6B5335, 0.8);
-      g.beginPath();
-      g.moveTo(e1.x, e1.y);
-      g.lineTo(e2.x, e2.y);
-      g.strokePath();
-    }
-  }
-
-  /**
-   * Retourne les 4 sommets du diamond [haut, droite, bas, gauche]
-   * pour une tuile à une hauteur donnée.
-   */
-  private getDiamondVerts(
-    x: number, y: number, h: number, origin: { screenX: number; screenY: number },
-  ): Array<{ x: number; y: number }> {
-    const center = mapToScreen(x, y, 0);
-    const cx = center.screenX - origin.screenX;
-    const cy = center.screenY - origin.screenY - h * TILE_D;
-    const hw = TILE_W / 2; // 32
-    const hh = TILE_H / 2; // 16
-    return [
-      { x: cx, y: cy - hh },      // top
-      { x: cx + hw, y: cy },      // right
-      { x: cx, y: cy + hh },      // bottom
-      { x: cx - hw, y: cy },      // left
-    ];
-  }
-
-  // ================================================================
-  // Rendu d'une tuile
-  // ================================================================
-
-  private renderTile(x: number, y: number, origin: { screenX: number; screenY: number }): void {
-    const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
-    const avgH = (hTL + hTR + hBR + hBL) / 4;
-
-    // Texture du jeu selon la forme A-E + variante
-    const letter = getShapeLetter(hTL, hTR, hBR, hBL);
-    const variant = getCosmeticVariant(x, y, 9);
-    const sourceKey = buildTextureSourceName('Rough', letter, variant);
-    const texKey = this.getOrCreateDiamond(sourceKey);
-    if (!texKey) return;
-
-    // Centre du diamant
-    const center = mapToScreen(x, y, 0);
-    const cx = center.screenX - origin.screenX;
-    const cy = center.screenY - origin.screenY - avgH * TILE_D;
-
-    // Image Phaser
-    const img = this.scene.add.image(cx, cy, texKey);
-    img.setOrigin(0.5, 0.5);
-    const depth = (x + y) * 16 + Math.round(avgH) * 10;
-    img.setDepth(depth + 5); // devant les murs
-    img.setName(`tile_${x}_${y}`);
-    this.tileImages.push(img);
-
-    // Debug overlay
-    if (this.showDebug) {
-      const lbl = this.scene.add.text(cx, cy + 2, sourceKey, {
-        fontFamily: 'monospace', fontSize: '8px', color: '#ffcc00',
-        backgroundColor: 'rgba(0,0,0,0.6)', padding: { x: 2, y: 1 },
-      });
-      lbl.setOrigin(0.5, 0.5);
-      lbl.setDepth(depth + 10);
-      this.tileImages.push(lbl as unknown as Phaser.GameObjects.Image);
-    }
-  }
-
-  // ================================================================
-  // Texture diamant
-  // ================================================================
-
-  private getOrCreateDiamond(sourceKey: string): string | null {
-    if (this.diamondCache.has(sourceKey))
-      return this.diamondCache.get(sourceKey)!;
-
-    if (!this.scene.textures.exists(sourceKey)) return null;
-
-    const diamondKey = `diamond_${sourceKey}`;
-    if (this.scene.textures.exists(diamondKey)) {
-      this.diamondCache.set(sourceKey, diamondKey);
-      return diamondKey;
-    }
-
-    const src = this.scene.textures.get(sourceKey).getSourceImage() as CanvasImageSource;
-    if (!src) return null;
-
-    const margin = 2;
-    const cw = TILE_W + margin * 2; // 68
-    const ch = TILE_H + margin * 2; // 36
-    const canvas = this.scene.textures.createCanvas(diamondKey, cw, ch);
-    if (!canvas) return null;
+    const canvas = this.scene.textures.createCanvas(this.canvasKey, cw, ch);
+    if (!canvas) return;
 
     const ctx = canvas.context;
     ctx.clearRect(0, 0, cw, ch);
-    const cx = cw / 2, cy = ch / 2;
-    const hw = TILE_W / 2, hh = TILE_H / 2;
 
-    // Clip diamant
+    // Translate pour que les coordonnées monde → pixels canvas
+    ctx.save();
+    ctx.translate(-offsetX, -offsetY);
+
+    // ================================================================
+    // 4. Dessiner chaque tuile
+    // ================================================================
+    for (const d of data) {
+      const sourceKey = buildTextureSourceName(
+        'Rough',
+        getShapeLetter(d.hTL, d.hTR, d.hBR, d.hBL),
+        getCosmeticVariant(d.x, d.y, 9),
+      );
+
+      const srcImg = this.getSourceImage(sourceKey);
+      if (!srcImg) continue;
+
+      this.drawSlopedQuad(ctx, srcImg, d.verts);
+
+      // Debug overlay
+      if (this.showDebug) {
+        const cx = (d.verts[0].x + d.verts[1].x + d.verts[2].x + d.verts[3].x) / 4;
+        const cy = (d.verts[0].y + d.verts[1].y + d.verts[2].y + d.verts[3].y) / 4;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(cx - 14, cy - 5, 28, 10);
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(sourceKey, cx, cy + 3);
+      }
+    }
+
+    ctx.restore();
+    canvas.refresh();
+
+    // ================================================================
+    // 5. Image Phaser
+    // ================================================================
+    this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
+    this.mapImage.setOrigin(0, 0);
+    this.mapImage.setDepth(0);
+  }
+
+  // ================================================================
+  // Dessin d'un quadrilatère texturé pentu
+  // ================================================================
+
+  /**
+   * Dessine un quadrilatère texturé sur le contexte canvas.
+   * Utilise 2 triangles affines pour mapper la texture carrée 64×64
+   * sur les 4 sommets projetés à leurs hauteurs réelles.
+   *
+   * Les 4 sommets sont [TL, TR, BR, BL].
+   * Les UV vont de (0,0) en TL à (1,1) en BR.
+   */
+  private drawSlopedQuad(
+    ctx: CanvasRenderingContext2D,
+    srcImg: CanvasImageSource,
+    verts: Array<{ x: number; y: number }>,
+  ): void {
+    const [pTL, pTR, pBR, pBL] = verts;
+
+    // Remplissage de fond opaque (couleur herbe) — anti-gap/transparence
+    ctx.fillStyle = '#4a8f4a';
+    ctx.beginPath();
+    ctx.moveTo(pTL.x, pTL.y);
+    ctx.lineTo(pTR.x, pTR.y);
+    ctx.lineTo(pBR.x, pBR.y);
+    ctx.lineTo(pBL.x, pBL.y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Triangle 1 : TL → TR → BR
+    this.drawTexturedTriangle(ctx, srcImg,
+      pTL.x, pTL.y,
+      pTR.x, pTR.y,
+      pBR.x, pBR.y,
+      0, 0, 1, 0, 1, 1);
+
+    // Triangle 2 : TL → BR → BL
+    this.drawTexturedTriangle(ctx, srcImg,
+      pTL.x, pTL.y,
+      pBR.x, pBR.y,
+      pBL.x, pBL.y,
+      0, 0, 1, 1, 0, 1);
+  }
+
+  /**
+   * Dessine un triangle texturé avec transformation affine.
+   * srcUV: (u0,v0) en point 0, (u1,v1) en point 1, (u2,v2) en point 2
+   */
+  private drawTexturedTriangle(
+    ctx: CanvasRenderingContext2D,
+    srcImg: CanvasImageSource,
+    x0: number, y0: number,
+    x1: number, y1: number,
+    x2: number, y2: number,
+    u0: number, v0: number,
+    u1: number, v1: number,
+    u2: number, v2: number,
+  ): void {
+    const a = x1 - x0, b = x2 - x0;
+    const d = y1 - y0, e = y2 - y0;
+
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(cx, cy - hh);
-    ctx.lineTo(cx + hw, cy);
-    ctx.lineTo(cx, cy + hh);
-    ctx.lineTo(cx - hw, cy);
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.lineTo(x2, y2);
     ctx.closePath();
     ctx.clip();
-    ctx.drawImage(src, cx - 32, cy - 32, 64, 64);
+
+    // Transformée affine : mappe le rectangle UV (0..1) sur le triangle
+    ctx.setTransform(a, d, b, e, x0, y0);
+    ctx.drawImage(srcImg, 0, 0, 64, 64);
     ctx.restore();
-
-    // Bordure fine
-    ctx.strokeStyle = 'rgba(0,0,0,0.10)';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - hh);
-    ctx.lineTo(cx + hw, cy);
-    ctx.lineTo(cx, cy + hh);
-    ctx.lineTo(cx - hw, cy);
-    ctx.closePath();
-    ctx.stroke();
-
-    canvas.refresh();
-    this.diamondCache.set(sourceKey, diamondKey);
-    return diamondKey;
   }
 
   // ================================================================
   // Helpers
   // ================================================================
 
-  private avgHeight(x: number, y: number): number {
-    const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
-    return (hTL + hTR + hBR + hBL) / 4;
+  /**
+   * Projette un sommet (vx, vy, h) en coordonnées écran,
+   * relatif à mapToScreen(0, 0) pour un référentiel commun.
+   */
+  private vert(vx: number, vy: number, h: number): { x: number; y: number } {
+    const p = mapToScreen(vx, vy, h);
+    const origin = mapToScreen(0, 0);
+    return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
+  }
+
+  private getSourceImage(key: string): CanvasImageSource | null {
+    if (this.srcCache.has(key)) return this.srcCache.get(key)!;
+    const tex = this.scene.textures.get(key);
+    const img = tex?.getSourceImage() as CanvasImageSource ?? null;
+    this.srcCache.set(key, img);
+    return img;
   }
 
   clearAll(): void {
-    for (const obj of this.tileImages) obj.destroy();
-    this.tileImages = [];
-    if (this.wallsGfx) {
-      this.wallsGfx.destroy();
-      this.wallsGfx = null;
+    if (this.mapImage) {
+      this.mapImage.destroy();
+      this.mapImage = null;
     }
+    if (this.scene.textures.exists(this.canvasKey)) {
+      this.scene.textures.remove(this.canvasKey);
+    }
+    this.srcCache.clear();
   }
 }
