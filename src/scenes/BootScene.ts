@@ -1,9 +1,8 @@
 /**
  * BootScene — Chargement minimal des assets.
  *
- * Ne charge que les textures nécessaires au rendu de l'herbe :
- *   - RoughA0001 (texture de base pour le pattern fill)
- *   - Variantes A-E 0001-0005 chargées pour disponibilité future
+ * - RoughA0001..E0005 : textures de base pour le pattern fill herbe
+ * - WoodsA0001..D0009 : textures de tuiles terrain boisées (36 textures)
  */
 
 import Phaser from 'phaser';
@@ -20,21 +19,16 @@ const TEXTURES = (() => {
   return keys;
 })();
 
-/** Textures d'arbres (sprites overlay) */
-const TREES = [
-  'Tree_TreePineSmall',
-  'Tree_TreePineMedium',
-  'Tree_TreePineLarge',
-  'Tree_TreeMapleSmall',
-  'Tree_TreeMapleMedium',
-  'Tree_TreeMapleLarge',
-  'Tree_Scenic_Tree',
-  'Tree_BlackPine',
-  'Tree_WillowTree',
-  'Tree_TreePineFirSm',
-  'Tree_TreePineFirMed',
-  'Tree_TreePineFirLg',
-] as const;
+/** Textures Woods (tuiles terrain boisées, 4 groupes × 9 variantes) */
+const WOODS = (() => {
+  const keys: string[] = [];
+  for (const group of ['A', 'B', 'C', 'D']) {
+    for (let v = 1; v <= 9; v++) {
+      keys.push(`woods${group}${v.toString().padStart(4, '0')}`);
+    }
+  }
+  return keys;
+})();
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -45,7 +39,7 @@ export class BootScene extends Phaser.Scene {
     for (const key of TEXTURES) {
       this.load.image(key, `assets/textures/parkland/${key}.png`);
     }
-    for (const key of TREES) {
+    for (const key of WOODS) {
       this.load.image(key, `assets/textures/parkland/${key}.png`);
     }
   }

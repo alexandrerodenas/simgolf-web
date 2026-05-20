@@ -53,11 +53,12 @@ export class TerrainGenerator {
     }
 
     // ── 6. Arbres : ~10% des tuiles deviennent des TREE ──
+    // Variantes 1..36 = WoodsA0001..WoodsD0009 (4 groupes × 9)
     for (let y = 0; y < terrain.height; y++) {
       for (let x = 0; x < terrain.width; x++) {
         const hash = (x * 73 + y * 37 + 42) & 0x7fffffff;
         if (hash % 10 === 0) {
-          terrain.setTileType(x, y, TileType.TREE, hash % 12);
+          terrain.setTileType(x, y, TileType.TREE, (hash % 36) + 1);
         }
       }
     }

@@ -7,7 +7,7 @@
  * Tri painter's algorithm par profondeur (x + y).
  *
  * - GRASS/ROUGH/etc : textures Rough en pattern fill
- * - TREE : textures Woods (Tree_*.png) en pattern fill
+ * - TREE : textures Woods en pattern fill
  */
 
 import Phaser from 'phaser';
@@ -15,13 +15,20 @@ import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
 
-/** Noms des textures Woods (tuiles terrain de type arbre) */
-const TREE_TEXTURES = [
-  'Tree_TreePineSmall', 'Tree_TreePineMedium', 'Tree_TreePineLarge',
-  'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium', 'Tree_TreeMapleLarge',
-  'Tree_Scenic_Tree', 'Tree_BlackPine', 'Tree_WillowTree',
-  'Tree_TreePineFirSm', 'Tree_TreePineFirMed', 'Tree_TreePineFirLg',
-] as const;
+/**
+ * Noms des textures Woods (tuiles terrain boisées).
+ * 36 textures : 4 groupes (A-D) × 9 variantes (0001-0009).
+ * Les groupes A-D sont des variantes décoratives (clairsemé → dense).
+ */
+const WOODS_TEXTURES = (() => {
+  const names: string[] = [];
+  for (const group of ['A', 'B', 'C', 'D']) {
+    for (let v = 1; v <= 9; v++) {
+      names.push(`woods${group}${v.toString().padStart(4, '0')}`);
+    }
+  }
+  return names; // index 0..35
+})();
 
 interface QuadTile {
   x: number; y: number;
@@ -122,7 +129,7 @@ export class TileRenderer {
       let pattern: CanvasPattern | null = null;
 
       if (q.type === TileType.TREE) {
-        pattern = this.getTreePattern(ctx, q.variation);
+        pattern = this.getWoodsPattern(ctx, q.variation);
       }
 
       // Fallback : herbe
@@ -173,7 +180,6 @@ export class TileRenderer {
     }
 
     // Fallback procédural
-    console.warn('[TileRenderer] createPattern fallback');
     const patternCanvas = document.createElement('canvas');
     patternCanvas.width = 64;
     patternCanvas.height = 64;
@@ -183,21 +189,22 @@ export class TileRenderer {
   }
 
   /**
-   * Récupère ou crée un pattern pour une texture Woods (arbre).
-   * La variation détermine quelle texture Woods utiliser.
+   * Récupère ou crée un pattern pour une texture Woods (bois).
+   * La variation (1..36) détermine quelle texture Woods utiliser.
    */
-  private treePatternCache: Map<string, CanvasPattern | null> = new Map();
+  private woodsPatternCache: Map<string, CanvasPattern | null> = new Map();
 
-  private getTreePattern(
+  private getWoodsPattern(
     ctx: CanvasRenderingContext2D,
     variation: number,
   ): CanvasPattern | null {
-    const idx = variation % TREE_TEXTURES.length;
-    const textureKey = TREE_TEXTURES[idx];
-    const cacheKey = `tree_${textureKey}`;
+    // variation = 0..35 → index dans WOODS_TEXTURES
+    const idx = ((variation - 1) % WOODS_TEXTURES.length + WOODS_TEXTURES.length) % WOODS_TEXTURES.length;
+    const textureKey = WOODS_TEXTURES[idx];
+    const cacheKey = `woods_${textureKey}`;
 
-    if (this.treePatternCache.has(cacheKey)) {
-      return this.treePatternCache.get(cacheKey) ?? null;
+    if (this.woodsPatternCache.has(cacheKey)) {
+      return this.woodsPatternCache.get(cacheKey) ?? null;
     }
 
     const tex = this.scene.textures.get(textureKey);
@@ -206,15 +213,14 @@ export class TileRenderer {
     if (srcImg) {
       try {
         const p = ctx.createPattern(srcImg, 'repeat');
-        this.treePatternCache.set(cacheKey, p ?? null);
+        this.woodsPatternCache.set(cacheKey, p ?? null);
         return p ?? null;
       } catch {
         // fallback
       }
     }
 
-    // Fallback : herbe
-    this.treePatternCache.set(cacheKey, null);
+    this.woodsPatternCache.set(cacheKey, null);
     return null;
   }
 
@@ -256,7 +262,7 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
-    this.treePatternCache.clear();
+    this.woodsPatternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }
