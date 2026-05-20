@@ -1,14 +1,14 @@
 /**
- * TerrainGenerator — Génération de terrain naturel.
+ * TerrainGenerator — Génération de terrain tout herbe.
  *
- * Pipeline complet :
+ * Pipeline :
  *   1. Bruit fractal 2D → heightmap (W+1)×(H+1)
  *   2. Quantification (arrondi entier 0..10)
  *   3. Lissage (|voisin − courant| ≤ 1)
- *   4. Classification (eau, sable, herbe)
- *   5. Végétation (arbres, buissons, fleurs)
+ *   4. Tout en GRASS (herbe) — seule l'élévation varie
  *
  * La heightmap est écrite directement dans TerrainEngine (source de vérité).
+ * Conforme aux docs de simgolf-re (elevation-quantization.md).
  */
 
 import { TerrainEngine } from './TerrainEngine';
@@ -16,6 +16,10 @@ import { TileType } from './types';
 
 export class TerrainGenerator {
 
+  /**
+   * Génère un terrain 100% herbe avec variation d'élévation douce.
+   * Pas d'eau, pas de sable, pas d'arbres — juste des collines.
+   */
   generateNatural(terrain: TerrainEngine, seed?: number): void {
     const rng = seed !== undefined ? this.seededRng(seed) : () => Math.random();
     terrain.initFlat();
@@ -26,7 +30,7 @@ export class TerrainGenerator {
     // 2. Quantifier
     const q = this.quantize(raw);
 
-    // 3. Lisser
+    // 3. Lisser (pentes douces, |diff| ≤ 1)
     const smoothed = this.clampSlope(q);
 
     // 4. Appliquer la heightmap au terrain
@@ -36,12 +40,20 @@ export class TerrainGenerator {
       }
     }
 
-    // 5. Classifier
-    this.classify(terrain, rng);
-
-    // 6. Végétation
-    this.placeTrees(terrain, rng);
-    this.placeUnderbrush(terrain, rng);
+    // 5. Tout en herbe (GRASS)
+    for (let y = 0; y < terrain.height; y++) {
+      for (let x = 0; x < terrain.width; x++) {
+        const tile = terrain.tileAt(x, y);
+        if (!tile) continue;
+        const corners = terrain.getTileCorners(x, y);
+        const avg = (corners[0] + corners[1] + corners[2] + corners[3]) / 4;
+        // Légère variation de type selon l'altitude
+        //   < 2 : herbe rase (grass)
+        //   ≥ 2 et ≤ 6 : herbe normale
+        //   > 6 : herbe plus claire/haute
+        terrain.setTileType(x, y, TileType.GRASS, Math.floor(avg) % 9);
+      }
+    }
   }
 
   // ================================================================
@@ -65,10 +77,11 @@ export class TerrainGenerator {
   private buildHeightGrid(w: number, h: number, rng: () => number): number[][] {
     const p = this.getPermutation(rng);
     const grid: number[][] = [];
-    const baseScale = 12;
-    const octaves = 5;
-    const amplitudes = [1.0, 0.5, 0.25, 0.125, 0.0625];
-    const frequencies = [1.0, 2.0, 4.0, 6.0, 10.0];
+    // Échelle réduite pour 16×16 : pentes plus visibles
+    const baseScale = 6;
+    const octaves = 4;
+    const amplitudes = [1.0, 0.5, 0.25, 0.125];
+    const frequencies = [1.0, 2.0, 4.0, 6.0];
 
     for (let y = 0; y < h; y++) {
       grid[y] = [];
@@ -78,7 +91,9 @@ export class TerrainGenerator {
           v += this.smoothNoise(x * frequencies[o] / baseScale, y * frequencies[o] / baseScale, p) * amplitudes[o];
           ta += amplitudes[o];
         }
-        grid[y][x] = ((v / ta) * 0.5 + 0.5) * 10;
+        // Légère poussée vers le haut pour éviter trop de plat
+        const normalized = ((v / ta) * 0.5 + 0.5) * 6 + 1;
+        grid[y][x] = normalized;
       }
     }
     return grid;
@@ -122,7 +137,9 @@ export class TerrainGenerator {
           for (const n of neighbors) {
             if (Math.abs(cur - n) > 1) {
               const avg = (cur + n) / 2;
-              work[y][x] = cur > n ? Math.round(Math.min(cur - 1, avg + 0.5)) : Math.round(Math.max(cur + 1, avg - 0.5));
+              work[y][x] = cur > n
+                ? Math.round(Math.min(cur - 1, avg + 0.5))
+                : Math.round(Math.max(cur + 1, avg - 0.5));
               changed = true;
               break;
             }
@@ -134,121 +151,8 @@ export class TerrainGenerator {
   }
 
   // ================================================================
-  // Classification
-  // ================================================================
-
-  private classify(terrain: TerrainEngine, rng: () => number): void {
-    const ht = terrain.height;
-    const wd = terrain.width;
-
-    // Eau (altitude moyenne ≤ 1)
-    for (let y = 1; y < ht - 1; y++) {
-      for (let x = 1; x < wd - 1; x++) {
-        const tile = terrain.tileAt(x, y);
-        if (!tile) continue;
-        const corners = terrain.getTileCorners(x, y);
-        if (this.avg(corners) <= 1) {
-          terrain.setTileType(x, y, TileType.WATER, 0);
-          // Mettre les 4 sommets à 0
-          terrain.setVertex(x, y, 0);
-          terrain.setVertex(x + 1, y, 0);
-          terrain.setVertex(x + 1, y + 1, 0);
-          terrain.setVertex(x, y + 1, 0);
-        }
-      }
-    }
-
-    // Nettoyer eau isolée (2 passes)
-    for (let p = 0; p < 2; p++) {
-      for (let y = 1; y < ht - 1; y++) {
-        for (let x = 1; x < wd - 1; x++) {
-          const t = terrain.tileAt(x, y);
-          if (!t || t.type !== TileType.WATER) continue;
-          if (this.countNeighbors(terrain, x, y, TileType.WATER) < 2) {
-            terrain.setTileType(x, y, TileType.GRASS, 0);
-            terrain.setVertex(x, y, 2);
-            terrain.setVertex(x + 1, y, 2);
-            terrain.setVertex(x + 1, y + 1, 2);
-            terrain.setVertex(x, y + 1, 2);
-            t.variation = Math.floor(rng() * 9);
-          }
-        }
-      }
-    }
-
-    // Plages de sable (altitude ≤ 3, voisin eau)
-    for (let y = 1; y < ht - 1; y++) {
-      for (let x = 1; x < wd - 1; x++) {
-        const tile = terrain.tileAt(x, y);
-        if (!tile || tile.type !== TileType.GRASS) continue;
-        const corners = terrain.getTileCorners(x, y);
-        const a = this.avg(corners);
-        if (a <= 3 && this.countNeighbors(terrain, x, y, TileType.WATER) > 0) {
-          terrain.setTileType(x, y, TileType.SAND, Math.floor(rng() * 5));
-        }
-      }
-    }
-  }
-
-  // ================================================================
-  // Végétation
-  // ================================================================
-
-  private placeTrees(terrain: TerrainEngine, rng: () => number): void {
-    const n = 5 + Math.floor(rng() * 6);
-    for (let i = 0; i < n; i++) {
-      const cx = 3 + Math.floor(rng() * (terrain.width - 6));
-      const cy = 3 + Math.floor(rng() * (terrain.height - 6));
-      const r = 2 + Math.floor(rng() * 4);
-      for (let dy = -r; dy <= r; dy++) {
-        for (let dx = -r; dx <= r; dx++) {
-          const t = terrain.tileAt(cx + dx, cy + dy);
-          if (!t || t.type !== TileType.GRASS) continue;
-          const d = Math.sqrt(dx*dx + dy*dy);
-          if (d > r || rng() >= 0.6 * (1 - d/(r+1))) continue;
-          terrain.setTileType(cx + dx, cy + dy, TileType.TREE, Math.floor(rng() * 9));
-        }
-      }
-    }
-    // Épars
-    for (let y = 2; y < terrain.height - 2; y++) {
-      for (let x = 2; x < terrain.width - 2; x++) {
-        const t = terrain.tileAt(x, y);
-        if (t && t.type === TileType.GRASS && rng() < 0.03) {
-          terrain.setTileType(x, y, TileType.TREE, Math.floor(rng() * 9));
-        }
-      }
-    }
-  }
-
-  private placeUnderbrush(terrain: TerrainEngine, rng: () => number): void {
-    for (let y = 1; y < terrain.height - 1; y++) {
-      for (let x = 1; x < terrain.width - 1; x++) {
-        const t = terrain.tileAt(x, y);
-        if (!t || t.type !== TileType.GRASS) continue;
-        const r = rng();
-        if (r < 0.02) terrain.setTileType(x, y, TileType.FLOWER, Math.floor(rng() * 5));
-        else if (r < 0.05) terrain.setTileType(x, y, TileType.BUSH, Math.floor(rng() * 5));
-      }
-    }
-  }
-
-  // ================================================================
   // Helpers
   // ================================================================
-
-  private avg(e: [number, number, number, number]): number {
-    return (e[0] + e[1] + e[2] + e[3]) / 4;
-  }
-
-  private countNeighbors(t: TerrainEngine, x: number, y: number, type: TileType): number {
-    let c = 0;
-    for (const [dx, dy] of [[0,-1],[1,0],[0,1],[-1,0]]) {
-      const n = t.tileAt(x + dx, y + dy);
-      if (n && n.type === type) c++;
-    }
-    return c;
-  }
 
   private seededRng(seed: number): () => number {
     let state = seed;

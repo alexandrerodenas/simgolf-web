@@ -1,7 +1,7 @@
 /**
  * SimGolf Web — Game Constants
  */
-export const MAP_SIZE = 64;
+export const MAP_SIZE = 16;
 
 export const TILE = {
   WIDTH: 64,   // Largeur visuelle du diamond
