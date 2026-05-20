@@ -1,31 +1,35 @@
 /**
- * SimGolf Web — Tile Renderer (texturé, classification RE)
+ * SimGolf Web — Tile Renderer (canvas unique)
  *
- * Pour chaque tuile :
- *   1. Lit les 4 hauteurs (heightmap partagée)
- *   2. Classe la forme A-E (ShapeClassifier)
- *   3. Calcule la variante cosmétique déterministe
- *   4. Construit le nom source (ex: RoughB0003)
- *   5. Génère la texture mappée sur le quad (SlopedTextureGenerator)
- *   6. Affiche en Image Phaser à la bonne position
+ * Au lieu de créer une Image Phaser par tuile (ce qui cause des gaps
+ * aux jointures entre tuiles pentues), rend TOUTES les tuiles dans
+ * un seul canvas → pas de décalage entre canvas individuels.
+ *
+ * La texture source est celle du jeu original (RoughA0001-E0005.png),
+ * choisie selon la forme A-E et la variante cosmétique (0001-0009).
  */
 
 import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
 import { SlopedTextureGenerator } from './SlopedTextureGenerator';
-import {
-  getShapeLetter,
-  getCosmeticVariant,
-  buildTextureSourceName,
-} from './ShapeClassifier';
 import { mapToScreen } from './CoordinateSystem';
+import { MAP_SIZE } from '../config';
 
 export class TileRenderer {
   private scene: Phaser.Scene;
   private terrain: TerrainEngine;
   private textureGen: SlopedTextureGenerator;
-  private tileImages: Phaser.GameObjects.Image[] = [];
+  private mapImage: Phaser.GameObjects.Image | null = null;
+  private canvasKey = 'map_fullcanvas';
+  private dirty = true;
   private showDebug = false;
+
+  /** Décalage monde du canvas (position du pixel (0,0) du canvas dans le monde Phaser) */
+  mapOffsetX = 0;
+  mapOffsetY = 0;
+
+  // Cache des images sources (textures du jeu)
+  private srcCache = new Map<string, CanvasImageSource | null>();
 
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
@@ -36,55 +40,164 @@ export class TileRenderer {
   setDebug(active: boolean): void { this.showDebug = active; }
   isDebug(): boolean { return this.showDebug; }
 
+  /**
+   * Marque le canvas comme à regénérer.
+   */
+  invalidate(): void {
+    this.dirty = true;
+  }
+
+  /**
+   * Rendu complet de toute la carte dans un canvas unique.
+   */
   renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
-    this.clearAll();
-    for (const { x, y, data } of tiles) {
-      this.renderTile(x, y, data);
+    if (tiles.length === 0) return;
+
+    // Supprime l'ancienne image
+    if (this.mapImage) {
+      this.mapImage.destroy();
+      this.mapImage = null;
     }
+
+    // Supprime l'ancien canvas texture
+    if (this.scene.textures.exists(this.canvasKey)) {
+      this.scene.textures.remove(this.canvasKey);
+    }
+
+    // === Étape 1 : Calculer la bounding box globale ===
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
+
+    const allCorners: Array<{
+      corners: Array<{ x: number; y: number }>;
+      hTL: number; hTR: number; hBR: number; hBL: number;
+      x: number; y: number;
+      sourceKey: string;
+    }> = [];
+
+    for (const { x, y } of tiles) {
+      const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
+      const sourceKey = this.textureGen.getSourceKey(hTL, hTR, hBR, hBL, x, y);
+      const corners = this.textureGen.getCorners(x, y, hTL, hTR, hBR, hBL);
+
+      // Bleed 2px
+      const cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4;
+      const cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
+      const bleed = 2;
+      const expanded = corners.map(p => {
+        const dx = p.x - cx, dy = p.y - cy;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 0.001) return p;
+        return { x: p.x + (dx / len) * bleed, y: p.y + (dy / len) * bleed };
+      });
+
+      for (const p of expanded) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      allCorners.push({ x, y, corners, hTL, hTR, hBR, hBL, sourceKey });
+    }
+
+    const margin = 2;
+    const canvasW = Math.ceil(maxX - minX) + margin * 2;
+    const canvasH = Math.ceil(maxY - minY) + margin * 2;
+
+    if (canvasW <= 0 || canvasH <= 0) {
+      console.warn('[TileRenderer] Canvas vide');
+      return;
+    }
+
+    // === Étape 2 : Créer le canvas ===
+    const canvas = this.scene.textures.createCanvas(this.canvasKey, canvasW, canvasH);
+    if (!canvas) return;
+
+    const ctx = canvas.context;
+    ctx.clearRect(0, 0, canvasW, canvasH);
+
+    // Décalage pour que la map soit centrée dans le canvas
+    const offsetX = minX - margin;
+    const offsetY = minY - margin;
+
+    ctx.save();
+    ctx.translate(-offsetX, -offsetY);
+
+    // === Étape 3 : Trier (painter's algorithm) ===
+    // Ordre : arrière (y petit, x petit) → avant (y grand, x grand)
+    // Pour l'isométrique, on trie par (x + y) puis par x
+    allCorners.sort((a, b) => {
+      const depthA = a.x + a.y;
+      const depthB = b.x + b.y;
+      if (depthA !== depthB) return depthA - depthB;
+      return a.x - b.x;
+    });
+
+    // === Étape 4 : Dessiner chaque tuile ===
+    for (const entry of allCorners) {
+      const srcImg = this.getSourceImage(entry.sourceKey);
+      if (!srcImg) continue;
+
+      this.textureGen.renderQuadToContext(
+        ctx, srcImg,
+        entry.corners[0], entry.corners[1],
+        entry.corners[2], entry.corners[3],
+      );
+
+      // Debug overlay : étiquette de variante
+      if (this.showDebug) {
+        const avgH = (entry.hTL + entry.hTR + entry.hBR + entry.hBL) / 4;
+        const cx = (entry.corners[0].x + entry.corners[1].x + entry.corners[2].x + entry.corners[3].x) / 4;
+        const cy = (entry.corners[0].y + entry.corners[1].y + entry.corners[2].y + entry.corners[3].y) / 4;
+
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(cx - 12, cy - 5, 24, 10);
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(entry.sourceKey, cx, cy + 3);
+      }
+    }
+
+    ctx.restore();
+    canvas.refresh();
+
+    // === Étape 5 : Créer l'Image Phaser ===
+    // Positionnée au coin haut-gauche de la map (dans le monde Phaser)
+    this.mapOffsetX = offsetX;
+    this.mapOffsetY = offsetY;
+    this.mapImage = this.scene.add.image(this.mapOffsetX, this.mapOffsetY, this.canvasKey);
+    this.mapImage.setOrigin(0, 0);
+    this.mapImage.setDepth(0);
+
+    this.dirty = false;
   }
 
-  private renderTile(x: number, y: number, _data: TileData): void {
-    // 1. Hauteurs des 4 sommets (heightmap → continuité)
-    const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
+  /**
+   * Récupère une image source depuis le cache.
+   */
+  private getSourceImage(key: string): CanvasImageSource | null {
+    if (this.srcCache.has(key)) return this.srcCache.get(key)!;
 
-    // 2. Classification A-E + variante cosmétique
-    const letter = getShapeLetter(hTL, hTR, hBR, hBL);
-    const variant = getCosmeticVariant(x, y, 9);
-    const sourceKey = buildTextureSourceName('Rough', letter, variant);
-
-    // 3. Positions écran des 4 sommets
-    const origin = mapToScreen(0, 0);
-    const v = (vx: number, vy: number, h: number) => {
-      const p = mapToScreen(vx, vy, h);
-      return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
-    };
-
-    const tl = v(x,     y,     hTL);
-    const tr = v(x + 1, y,     hTR);
-    const br = v(x + 1, y + 1, hBR);
-    const bl = v(x,     y + 1, hBL);
-
-    // 4. Centre géométrique
-    const cx = (tl.x + tr.x + br.x + bl.x) / 4;
-    const cy = (tl.y + tr.y + br.y + bl.y) / 4;
-
-    // 5. Profondeur painter's
-    const avgH = (hTL + hTR + hBR + hBL) / 4;
-    const depth = (x + y) * 16 + Math.round(avgH) * 10;
-
-    // 6. Texture pré-calculée pour cette forme + source
-    const texKey = this.textureGen.getTextureKey(sourceKey, hTL, hTR, hBR, hBL);
-
-    // 7. Image — position arrondie anti-sub-pixel
-    const img = this.scene.add.image(Math.round(cx), Math.round(cy), texKey);
-    img.setOrigin(0.5, 0.5);
-    img.setDepth(depth);
-    img.setName(`tile_${x}_${y}`);
-    this.tileImages.push(img);
+    const tex = this.scene.textures.get(key);
+    const src = tex?.getSourceImage() as CanvasImageSource ?? null;
+    this.srcCache.set(key, src);
+    return src;
   }
 
+  /**
+   * Nettoie tout (images, textures, cache).
+   */
   clearAll(): void {
-    for (const img of this.tileImages) img.destroy();
-    this.tileImages = [];
+    if (this.mapImage) {
+      this.mapImage.destroy();
+      this.mapImage = null;
+    }
+    if (this.scene.textures.exists(this.canvasKey)) {
+      this.scene.textures.remove(this.canvasKey);
+    }
+    this.srcCache.clear();
+    this.dirty = true;
   }
 }

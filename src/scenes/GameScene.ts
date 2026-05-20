@@ -1,9 +1,9 @@
 /**
  * GameScene — Scène principale du jeu.
  *
- * Affiche le terrain 64×64 en rendu isométrique continu.
- * Chaque tuile est un quadrilatère projeté à ses 4 hauteurs réelles
- * → surface parfaitement jointive, sans escalier ni artefact.
+ * Affiche le terrain 16×16 en rendu isométrique.
+ * Toutes les tuiles sont pré-rendues dans un canvas unique
+ * avec textures du jeu original → pas de gaps aux jointures.
  *
  * Navigation : drag scroll + zoom molette.
  * Touche D / bouton DBG : toggle affichage des codes variante.

@@ -12,7 +12,7 @@
 
 import Phaser from 'phaser';
 import { TileRenderer } from './TileRenderer';
-import { mapToScreen, TILE_W, TILE_D } from './CoordinateSystem';
+import { mapToScreen } from './CoordinateSystem';
 import { MAP_SIZE } from '../config';
 import type { TerrainEngine, TileData } from '../core';
 
@@ -89,22 +89,14 @@ export class IsometricRenderer {
   // ================================================================
 
   /**
-   * Ajuste zoom et scroll pour que la carte 64×64 remplisse
-   * l'écran sans padding. La carte tient dans :
-   *   X : [ -(N-1)*TW/2 , +(N-1)*TW/2 ]
-   *   Y : [ -maxElev*TD  , 2*(N-1)*TH/2 ]
+   * Ajuste zoom et scroll pour que la carte remplisse l'écran.
+   * Utilise l'offset du canvas unique (TileRenderer.mapOffsetX/Y).
    */
   private autoFit(): void {
-    const N = MAP_SIZE - 1;
-
-    const mapLeft = -N * (TILE_W / 2);
-    const mapTop = -10 * TILE_D;
-
-    // Zoom à 1 (inchangé) — le scroll est positionné
-    // pour que le coin haut-gauche de la carte affleure
-    // le bord haut-gauche de l'écran.
+    // Le canvas Image est placé à (mapOffsetX, mapOffsetY) dans le monde.
+    // On scroll pour que ce point soit en haut à gauche de l'écran.
     this.camera.setZoom(this.config.zoom);
-    this.camera.setScroll(mapLeft, mapTop);
+    this.camera.setScroll(this.tileRenderer.mapOffsetX, this.tileRenderer.mapOffsetY);
   }
 
   // ================================================================
