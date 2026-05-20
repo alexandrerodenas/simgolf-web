@@ -2,11 +2,12 @@
  * SimGolf Web — Tile Renderer (pattern fill, géométrie continue)
  *
  * Chaque tuile est un quadrilatère aux 4 sommets projetés de leurs
- * hauteurs réelles. Remplissage : ctx.createPattern(RoughA0001, 'repeat').
+ * hauteurs réelles. Remplissage : ctx.createPattern(texture, 'repeat').
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
- * Herbe en pattern fill sur canvas unique + arbres en sprites overlay.
+ * - GRASS/ROUGH/etc : textures Rough en pattern fill
+ * - TREE : textures Woods (Tree_*.png) en pattern fill
  */
 
 import Phaser from 'phaser';
@@ -14,14 +15,26 @@ import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
 
+/** Noms des textures Woods (tuiles terrain de type arbre) */
+const TREE_TEXTURES = [
+  'Tree_TreePineSmall', 'Tree_TreePineMedium', 'Tree_TreePineLarge',
+  'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium', 'Tree_TreeMapleLarge',
+  'Tree_Scenic_Tree', 'Tree_BlackPine', 'Tree_WillowTree',
+  'Tree_TreePineFirSm', 'Tree_TreePineFirMed', 'Tree_TreePineFirLg',
+] as const;
+
+interface QuadTile {
+  x: number; y: number;
+  verts: Array<{ x: number; y: number }>;
+  type: TileType;
+  variation: number;
+}
+
 export class TileRenderer {
   private scene: Phaser.Scene;
   private terrain: TerrainEngine;
   private mapImage: Phaser.GameObjects.Image | null = null;
   private canvasKey = 'terrain_canvas';
-
-  /** Sprites d'arbres (détruits et recréés à chaque render) */
-  private treeSprites: Phaser.GameObjects.Image[] = [];
 
   /** Position du canvas dans le monde Phaser */
   canvasOffsetX = 0;
@@ -37,17 +50,12 @@ export class TileRenderer {
     this.clearAll();
 
     // ── 1. Collecter les 4 sommets de chaque tuile ──
-    interface QuadTile {
-      x: number; y: number;
-      verts: Array<{ x: number; y: number }>;
-    }
-
     const origin = mapToScreen(0, 0);
     const quads: QuadTile[] = [];
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
 
-    for (const { x, y } of tiles) {
+    for (const { x, y, data } of tiles) {
       const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
 
       const verts = [
@@ -64,7 +72,7 @@ export class TileRenderer {
         if (v.y > maxY) maxY = v.y;
       }
 
-      quads.push({ x, y, verts });
+      quads.push({ x, y, verts, type: data.type, variation: data.variation });
     }
 
     // ── 2. Tri painter's : arrière → avant ──
@@ -95,8 +103,7 @@ export class TileRenderer {
     ctx.translate(-offsetX, -offsetY);
 
     // ── 4. Pattern fill pour chaque tuile ──
-    const pattern = this.createGrassPattern(ctx);
-    if (!pattern) return;
+    const grassPattern = this.createGrassPattern(ctx);
 
     for (const q of quads) {
       const [pTL, pTR, pBR, pBL] = q.verts;
@@ -111,8 +118,22 @@ export class TileRenderer {
       ctx.closePath();
       ctx.fill();
 
-      // Texture répétée
-      ctx.fillStyle = pattern;
+      // Pattern selon le type de tuile
+      let pattern: CanvasPattern | null = null;
+
+      if (q.type === TileType.TREE) {
+        pattern = this.getTreePattern(ctx, q.variation);
+      }
+
+      // Fallback : herbe
+      if (!pattern) pattern = grassPattern;
+
+      if (pattern) {
+        ctx.fillStyle = pattern;
+      } else {
+        ctx.fillStyle = '#4a8f4a';
+      }
+
       ctx.beginPath();
       ctx.moveTo(pTL.x, pTL.y);
       ctx.lineTo(pTR.x, pTR.y);
@@ -128,18 +149,14 @@ export class TileRenderer {
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
-
-    // ── 6. Arbres : sprites par-dessus le terrain ──
-    this.renderTrees(quads, tiles);
   }
 
   // ================================================================
-  // Pattern Fill
+  // Patterns
   // ================================================================
 
   /**
    * Crée un CanvasPattern à partir de la texture RoughA0001.
-   * Toutes les tuiles partagent le même pattern → jointure invisible.
    */
   private createGrassPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
     const srcKey = 'RoughA0001';
@@ -163,6 +180,42 @@ export class TileRenderer {
     const pctx = patternCanvas.getContext('2d')!;
     this.drawFallbackGrass(pctx, 64, 64);
     return ctx.createPattern(patternCanvas, 'repeat') || null;
+  }
+
+  /**
+   * Récupère ou crée un pattern pour une texture Woods (arbre).
+   * La variation détermine quelle texture Woods utiliser.
+   */
+  private treePatternCache: Map<string, CanvasPattern | null> = new Map();
+
+  private getTreePattern(
+    ctx: CanvasRenderingContext2D,
+    variation: number,
+  ): CanvasPattern | null {
+    const idx = variation % TREE_TEXTURES.length;
+    const textureKey = TREE_TEXTURES[idx];
+    const cacheKey = `tree_${textureKey}`;
+
+    if (this.treePatternCache.has(cacheKey)) {
+      return this.treePatternCache.get(cacheKey) ?? null;
+    }
+
+    const tex = this.scene.textures.get(textureKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        this.treePatternCache.set(cacheKey, p ?? null);
+        return p ?? null;
+      } catch {
+        // fallback
+      }
+    }
+
+    // Fallback : herbe
+    this.treePatternCache.set(cacheKey, null);
+    return null;
   }
 
   private drawFallbackGrass(ctx: CanvasRenderingContext2D, w: number, h: number): void {
@@ -190,68 +243,6 @@ export class TileRenderer {
   // Helpers
   // ================================================================
 
-  /**
-   * Rend les arbres comme sprites Phaser sur les tuiles TREE.
-   * Tri painter's par profondeur (x + y), positionnés au centre
-   * isométrique de chaque tuile, ancrés en bas du sprite.
-   */
-  private renderTrees(
-    _quads: Array<{ x: number; y: number; verts: Array<{ x: number; y: number }> }>,
-    tiles: Array<{ x: number; y: number; data: TileData }>,
-  ): void {
-    const origin = mapToScreen(0, 0);
-
-    // Collecter les tuiles TREE
-    interface TreeEntry {
-      x: number; y: number;
-      screenX: number; screenY: number;
-      textureKey: string;
-    }
-
-    const trees: TreeEntry[] = [];
-    for (const { x, y, data } of tiles) {
-      if (data.type !== TileType.TREE) continue;
-
-      // Centre isométrique de la tuile
-      const hAvg = (data.elevation[0] + data.elevation[1] +
-                    data.elevation[2] + data.elevation[3]) / 4;
-      const p = mapToScreen(x + 0.5, y + 0.5, hAvg);
-      const screenX = p.screenX - origin.screenX;
-      const screenY = p.screenY - origin.screenY;
-
-      // Texture : cycle parmi les 12 variantes
-      const treeIdx = data.variation % 12;
-      const treeNames = [
-        'Tree_TreePineSmall', 'Tree_TreePineMedium', 'Tree_TreePineLarge',
-        'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium', 'Tree_TreeMapleLarge',
-        'Tree_Scenic_Tree', 'Tree_BlackPine', 'Tree_WillowTree',
-        'Tree_TreePineFirSm', 'Tree_TreePineFirMed', 'Tree_TreePineFirLg',
-      ];
-      const textureKey = treeNames[treeIdx];
-
-      trees.push({ x, y, screenX, screenY, textureKey });
-    }
-
-    // Tri painter's : arrière → avant
-    trees.sort((a, b) => {
-      const da = a.x + a.y;
-      const db = b.x + b.y;
-      if (da !== db) return da - db;
-      return a.x - b.x;
-    });
-
-    // Créer les sprites
-    for (const t of trees) {
-      const tex = this.scene.textures.get(t.textureKey);
-      if (!tex?.getSourceImage()) continue;
-
-      const img = this.scene.add.image(t.screenX, t.screenY, t.textureKey);
-      img.setOrigin(0.5, 1); // Ancré en bas-centre
-      img.setDepth(t.x + t.y + 1); // Au-dessus du terrain (depth 0)
-      this.treeSprites.push(img);
-    }
-  }
-
   private vert(
     vx: number, vy: number, h: number,
     origin: { screenX: number; screenY: number },
@@ -265,10 +256,7 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
-    for (const s of this.treeSprites) {
-      s.destroy();
-    }
-    this.treeSprites = [];
+    this.treePatternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }
