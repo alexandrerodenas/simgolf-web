@@ -8,8 +8,7 @@
  *   references/natural-terrain-generation.md (Technique A)
  *   references/elevation-quantization.md
  *
- * Résultat : une carte de collines herbeuses naturelles, sans arbres,
- * sans eau, sans sable — juste de l'herbe et du relief.
+ * Résultat : une carte de collines herbeuses naturelles avec quelques arbres.
  */
 
 import { TerrainEngine } from './TerrainEngine';
@@ -18,9 +17,9 @@ import { TileType } from './types';
 export class TerrainGenerator {
 
   /**
-   * Génère un terrain naturel : herbe + collines.
-   * Toutes les tuiles sont GRASS avec une variante cosmétique déterministe.
-   * Aucun arbre, aucune eau, aucun sable.
+   * Génère un terrain naturel : herbe + collines + quelques arbres.
+   * Toutes les tuiles sont GRASS avec une variante cosmétique déterministe,
+   * sauf ~10% qui deviennent des TREE.
    */
   generateNatural(terrain: TerrainEngine, seed?: number): void {
     const rng = seed !== undefined ? this.seededRng(seed) : () => Math.random();
@@ -50,6 +49,16 @@ export class TerrainGenerator {
         const hash = (x * 31 + y * 17) & 0x7fffffff;
         const variant = (hash % 9) + 1; // 1..9
         terrain.setTileType(x, y, TileType.GRASS, variant);
+      }
+    }
+
+    // ── 6. Arbres : ~10% des tuiles deviennent des TREE ──
+    for (let y = 0; y < terrain.height; y++) {
+      for (let x = 0; x < terrain.width; x++) {
+        const hash = (x * 73 + y * 37 + 42) & 0x7fffffff;
+        if (hash % 10 === 0) {
+          terrain.setTileType(x, y, TileType.TREE, hash % 12);
+        }
       }
     }
   }

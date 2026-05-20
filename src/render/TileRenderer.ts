@@ -6,11 +6,12 @@
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
- * Que de l'herbe. Pas d'arbres, pas de debug overlay.
+ * Herbe en pattern fill sur canvas unique + arbres en sprites overlay.
  */
 
 import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
+import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
 
 export class TileRenderer {
@@ -18,6 +19,9 @@ export class TileRenderer {
   private terrain: TerrainEngine;
   private mapImage: Phaser.GameObjects.Image | null = null;
   private canvasKey = 'terrain_canvas';
+
+  /** Sprites d'arbres (détruits et recréés à chaque render) */
+  private treeSprites: Phaser.GameObjects.Image[] = [];
 
   /** Position du canvas dans le monde Phaser */
   canvasOffsetX = 0;
@@ -124,6 +128,9 @@ export class TileRenderer {
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
+
+    // ── 6. Arbres : sprites par-dessus le terrain ──
+    this.renderTrees(quads, tiles);
   }
 
   // ================================================================
@@ -183,6 +190,68 @@ export class TileRenderer {
   // Helpers
   // ================================================================
 
+  /**
+   * Rend les arbres comme sprites Phaser sur les tuiles TREE.
+   * Tri painter's par profondeur (x + y), positionnés au centre
+   * isométrique de chaque tuile, ancrés en bas du sprite.
+   */
+  private renderTrees(
+    _quads: Array<{ x: number; y: number; verts: Array<{ x: number; y: number }> }>,
+    tiles: Array<{ x: number; y: number; data: TileData }>,
+  ): void {
+    const origin = mapToScreen(0, 0);
+
+    // Collecter les tuiles TREE
+    interface TreeEntry {
+      x: number; y: number;
+      screenX: number; screenY: number;
+      textureKey: string;
+    }
+
+    const trees: TreeEntry[] = [];
+    for (const { x, y, data } of tiles) {
+      if (data.type !== TileType.TREE) continue;
+
+      // Centre isométrique de la tuile
+      const hAvg = (data.elevation[0] + data.elevation[1] +
+                    data.elevation[2] + data.elevation[3]) / 4;
+      const p = mapToScreen(x + 0.5, y + 0.5, hAvg);
+      const screenX = p.screenX - origin.screenX;
+      const screenY = p.screenY - origin.screenY;
+
+      // Texture : cycle parmi les 12 variantes
+      const treeIdx = data.variation % 12;
+      const treeNames = [
+        'Tree_TreePineSmall', 'Tree_TreePineMedium', 'Tree_TreePineLarge',
+        'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium', 'Tree_TreeMapleLarge',
+        'Tree_Scenic_Tree', 'Tree_BlackPine', 'Tree_WillowTree',
+        'Tree_TreePineFirSm', 'Tree_TreePineFirMed', 'Tree_TreePineFirLg',
+      ];
+      const textureKey = treeNames[treeIdx];
+
+      trees.push({ x, y, screenX, screenY, textureKey });
+    }
+
+    // Tri painter's : arrière → avant
+    trees.sort((a, b) => {
+      const da = a.x + a.y;
+      const db = b.x + b.y;
+      if (da !== db) return da - db;
+      return a.x - b.x;
+    });
+
+    // Créer les sprites
+    for (const t of trees) {
+      const tex = this.scene.textures.get(t.textureKey);
+      if (!tex?.getSourceImage()) continue;
+
+      const img = this.scene.add.image(t.screenX, t.screenY, t.textureKey);
+      img.setOrigin(0.5, 1); // Ancré en bas-centre
+      img.setDepth(t.x + t.y + 1); // Au-dessus du terrain (depth 0)
+      this.treeSprites.push(img);
+    }
+  }
+
   private vert(
     vx: number, vy: number, h: number,
     origin: { screenX: number; screenY: number },
@@ -196,6 +265,10 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
+    for (const s of this.treeSprites) {
+      s.destroy();
+    }
+    this.treeSprites = [];
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }

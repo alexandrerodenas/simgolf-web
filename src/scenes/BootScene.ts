@@ -20,6 +20,22 @@ const TEXTURES = (() => {
   return keys;
 })();
 
+/** Textures d'arbres (sprites overlay) */
+const TREES = [
+  'Tree_TreePineSmall',
+  'Tree_TreePineMedium',
+  'Tree_TreePineLarge',
+  'Tree_TreeMapleSmall',
+  'Tree_TreeMapleMedium',
+  'Tree_TreeMapleLarge',
+  'Tree_Scenic_Tree',
+  'Tree_BlackPine',
+  'Tree_WillowTree',
+  'Tree_TreePineFirSm',
+  'Tree_TreePineFirMed',
+  'Tree_TreePineFirLg',
+] as const;
+
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: 'BootScene' });
@@ -27,6 +43,9 @@ export class BootScene extends Phaser.Scene {
 
   preload(): void {
     for (const key of TEXTURES) {
+      this.load.image(key, `assets/textures/parkland/${key}.png`);
+    }
+    for (const key of TREES) {
       this.load.image(key, `assets/textures/parkland/${key}.png`);
     }
   }
