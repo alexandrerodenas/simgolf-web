@@ -23,7 +23,7 @@ const GAME_TEXTURES: string[] = (() => {
 const TREE_TEXTURES = [
   'TreeMapleSmall', 'TreeMapleMedium', 'TreePineSmall',
   'TreePineMedium', 'TreePineFirSm', 'TreePineFirMed',
-  'Scenic_Tree', 'PeachTree', 'BlackPine', 'WillowTree',
+  'Scenic_Tree', 'BlackPine', 'WillowTree', 'TreeMapleLarge',
 ];
 
 export class BootScene extends Phaser.Scene {

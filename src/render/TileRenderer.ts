@@ -246,8 +246,8 @@ export class TileRenderer {
     'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium',
     'Tree_TreePineSmall', 'Tree_TreePineMedium',
     'Tree_TreePineFirSm', 'Tree_TreePineFirMed',
-    'Tree_Scenic_Tree', 'Tree_PeachTree',
-    'Tree_BlackPine', 'Tree_WillowTree',
+    'Tree_Scenic_Tree', 'Tree_BlackPine',
+    'Tree_WillowTree', 'Tree_TreeMapleLarge',
   ];
 
   /**
