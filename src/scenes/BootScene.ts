@@ -19,6 +19,13 @@ const GAME_TEXTURES: string[] = (() => {
   return keys;
 })();
 
+/** Textures d'arbres du jeu (thème Parkland/Scenic) */
+const TREE_TEXTURES = [
+  'TreeMapleSmall', 'TreeMapleMedium', 'TreePineSmall',
+  'TreePineMedium', 'TreePineFirSm', 'TreePineFirMed',
+  'Scenic_Tree', 'PeachTree', 'BlackPine', 'WillowTree',
+];
+
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: 'BootScene' });
@@ -28,6 +35,10 @@ export class BootScene extends Phaser.Scene {
     // Charge les textures du jeu
     for (const key of GAME_TEXTURES) {
       this.load.image(key, `assets/textures/parkland/${key}.png`);
+    }
+    // Charge les sprites d'arbres du jeu
+    for (const key of TREE_TEXTURES) {
+      this.load.image(`Tree_${key}`, `assets/textures/parkland/Tree_${key}.png`);
     }
   }
 

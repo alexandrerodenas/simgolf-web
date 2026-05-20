@@ -12,7 +12,7 @@
 
 import Phaser from 'phaser';
 import { TileData, TerrainEngine, TileType } from '../core';
-import { mapToScreen, TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
+import { mapToScreen, TILE_H, TILE_D } from './CoordinateSystem';
 import { getShapeLetter, getCosmeticVariant, buildTextureSourceName } from './ShapeClassifier';
 
 export class TileRenderer {
@@ -28,7 +28,6 @@ export class TileRenderer {
 
   /** Images des arbres (rajoutées par-dessus le canvas terrain) */
   private treeImages: Phaser.GameObjects.Image[] = [];
-  private treeTexGenerated = false;
 
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
@@ -173,9 +172,8 @@ export class TileRenderer {
     this.mapImage.setDepth(0);
 
     // ================================================================
-    // 6. Arbres (sprites individuels par-dessus le terrain)
+    // 6. Arbres (sprites du jeu par-dessus le terrain)
     // ================================================================
-    this.generateTreeTextures();
     this.renderTrees(quads, origin);
   }
 
@@ -240,63 +238,22 @@ export class TileRenderer {
   }
 
   // ================================================================
-  // Arbres
+  // Arbres (sprites du jeu)
   // ================================================================
 
-  /**
-   * Génère 9 variantes de textures d'arbres procéduraux (tree_0..tree_8).
-   */
-  private generateTreeTextures(): void {
-    if (this.treeTexGenerated) return;
-    this.treeTexGenerated = true;
-
-    const colors = [
-      '#2d5a1e', '#224a16', '#386a24', '#1a3a10', '#2a5018',
-      '#3a7030', '#1e4e12', '#2c6220', '#407a2e',
-    ];
-    const size = 40;
-    const trunkW = 4, trunkH = 14;
-
-    for (let v = 0; v < 9; v++) {
-      const key = `tree_${v}`;
-      if (this.scene.textures.exists(key)) continue;
-
-      const canvas = this.scene.textures.createCanvas(key, size, size);
-      if (!canvas) continue;
-      const ctx = canvas.context;
-      ctx.clearRect(0, 0, size, size);
-
-      // Tronc
-      ctx.fillStyle = '#5a3a1a';
-      ctx.fillRect((size - trunkW) / 2, size - trunkH - 4, trunkW, trunkH);
-
-      // Houppier (cercle)
-      const leafColor = colors[v % colors.length];
-      ctx.fillStyle = leafColor;
-      ctx.beginPath();
-      ctx.arc(size / 2, size / 2 - 2, 10 + (v % 3) * 2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Second cercle plus clair
-      const lighter = this.lightenColor(leafColor, 0.15);
-      ctx.fillStyle = lighter;
-      ctx.beginPath();
-      ctx.arc(size / 2 - 3, size / 2 - 5, 6 + (v % 2) * 2, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Ombre sous le houppier
-      ctx.fillStyle = 'rgba(0,0,0,0.12)';
-      ctx.beginPath();
-      ctx.arc(size / 2 + 2, size / 2 + 2, 8, 0, Math.PI * 2);
-      ctx.fill();
-
-      canvas.refresh();
-    }
-  }
+  // Clés des textures d'arbres du jeu (chargées par BootScene)
+  private readonly TREE_KEYS = [
+    'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium',
+    'Tree_TreePineSmall', 'Tree_TreePineMedium',
+    'Tree_TreePineFirSm', 'Tree_TreePineFirMed',
+    'Tree_Scenic_Tree', 'Tree_PeachTree',
+    'Tree_BlackPine', 'Tree_WillowTree',
+  ];
 
   /**
    * Crée les sprites d'arbres pour toutes les tuiles de type TREE.
-   * Les arbres sont triés par profondeur (x + y) pour un rendu correct.
+   * Utilise les textures du jeu original (redimensionnées).
+   * Tri painter's algorithm par profondeur (x + y).
    */
   private renderTrees(
     quads: Array<{ x: number; y: number; hTL: number; hTR: number; hBR: number; hBL: number }>,
@@ -331,7 +288,7 @@ export class TileRenderer {
 
     // Créer les Images
     for (const t of treeTiles) {
-      const texKey = `tree_${t.variant}`;
+      const texKey = this.TREE_KEYS[t.variant % this.TREE_KEYS.length];
       if (!this.scene.textures.exists(texKey)) continue;
 
       const img = this.scene.add.image(t.scrX, t.scrY, texKey);
@@ -340,16 +297,6 @@ export class TileRenderer {
       img.setName(`tree_${t.x}_${t.y}`);
       this.treeImages.push(img);
     }
-  }
-
-  /**
-   * Éclaircit une couleur hex.
-   */
-  private lightenColor(hex: string, factor: number): string {
-    const r = Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * (1 + factor)));
-    const g = Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * (1 + factor)));
-    const b = Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * (1 + factor)));
-    return `rgb(${r},${g},${b})`;
   }
 
   // ================================================================
