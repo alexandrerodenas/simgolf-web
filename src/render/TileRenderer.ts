@@ -128,7 +128,7 @@ export class TileRenderer {
       const srcImg = this.getSourceImage(sourceKey);
       if (!srcImg) continue;
 
-      this.drawSlopedQuad(ctx, srcImg, d.verts);
+      this.drawSlopedQuad(ctx, srcImg, d.verts, d.hTL, d.hTR, d.hBR, d.hBL);
 
       // Debug overlay
       if (this.showDebug) {
@@ -163,13 +163,19 @@ export class TileRenderer {
    * Utilise 2 triangles affines pour mapper la texture carrée 64×64
    * sur les 4 sommets projetés à leurs hauteurs réelles.
    *
+   * TRIANGULATION DYNAMIQUE : analyse les 4 hauteurs pour choisir
+   * la diagonale de coupe qui évite les quadrilatères croisés.
+   *   - Si |hTL - hBR| ≤ |hTR - hBL| → diagonale TL-BR (standard)
+   *   - Sinon → diagonale TR-BL (inversée)
+   *
    * Les 4 sommets sont [TL, TR, BR, BL].
-   * Les UV vont de (0,0) en TL à (1,1) en BR.
+   * Les UV vont de (0,0) en haut-gauche à (1,1) en bas-droite.
    */
   private drawSlopedQuad(
     ctx: CanvasRenderingContext2D,
     srcImg: CanvasImageSource,
     verts: Array<{ x: number; y: number }>,
+    hTL: number, hTR: number, hBR: number, hBL: number,
   ): void {
     const [pTL, pTR, pBR, pBL] = verts;
 
@@ -183,19 +189,42 @@ export class TileRenderer {
     ctx.closePath();
     ctx.fill();
 
-    // Triangle 1 : TL → TR → BR
-    this.drawTexturedTriangle(ctx, srcImg,
-      pTL.x, pTL.y,
-      pTR.x, pTR.y,
-      pBR.x, pBR.y,
-      0, 0, 1, 0, 1, 1);
+    // Triangulation dynamique : choisir la diagonale qui relie
+    // les deux sommets aux hauteurs les plus proches → évite les quads pliés
+    const diffTLBR = Math.abs(hTL - hBR);
+    const diffTRBL = Math.abs(hTR - hBL);
 
-    // Triangle 2 : TL → BR → BL
-    this.drawTexturedTriangle(ctx, srcImg,
-      pTL.x, pTL.y,
-      pBR.x, pBR.y,
-      pBL.x, pBL.y,
-      0, 0, 1, 1, 0, 1);
+    if (diffTLBR <= diffTRBL) {
+      // Diagonale TL-BR (standard)
+      // Triangle 1 : TL → TR → BR
+      this.drawTexturedTriangle(ctx, srcImg,
+        pTL.x, pTL.y,
+        pTR.x, pTR.y,
+        pBR.x, pBR.y,
+        0, 0, 1, 0, 1, 1);
+
+      // Triangle 2 : TL → BR → BL
+      this.drawTexturedTriangle(ctx, srcImg,
+        pTL.x, pTL.y,
+        pBR.x, pBR.y,
+        pBL.x, pBL.y,
+        0, 0, 1, 1, 0, 1);
+    } else {
+      // Diagonale TR-BL (inversée)
+      // Triangle 1 : TL → TR → BL
+      this.drawTexturedTriangle(ctx, srcImg,
+        pTL.x, pTL.y,
+        pTR.x, pTR.y,
+        pBL.x, pBL.y,
+        0, 0, 1, 0, 0, 1);
+
+      // Triangle 2 : TR → BR → BL
+      this.drawTexturedTriangle(ctx, srcImg,
+        pTR.x, pTR.y,
+        pBR.x, pBR.y,
+        pBL.x, pBL.y,
+        1, 0, 1, 1, 0, 1);
+    }
   }
 
   /**
