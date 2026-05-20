@@ -17,8 +17,9 @@ import { TileType } from './types';
 export class TerrainGenerator {
 
   /**
-   * Génère un terrain 100% herbe avec variation d'élévation douce.
-   * Pas d'eau, pas de sable, pas d'arbres — juste des collines.
+   * Génère un terrain 100% herbe avec variation d'élévation douce
+   * et des arbres disposés en clusters naturels.
+   * Pas d'eau, pas de sable — juste des collines boisées.
    */
   generateNatural(terrain: TerrainEngine, seed?: number): void {
     const rng = seed !== undefined ? this.seededRng(seed) : () => Math.random();
@@ -45,13 +46,45 @@ export class TerrainGenerator {
       for (let x = 0; x < terrain.width; x++) {
         const tile = terrain.tileAt(x, y);
         if (!tile) continue;
-        const corners = terrain.getTileCorners(x, y);
-        const avg = (corners[0] + corners[1] + corners[2] + corners[3]) / 4;
-        // Légère variation de type selon l'altitude
-        //   < 2 : herbe rase (grass)
-        //   ≥ 2 et ≤ 6 : herbe normale
-        //   > 6 : herbe plus claire/haute
-        terrain.setTileType(x, y, TileType.GRASS, Math.floor(avg) % 9);
+        terrain.setTileType(x, y, TileType.GRASS, Math.floor(rng() * 9));
+      }
+    }
+
+    // 6. Arbres en clusters
+    this.placeTrees(terrain, rng);
+  }
+
+  // ================================================================
+  // Végétation
+  // ================================================================
+
+  /**
+   * Place des arbres en clusters naturels + épars.
+   */
+  private placeTrees(terrain: TerrainEngine, rng: () => number): void {
+    // 5-10 clusters
+    const n = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < n; i++) {
+      const cx = 2 + Math.floor(rng() * (terrain.width - 4));
+      const cy = 2 + Math.floor(rng() * (terrain.height - 4));
+      const radius = 1 + Math.floor(rng() * 3); // 1-3
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const t = terrain.tileAt(cx + dx, cy + dy);
+          if (!t || t.type !== TileType.GRASS) continue;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d > radius || rng() >= 0.55 * (1 - d / (radius + 1))) continue;
+          terrain.setTileType(cx + dx, cy + dy, TileType.TREE, Math.floor(rng() * 9));
+        }
+      }
+    }
+    // Épars (5%)
+    for (let y = 1; y < terrain.height - 1; y++) {
+      for (let x = 1; x < terrain.width - 1; x++) {
+        const t = terrain.tileAt(x, y);
+        if (t && t.type === TileType.GRASS && rng() < 0.05) {
+          terrain.setTileType(x, y, TileType.TREE, Math.floor(rng() * 9));
+        }
       }
     }
   }

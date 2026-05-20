@@ -11,7 +11,7 @@
  */
 
 import Phaser from 'phaser';
-import { TileData, TerrainEngine } from '../core';
+import { TileData, TerrainEngine, TileType } from '../core';
 import { mapToScreen, TILE_W, TILE_H, TILE_D } from './CoordinateSystem';
 import { getShapeLetter, getCosmeticVariant, buildTextureSourceName } from './ShapeClassifier';
 
@@ -25,6 +25,10 @@ export class TileRenderer {
   /** Position du canvas dans le monde Phaser */
   canvasOffsetX = 0;
   canvasOffsetY = 0;
+
+  /** Images des arbres (rajoutées par-dessus le canvas terrain) */
+  private treeImages: Phaser.GameObjects.Image[] = [];
+  private treeTexGenerated = false;
 
   constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
     this.scene = scene;
@@ -43,6 +47,7 @@ export class TileRenderer {
     // ================================================================
     interface QuadTile {
       x: number; y: number;
+      hTL: number; hTR: number; hBR: number; hBL: number;
       verts: Array<{ x: number; y: number }>;
       avgH: number;
       sourceKey: string;
@@ -79,7 +84,7 @@ export class TileRenderer {
         getCosmeticVariant(x, y, 9),
       );
 
-      quads.push({ x, y, verts, avgH, sourceKey });
+      quads.push({ x, y, hTL, hTR, hBR, hBL, verts, avgH, sourceKey });
     }
 
     // ================================================================
@@ -166,6 +171,12 @@ export class TileRenderer {
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
+
+    // ================================================================
+    // 6. Arbres (sprites individuels par-dessus le terrain)
+    // ================================================================
+    this.generateTreeTextures();
+    this.renderTrees(quads, origin);
   }
 
   // ================================================================
@@ -229,6 +240,119 @@ export class TileRenderer {
   }
 
   // ================================================================
+  // Arbres
+  // ================================================================
+
+  /**
+   * Génère 9 variantes de textures d'arbres procéduraux (tree_0..tree_8).
+   */
+  private generateTreeTextures(): void {
+    if (this.treeTexGenerated) return;
+    this.treeTexGenerated = true;
+
+    const colors = [
+      '#2d5a1e', '#224a16', '#386a24', '#1a3a10', '#2a5018',
+      '#3a7030', '#1e4e12', '#2c6220', '#407a2e',
+    ];
+    const size = 40;
+    const trunkW = 4, trunkH = 14;
+
+    for (let v = 0; v < 9; v++) {
+      const key = `tree_${v}`;
+      if (this.scene.textures.exists(key)) continue;
+
+      const canvas = this.scene.textures.createCanvas(key, size, size);
+      if (!canvas) continue;
+      const ctx = canvas.context;
+      ctx.clearRect(0, 0, size, size);
+
+      // Tronc
+      ctx.fillStyle = '#5a3a1a';
+      ctx.fillRect((size - trunkW) / 2, size - trunkH - 4, trunkW, trunkH);
+
+      // Houppier (cercle)
+      const leafColor = colors[v % colors.length];
+      ctx.fillStyle = leafColor;
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2 - 2, 10 + (v % 3) * 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Second cercle plus clair
+      const lighter = this.lightenColor(leafColor, 0.15);
+      ctx.fillStyle = lighter;
+      ctx.beginPath();
+      ctx.arc(size / 2 - 3, size / 2 - 5, 6 + (v % 2) * 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Ombre sous le houppier
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      ctx.beginPath();
+      ctx.arc(size / 2 + 2, size / 2 + 2, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      canvas.refresh();
+    }
+  }
+
+  /**
+   * Crée les sprites d'arbres pour toutes les tuiles de type TREE.
+   * Les arbres sont triés par profondeur (x + y) pour un rendu correct.
+   */
+  private renderTrees(
+    quads: Array<{ x: number; y: number; hTL: number; hTR: number; hBR: number; hBL: number }>,
+    origin: { screenX: number; screenY: number },
+  ): void {
+    // Collecter les tuiles qui sont des arbres
+    const treeTiles: Array<{ x: number; y: number; scrX: number; scrY: number; depth: number; variant: number }> = [];
+
+    for (const q of quads) {
+      const tile = this.terrain.tileAt(q.x, q.y);
+      if (!tile || tile.type !== TileType.TREE) continue;
+
+      const avgH = (q.hTL + q.hTR + q.hBR + q.hBL) / 4;
+      // Position : centre de la tuile à la hauteur moyenne
+      const pos = mapToScreen(q.x, q.y, 0);
+      const scrX = pos.screenX - origin.screenX;
+      const scrY = pos.screenY - origin.screenY - avgH * TILE_D;
+
+      treeTiles.push({
+        x: q.x, y: q.y,
+        scrX, scrY,
+        depth: q.x + q.y,
+        variant: tile.variation % 9,
+      });
+    }
+
+    // Trier par profondeur (idem painter's algorithm)
+    treeTiles.sort((a, b) => {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.x - b.x;
+    });
+
+    // Créer les Images
+    for (const t of treeTiles) {
+      const texKey = `tree_${t.variant}`;
+      if (!this.scene.textures.exists(texKey)) continue;
+
+      const img = this.scene.add.image(t.scrX, t.scrY, texKey);
+      img.setOrigin(0.5, 1); // ancrage bas-centre → le tronc touche le sol
+      img.setDepth((t.x + t.y) * 16 + 1000); // toujours devant le terrain
+      img.setName(`tree_${t.x}_${t.y}`);
+      this.treeImages.push(img);
+    }
+  }
+
+  /**
+   * Éclaircit une couleur hex.
+   */
+  private lightenColor(hex: string, factor: number): string {
+    const r = Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * (1 + factor)));
+    const g = Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * (1 + factor)));
+    const b = Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * (1 + factor)));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  // ================================================================
   // Helpers
   // ================================================================
 
@@ -252,5 +376,7 @@ export class TileRenderer {
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }
+    for (const img of this.treeImages) img.destroy();
+    this.treeImages = [];
   }
 }
