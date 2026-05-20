@@ -37,10 +37,10 @@ export class BootScene extends Phaser.Scene {
 
   preload(): void {
     for (const key of TEXTURES) {
-      this.load.image(key, `assets/textures/parkland/${key}.png`);
+      this.load.image(key, `assets/textures/parkland/${key}.webp`);
     }
     for (const key of WOODS) {
-      this.load.image(key, `assets/textures/parkland/${key}.png`);
+      this.load.image(key, `assets/textures/parkland/${key}.webp`);
     }
   }
 

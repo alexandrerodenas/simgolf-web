@@ -7,35 +7,40 @@
  * Tri painter's algorithm par profondeur (x + y).
  *
  * - GRASS/ROUGH/etc : textures Rough en pattern fill
- * - TREE : textures Woods en pattern fill
+ * - TREE : textures Woods en pattern fill (autotile par shape letter)
  */
 
 import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
-
-/**
- * Noms des textures Woods (tuiles terrain boisées).
- * 36 textures : 4 groupes (A-D) × 9 variantes (0001-0009).
- * Les groupes A-D sont des variantes décoratives (clairsemé → dense).
- */
-const WOODS_TEXTURES = (() => {
-  const names: string[] = [];
-  for (const group of ['A', 'B', 'C', 'D']) {
-    for (let v = 1; v <= 9; v++) {
-      names.push(`woods${group}${v.toString().padStart(4, '0')}`);
-    }
-  }
-  return names; // index 0..35
-})();
+import { getShapeLetter, ShapeLetter } from './ShapeClassifier';
 
 interface QuadTile {
   x: number; y: number;
   verts: Array<{ x: number; y: number }>;
   type: TileType;
-  variation: number;
 }
+
+/** Préfixe de texture par type de tuile */
+const TYPE_PREFIX: Record<TileType, string> = {
+  [TileType.GRASS]:       'Rough',
+  [TileType.FAIRWAY]:     'Rough',
+  [TileType.GREEN]:       'Rough',
+  [TileType.TEE]:         'Rough',
+  [TileType.SAND]:        'Rough',
+  [TileType.WATER]:       'Rough',
+  [TileType.PATH]:        'Rough',
+  [TileType.BUILDING]:    'Rough',
+  [TileType.TREE]:        'woods',   // textures Woods (tuiles terrain)
+  [TileType.BUSH]:        'Rough',
+  [TileType.FLOWER]:      'Rough',
+  [TileType.ROUGH]:       'Rough',
+  [TileType.BRIDGE]:      'Rough',
+  [TileType.HOLE]:        'Rough',
+  [TileType.WATER_HAZARD]: 'Rough',
+  [TileType.EMPTY]:       'Rough',
+};
 
 export class TileRenderer {
   private scene: Phaser.Scene;
@@ -79,7 +84,7 @@ export class TileRenderer {
         if (v.y > maxY) maxY = v.y;
       }
 
-      quads.push({ x, y, verts, type: data.type, variation: data.variation });
+      quads.push({ x, y, verts, type: data.type });
     }
 
     // ── 2. Tri painter's : arrière → avant ──
@@ -110,8 +115,6 @@ export class TileRenderer {
     ctx.translate(-offsetX, -offsetY);
 
     // ── 4. Pattern fill pour chaque tuile ──
-    const grassPattern = this.createGrassPattern(ctx);
-
     for (const q of quads) {
       const [pTL, pTR, pBR, pBL] = q.verts;
 
@@ -125,29 +128,18 @@ export class TileRenderer {
       ctx.closePath();
       ctx.fill();
 
-      // Pattern selon le type de tuile
-      let pattern: CanvasPattern | null = null;
-
-      if (q.type === TileType.TREE) {
-        pattern = this.getWoodsPattern(ctx, q.variation);
-      }
-
-      // Fallback : herbe
-      if (!pattern) pattern = grassPattern;
-
+      // Pattern selon le type + shape
+      const pattern = this.getPattern(ctx, q);
       if (pattern) {
         ctx.fillStyle = pattern;
-      } else {
-        ctx.fillStyle = '#4a8f4a';
+        ctx.beginPath();
+        ctx.moveTo(pTL.x, pTL.y);
+        ctx.lineTo(pTR.x, pTR.y);
+        ctx.lineTo(pBR.x, pBR.y);
+        ctx.lineTo(pBL.x, pBL.y);
+        ctx.closePath();
+        ctx.fill();
       }
-
-      ctx.beginPath();
-      ctx.moveTo(pTL.x, pTL.y);
-      ctx.lineTo(pTR.x, pTR.y);
-      ctx.lineTo(pBR.x, pBR.y);
-      ctx.lineTo(pBL.x, pBL.y);
-      ctx.closePath();
-      ctx.fill();
     }
 
     canvas.refresh();
@@ -162,49 +154,28 @@ export class TileRenderer {
   // Patterns
   // ================================================================
 
-  /**
-   * Crée un CanvasPattern à partir de la texture RoughA0001.
-   */
-  private createGrassPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
-    const srcKey = 'RoughA0001';
-    const tex = this.scene.textures.get(srcKey);
-    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
-
-    if (srcImg) {
-      try {
-        const p = ctx.createPattern(srcImg, 'repeat');
-        if (p) return p;
-      } catch {
-        // fallback
-      }
-    }
-
-    // Fallback procédural
-    const patternCanvas = document.createElement('canvas');
-    patternCanvas.width = 64;
-    patternCanvas.height = 64;
-    const pctx = patternCanvas.getContext('2d')!;
-    this.drawFallbackGrass(pctx, 64, 64);
-    return ctx.createPattern(patternCanvas, 'repeat') || null;
-  }
+  /** Cache de patterns par clé de texture */
+  private patternCache = new Map<string, CanvasPattern | null>();
 
   /**
-   * Récupère ou crée un pattern pour une texture Woods (bois).
-   * La variation (1..36) détermine quelle texture Woods utiliser.
+   * Récupère ou crée un pattern pour une tuile donnée.
+   * La texture est choisie selon le type de tuile et la forme géométrique.
    */
-  private woodsPatternCache: Map<string, CanvasPattern | null> = new Map();
-
-  private getWoodsPattern(
+  private getPattern(
     ctx: CanvasRenderingContext2D,
-    variation: number,
+    quad: QuadTile,
   ): CanvasPattern | null {
-    // variation = 0..35 → index dans WOODS_TEXTURES
-    const idx = ((variation - 1) % WOODS_TEXTURES.length + WOODS_TEXTURES.length) % WOODS_TEXTURES.length;
-    const textureKey = WOODS_TEXTURES[idx];
-    const cacheKey = `woods_${textureKey}`;
+    const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(quad.x, quad.y);
+    const letter = getShapeLetter(hTL, hTR, hBR, hBL);
+    const prefix = TYPE_PREFIX[quad.type] ?? 'Rough';
 
-    if (this.woodsPatternCache.has(cacheKey)) {
-      return this.woodsPatternCache.get(cacheKey) ?? null;
+    // Variante cosmétique déterministe par position
+    const variant = this.getCosmeticVariant(quad.x, quad.y, prefix === 'woods' ? 9 : 5);
+
+    const textureKey = `${prefix}${letter}${variant}`;
+
+    if (this.patternCache.has(textureKey)) {
+      return this.patternCache.get(textureKey) ?? null;
     }
 
     const tex = this.scene.textures.get(textureKey);
@@ -213,36 +184,54 @@ export class TileRenderer {
     if (srcImg) {
       try {
         const p = ctx.createPattern(srcImg, 'repeat');
-        this.woodsPatternCache.set(cacheKey, p ?? null);
+        this.patternCache.set(textureKey, p ?? null);
         return p ?? null;
       } catch {
         // fallback
       }
     }
 
-    this.woodsPatternCache.set(cacheKey, null);
+    // Fallback : essayer avec la letter A (toujours disponible)
+    const fallbackKey = `${prefix}A${variant}`;
+    if (fallbackKey !== textureKey) {
+      return this.getPatternFromKey(ctx, fallbackKey);
+    }
+
+    this.patternCache.set(textureKey, null);
     return null;
   }
 
-  private drawFallbackGrass(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    ctx.fillStyle = '#4a8f4a';
-    ctx.fillRect(0, 0, w, h);
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(255,255,255,0.12)');
-    grad.addColorStop(0.5, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.12)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(0,0,0,0.04)';
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i < 30; i++) {
-      const gx = (i * 17 + 3) % w;
-      const gy = (i * 13 + 7) % h;
-      ctx.beginPath();
-      ctx.moveTo(gx, gy);
-      ctx.lineTo(gx + 2, gy - 5);
-      ctx.stroke();
+  /** Créer un pattern depuis une clé de texture */
+  private getPatternFromKey(
+    ctx: CanvasRenderingContext2D,
+    textureKey: string,
+  ): CanvasPattern | null {
+    if (this.patternCache.has(textureKey)) {
+      return this.patternCache.get(textureKey) ?? null;
     }
+
+    const tex = this.scene.textures.get(textureKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        this.patternCache.set(textureKey, p ?? null);
+        return p ?? null;
+      } catch {
+        // fallback
+      }
+    }
+
+    this.patternCache.set(textureKey, null);
+    return null;
+  }
+
+  /** Variante cosmétique déterministe (0001-0009 ou 0001-0005) */
+  private getCosmeticVariant(x: number, y: number, maxVariants: number): string {
+    const hash = (x * 31 + y * 17) & 0x7fffffff;
+    const variant = (hash % maxVariants) + 1;
+    return variant.toString().padStart(4, '0');
   }
 
   // ================================================================
@@ -262,7 +251,7 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
-    this.woodsPatternCache.clear();
+    this.patternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }
