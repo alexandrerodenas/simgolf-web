@@ -6,10 +6,12 @@
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
- * - GRASS/ROUGH/etc : textures Rough en pattern fill (tileable)
- * - TREE : textures Woods (Tree_*.png) — autotile selon les voisines
- *   Les bords transparents ne sont montrés qu'aux transitions TREE↔non-TREE
- *   ou aux bords de la carte.
+ * Éclairage : vertex lighting simulé par overlay de dégradés
+ * par triangle (faux Gouraud shading). Les normales sont calculées
+ * par différences finies sur la heightmap, la lumière directionnelle
+ * fixe simule un soleil de fin de matinée.
+ *
+ * - GRASS : textures Rough en pattern fill + overlay éclairage
  */
 
 import Phaser from 'phaser';
@@ -17,13 +19,55 @@ import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
 
-/** Noms des textures Woods (tuiles terrain de type arbre) */
-const TREE_TEXTURES = [
-  'Tree_TreePineSmall', 'Tree_TreePineMedium', 'Tree_TreePineLarge',
-  'Tree_TreeMapleSmall', 'Tree_TreeMapleMedium', 'Tree_TreeMapleLarge',
-  'Tree_Scenic_Tree', 'Tree_BlackPine', 'Tree_WillowTree',
-  'Tree_TreePineFirSm', 'Tree_TreePineFirMed', 'Tree_TreePineFirLg',
-] as const;
+// ================================================================
+// Éclairage directionnel
+// ================================================================
+
+/** Vecteur lumière directionnelle normalisé — simule un soleil
+ *  venant du Nord-Ouest (haut-gauche en isométrique). */
+const LIGHT_DIR: readonly [number, number, number] = [
+  -0.409,   // composante X (Est-Ouest)
+  -0.613,   // composante Y (Nord-Sud)
+   0.707,   // composante Z (verticale)
+];
+
+/** Intensité minimale (ombre max) */
+const MIN_BRIGHTNESS = 0.65;
+
+/** Pas de la grille pour le calcul des normales */
+const STEP = 2;
+
+// ================================================================
+// Utilitaires vecteurs
+// ================================================================
+
+function normalize(v: [number, number, number]): [number, number, number] {
+  const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  if (len === 0) return [0, 0, 1];
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function cross(
+  a: [number, number, number],
+  b: [number, number, number],
+): [number, number, number] {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function dot(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+// ================================================================
+// Quad interfa
+// ================================================================
 
 interface QuadTile {
   x: number; y: number;
@@ -56,12 +100,6 @@ export class TileRenderer {
     const quads: QuadTile[] = [];
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
-
-    // Map pour lookup rapide des types
-    const typeMap = new Map<string, TileType>();
-    for (const { x, y, data } of tiles) {
-      typeMap.set(`${x},${y}`, data.type);
-    }
 
     for (const { x, y, data } of tiles) {
       const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
@@ -112,35 +150,21 @@ export class TileRenderer {
 
     // ── 4. Pattern herbe (tileable) ──
     const grassPattern = this.createGrassPattern(ctx);
+    const fillStyle = grassPattern || '#4a8f4a';
 
-    // ── 5. Rendu de chaque tuile ──
+    // ── 5. Rendu de chaque tuile : pattern + éclairage ──
     for (const q of quads) {
       const [pTL, pTR, pBR, pBL] = q.verts;
 
-      // Fond opaque (anti-gap de transparence)
+      // Fond opaque + pattern fill
       ctx.fillStyle = '#4a8f4a';
-      ctx.beginPath();
-      ctx.moveTo(pTL.x, pTL.y);
-      ctx.lineTo(pTR.x, pTR.y);
-      ctx.lineTo(pBR.x, pBR.y);
-      ctx.lineTo(pBL.x, pBL.y);
-      ctx.closePath();
-      ctx.fill();
+      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+      ctx.fillStyle = fillStyle;
+      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
 
-      if (q.type === TileType.TREE) {
-        // Woods : texture avec autotile (bords transparents uniquement aux transitions)
-        this.drawTreeTile(ctx, q, typeMap, grassPattern);
-      } else {
-        // Terrain standard : pattern fill tileable
-        ctx.fillStyle = grassPattern || '#4a8f4a';
-        ctx.beginPath();
-        ctx.moveTo(pTL.x, pTL.y);
-        ctx.lineTo(pTR.x, pTR.y);
-        ctx.lineTo(pBR.x, pBR.y);
-        ctx.lineTo(pBL.x, pBL.y);
-        ctx.closePath();
-        ctx.fill();
-      }
+      // ── Éclairage : vertex lighting par-dessus le pattern ──
+      const brightness = this.computeTileBrightness(q.x, q.y);
+      this.drawLighting(ctx, pTL, pTR, pBR, pBL, brightness);
     }
 
     canvas.refresh();
@@ -152,121 +176,136 @@ export class TileRenderer {
   }
 
   // ================================================================
-  // Rendu des tuiles Woods (arbres) avec autotile
+  // Éclairage
   // ================================================================
 
   /**
-   * Dessine une tuile Woods avec gestion des transitions.
-   *
-   * Logique :
-   * - Si la tuile TREE a une voisine non-TREE (ou est au bord de la carte),
-   *   le bord de transition de la texture Woods est visible de ce côté.
-   * - Si toutes les voisines sont TREE, aucun bord transparent n'apparaît.
-   *
-   * Implémentation : on crée un canvas temporaire, on y dessine l'image
-   * Woods complète, puis on découpe une sous-rectangle qui ne contient
-   * que les bords de transition nécessaires.
+   * Calcule les 4 intensités lumineuses des coins de la tuile (x, y).
+   * Retourne [bTL, bTR, bBR, bBL] dans [MIN_BRIGHTNESS, 1.0].
    */
-  private drawTreeTile(
-    ctx: CanvasRenderingContext2D,
-    quad: QuadTile,
-    typeMap: Map<string, TileType>,
-    fallback: CanvasPattern | null,
-  ): void {
-    const [pTL, pTR, pBR, pBL] = quad.verts;
+  private computeTileBrightness(
+    tileX: number,
+    tileY: number,
+  ): [number, number, number, number] {
+    const terrain = this.terrain;
+    const vx = tileX, vy = tileY;
 
-    // Texture Woods
-    const idx = quad.variation % TREE_TEXTURES.length;
-    const textureKey = TREE_TEXTURES[idx];
-    const tex = this.scene.textures.get(textureKey);
-    const srcImg = tex?.getSourceImage() as HTMLImageElement | null;
+    // Normales aux 4 coins de la tuile
+    const nTL = this.vertexNormal(terrain, vx,     vy);
+    const nTR = this.vertexNormal(terrain, vx + 1, vy);
+    const nBR = this.vertexNormal(terrain, vx + 1, vy + 1);
+    const nBL = this.vertexNormal(terrain, vx,     vy + 1);
 
-    if (!srcImg) {
-      ctx.fillStyle = fallback || '#4a8f4a';
-      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-      return;
-    }
-
-    // Déterminer les bords de transition
-    const isBorderN = quad.y === 0;
-    const isBorderS = quad.y === this.terrain.height - 1;
-    const isBorderW = quad.x === 0;
-    const isBorderE = quad.x === this.terrain.width - 1;
-
-    const neighborN = typeMap.get(`${quad.x},${quad.y - 1}`) ?? TileType.EMPTY;
-    const neighborS = typeMap.get(`${quad.x},${quad.y + 1}`) ?? TileType.EMPTY;
-    const neighborW = typeMap.get(`${quad.x - 1},${quad.y}`) ?? TileType.EMPTY;
-    const neighborE = typeMap.get(`${quad.x + 1},${quad.y}`) ?? TileType.EMPTY;
-
-    // Bord visible si voisine non-TREE (ou bord de carte)
-    const showN = isBorderN || neighborN !== TileType.TREE;
-    const showS = isBorderS || neighborS !== TileType.TREE;
-    const showW = isBorderW || neighborW !== TileType.TREE;
-    const showE = isBorderE || neighborE !== TileType.TREE;
-
-    // Si aucun bord de transition → le centre opaque doit couvrir tout le quad.
-    // On scale l'image plus grand pour que les bords transparents débordent
-    // du quad et soient coupés par le clip.
-    if (!showN && !showS && !showW && !showE) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(pTL.x, pTL.y);
-      ctx.lineTo(pTR.x, pTR.y);
-      ctx.lineTo(pBR.x, pBR.y);
-      ctx.lineTo(pBL.x, pBL.y);
-      ctx.closePath();
-      ctx.clip();
-      this.drawCentered(ctx, srcImg, pTL, pTR, pBR, pBL, 1.35);
-      ctx.restore();
-      return;
-    }
-
-    // Au moins un bord de transition : dessiner l'image normale
-    // (bords transparents visibles du côté des voisines non-TREE)
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pTL.x, pTL.y);
-    ctx.lineTo(pTR.x, pTR.y);
-    ctx.lineTo(pBR.x, pBR.y);
-    ctx.lineTo(pBL.x, pBL.y);
-    ctx.closePath();
-    ctx.clip();
-    this.drawCentered(ctx, srcImg, pTL, pTR, pBR, pBL, 1.0);
-    ctx.restore();
+    return [
+      this.brightness(nTL),
+      this.brightness(nTR),
+      this.brightness(nBR),
+      this.brightness(nBL),
+    ];
   }
 
   /**
-   * Dessine l'image centrée sur le quadrilatère, redimensionnée
-   * pour couvrir tout le quad.
+   * Calcule la normale d'un sommet de la heightmap par différences finies.
+   *
+   * La normale est le produit vectoriel des tangentes X et Y au sommet.
+   * Les hauteurs voisines (hL, hR, hU, hD) sont lues depuis la heightmap.
+   * Le pas spatial horizontal/vertical est STEP (2 unités isométriques).
    */
-  private drawCentered(
+  private vertexNormal(
+    terrain: TerrainEngine,
+    vx: number,
+    vy: number,
+  ): [number, number, number] {
+    const hC = terrain.getVertex(vx, vy);
+    const hL = terrain.getVertex(vx - 1, vy);
+    const hR = terrain.getVertex(vx + 1, vy);
+    const hU = terrain.getVertex(vx, vy - 1);
+    const hD = terrain.getVertex(vx, vy + 1);
+
+    // Tangentes : différence finie centrée
+    const dx: [number, number, number] = [STEP, 0, hR - hL];
+    const dy: [number, number, number] = [0, STEP, hU - hD];
+
+    // Normale = cross(dx, dy), normalisée
+    return normalize(cross(dx, dy));
+  }
+
+  /**
+   * Produit scalaire normal → lumière, clampé dans [MIN_BRIGHTNESS, 1.0].
+   */
+  private brightness(normal: [number, number, number]): number {
+    const d = dot(normal, LIGHT_DIR);
+    // d ∈ [-1, 1] → on remappe dans [MIN_BRIGHTNESS, 1.0]
+    return MIN_BRIGHTNESS + (1 - MIN_BRIGHTNESS) * (d + 1) / 2;
+  }
+
+  /**
+   * Dessine l'overlay d'éclairage sur un quad.
+   *
+   * Le quad est divisé en 2 triangles. Chaque triangle reçoit un
+   * gradient linéaire entre son sommet le plus lumineux et le plus
+   * sombre, avec une opacité inversement proportionnelle à la luminosité.
+   *
+   * Pour chaque triangle on dessine un gradient noir semi-transparent
+   * dont l'alpha varie de (1 - brightness_max) à (1 - brightness_min).
+   */
+  private drawLighting(
     ctx: CanvasRenderingContext2D,
-    img: HTMLImageElement,
     pTL: { x: number; y: number },
     pTR: { x: number; y: number },
     pBR: { x: number; y: number },
     pBL: { x: number; y: number },
-    scaleMultiplier = 1.0,
+    [bTL, bTR, bBR, bBL]: [number, number, number, number],
   ): void {
-    // Centre du quad
-    const cx = (pTL.x + pBR.x) / 2;
-    const cy = (pTL.y + pBR.y) / 2;
+    // Triangle 1 : (TL, TR, BR)
+    this.drawTriangleLighting(ctx, pTL, pTR, pBR, bTL, bTR, bBR);
+    // Triangle 2 : (TL, BR, BL)
+    this.drawTriangleLighting(ctx, pTL, pBR, pBL, bTL, bBR, bBL);
+  }
 
-    // Dimensions du quad (bounding box)
-    const xs = [pTL.x, pTR.x, pBR.x, pBL.x];
-    const ys = [pTL.y, pTR.y, pBR.y, pBL.y];
-    const bw = Math.max(...xs) - Math.min(...xs);
-    const bh = Math.max(...ys) - Math.min(...ys);
+  /**
+   * Dessine l'overlay d'éclairage pour un triangle.
+   * Crée un gradient linéaire entre le point le plus lumineux et
+   * le plus sombre.
+   */
+  private drawTriangleLighting(
+    ctx: CanvasRenderingContext2D,
+    pA: { x: number; y: number },
+    pB: { x: number; y: number },
+    pC: { x: number; y: number },
+    bA: number,
+    bB: number,
+    bC: number,
+  ): void {
+    // Trouver le point le plus lumineux et le plus sombre
+    let brightP = pA, darkP = pA;
+    let bRight = bA, bDark = bA;
 
-    // Scale pour couvrir le quad, ajusté par le multiplicateur
-    const scaleX = bw / img.width;
-    const scaleY = bh / img.height;
-    const scale = Math.max(scaleX, scaleY) * scaleMultiplier;
+    const check = (p: { x: number; y: number }, b: number) => {
+      if (b > bRight) { bRight = b; brightP = p; }
+      if (b < bDark)  { bDark  = b; darkP  = p; }
+    };
+    check(pB, bB);
+    check(pC, bC);
 
-    const dw = img.width * scale;
-    const dh = img.height * scale;
+    // Si pas de variation de luminosité → rien à dessiner
+    if (bRight <= bDark) return;
 
-    ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+    // Gradient du point lumineux vers le point sombre
+    const alphaLight = 1 - bRight; // ~0 au max
+    const alphaDark  = 1 - bDark;  // ~0.35 au max
+
+    const grad = ctx.createLinearGradient(brightP.x, brightP.y, darkP.x, darkP.y);
+    grad.addColorStop(0, `rgba(0, 0, 0, ${alphaLight.toFixed(3)})`);
+    grad.addColorStop(1, `rgba(0, 0, 0, ${alphaDark.toFixed(3)})`);
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(pA.x, pA.y);
+    ctx.lineTo(pB.x, pB.y);
+    ctx.lineTo(pC.x, pC.y);
+    ctx.closePath();
+    ctx.fill();
   }
 
   // ================================================================
@@ -287,7 +326,8 @@ export class TileRenderer {
       }
     }
 
-    console.warn('[TileRenderer] createPattern fallback');
+    // Fallback procédural
+    console.warn('[TileRenderer] createGrassPattern fallback');
     const patternCanvas = document.createElement('canvas');
     patternCanvas.width = 64;
     patternCanvas.height = 64;
@@ -295,6 +335,10 @@ export class TileRenderer {
     this.drawFallbackGrass(pctx, 64, 64);
     return ctx.createPattern(patternCanvas, 'repeat') || null;
   }
+
+  // ================================================================
+  // Helpers
+  // ================================================================
 
   private fillQuad(
     ctx: CanvasRenderingContext2D,
@@ -310,6 +354,14 @@ export class TileRenderer {
     ctx.lineTo(pBL.x, pBL.y);
     ctx.closePath();
     ctx.fill();
+  }
+
+  private vert(
+    vx: number, vy: number, h: number,
+    origin: { screenX: number; screenY: number },
+  ): { x: number; y: number } {
+    const p = mapToScreen(vx, vy, h);
+    return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
   }
 
   private drawFallbackGrass(ctx: CanvasRenderingContext2D, w: number, h: number): void {
@@ -331,18 +383,6 @@ export class TileRenderer {
       ctx.lineTo(gx + 2, gy - 5);
       ctx.stroke();
     }
-  }
-
-  // ================================================================
-  // Helpers
-  // ================================================================
-
-  private vert(
-    vx: number, vy: number, h: number,
-    origin: { screenX: number; screenY: number },
-  ): { x: number; y: number } {
-    const p = mapToScreen(vx, vy, h);
-    return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
   }
 
   clearAll(): void {
