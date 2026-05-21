@@ -6,6 +6,13 @@
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
+ * Auto-Tiling (8-way bitmask) :
+ *   Pour chaque tuile, on analyse les 8 voisins. Si le voisin est du
+ *   même type, le bit correspondant est activé (N=1, NE=2, E=4, SE=8,
+ *   S=16, SW=32, W=64, NW=128). Les tuiles en bordure reçoivent un
+ *   overlay de transition semi-transparent le long de l'arête partagée
+ *   avec un type différent → bords arrondis et naturels.
+ *
  * Éclairage :
  *   Vertex lighting (Gouraud shading) par tessellation.
  *   Chaque tuile est subdivisée en N×N sous-quads. Pour chaque sous-quad,
@@ -22,6 +29,56 @@ import { mapToScreen } from './CoordinateSystem';
 
 /** Nombre de subdivisions par tuile pour l'éclairage */
 const LIGHT_SUBDIV = 8;
+
+// ================================================================
+// Auto-Tiling : poids des bits 8-way
+// ================================================================
+
+const BIT_N   = 1;
+const BIT_NE  = 2;
+const BIT_E   = 4;
+const BIT_SE  = 8;
+const BIT_S   = 16;
+const BIT_SW  = 32;
+const BIT_W   = 64;
+const BIT_NW  = 128;
+
+const BIT_DIRS: [number, number, number][] = [
+  [0, -1, BIT_N],   [1, -1, BIT_NE],
+  [1,  0, BIT_E],   [1,  1, BIT_SE],
+  [0,  1, BIT_S],   [-1, 1, BIT_SW],
+  [-1, 0, BIT_W],   [-1,-1, BIT_NW],
+];
+
+/** Largeur de la bande de transition (fraction de la tuile) */
+const TRANSITION_WIDTH = 0.18; // 18% depuis le bord
+
+// ================================================================
+// Couleurs de base par type de terrain (pour les overlays)
+// ================================================================
+
+function baseColorForType(type: TileType): string {
+  switch (type) {
+    case TileType.GRASS: return '#4a8f4a';
+    case TileType.FAIRWAY: return '#5a9f4a';
+    case TileType.GREEN: return '#3a9a3a';
+    case TileType.SAND: return '#c4b878';
+    case TileType.WATER: return '#3a7ab8';
+    case TileType.PATH: return '#8a7a5a';
+    case TileType.TEE: return '#4a8f4a';
+    case TileType.BUILDING: return '#6a6a6a';
+    case TileType.TREE: return '#2d5a1e';
+    case TileType.BUSH: return '#3a7a2a';
+    case TileType.FLOWER: return '#5a8a3a';
+    case TileType.ROUGH: return '#3a7a3a';
+    case TileType.BRIDGE: return '#6a5a3a';
+    case TileType.HOLE: return '#2a3a2a';
+    case TileType.WATER_HAZARD: return '#3a7ab8';
+    case TileType.EMPTY: return '#1a2a1a';
+    case TileType.ROCK: return '#6a5a4a';
+    default: return '#4a8f4a';
+  }
+}
 
 // ================================================================
 // Textures Rock
@@ -98,6 +155,15 @@ function dot(
 /** Interpolation linéaire */
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/** Interpolation point 2D */
+function lerpPt(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  t: number,
+): { x: number; y: number } {
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
 }
 
 // ================================================================
@@ -208,38 +274,167 @@ export class TileRenderer {
       const [pTL, pTR, pBR, pBL] = q.verts;
 
       if (q.type === TileType.ROCK) {
-        // Texture rocheuse en pattern fill
         this.drawRockTile(ctx, q);
       } else if (q.type === TileType.TREE) {
-        // Texture Woods (sol forestier)
         this.drawWoodsTile(ctx, q);
       } else if (q.type === TileType.ROUGH) {
-        // Herbe haute (Rough) — même pattern herbe, fond plus foncé
         ctx.fillStyle = '#3a7a3a';
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
         ctx.fillStyle = fillStyle;
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
       } else {
-        // Fond opaque vert (anti-gap de transparence)
         ctx.fillStyle = '#4a8f4a';
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-
-        // Pattern herbe
         ctx.fillStyle = fillStyle;
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
       }
     }
 
-    // ── 6. Lightmap overlay (multiply blend) ──
+    // ── 6. Transitions auto-tiling (overlays semi-transparents) ──
+    this.renderAutoTileOverlays(ctx, quads);
+
+    // ── 7. Lightmap overlay (multiply blend) ──
     this.renderLightmap(ctx, cw, ch, offsetX, offsetY, quads, brightMap);
 
     canvas.refresh();
 
-    // ── 7. Image Phaser unique ──
+    // ── 8. Image Phaser unique ──
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
+  }
+
+  // ================================================================
+  // Auto-Tiling : bitmask 8-way + overlays de transition
+  // ================================================================
+
+  /**
+   * Calcule le bitmask 8-way pour une tuile.
+   * Compare le type de la tuile centrale avec ses 8 voisins.
+   *
+   * Poids : N=1, NE=2, E=4, SE=8, S=16, SW=32, W=64, NW=128
+   *
+   * @returns un entier 0-255
+   */
+  private calculateBitmask(x: number, y: number, tileType: TileType): number {
+    let mask = 0;
+    for (const [dx, dy, bit] of BIT_DIRS) {
+      const n = this.terrain.tileAt(x + dx, y + dy);
+      if (n && n.type === tileType) {
+        mask |= bit;
+      }
+    }
+    return mask;
+  }
+
+  /**
+   * Rendu des overlays de transition pour adoucir les bords
+   * entre types de terrain différents.
+   *
+   * Pour chaque tuile, on calcule le bitmask 8-way. Pour chaque
+   * direction cardinale (N/E/S/W) où le voisin est d'un type
+   * différent, on dessine une bande semi-transparente le long
+   * de l'arête partagée, remplie avec la couleur de base du voisin.
+   *
+   * Les diagonales (NE/SE/SW/NW) sont gérées par intersection
+   * des bandes cardinales adjacentes.
+   */
+  private renderAutoTileOverlays(
+    ctx: CanvasRenderingContext2D,
+    quads: QuadTile[],
+  ): void {
+    for (const q of quads) {
+      const mask = this.calculateBitmask(q.x, q.y, q.type);
+      const [pTL, pTR, pBR, pBL] = q.verts;
+      const tw = TRANSITION_WIDTH;
+
+      // ── NORTH (voisin y-1 de type différent) ──
+      if (!(mask & BIT_N)) {
+        const neighbor = this.terrain.tileAt(q.x, q.y - 1);
+        if (neighbor && neighbor.type !== q.type) {
+          const ovColor = this.overlayColor(neighbor.type, 0.45);
+          // Bande du bord nord : TL → TR → inner_TR → inner_TL
+          const iTL = lerpPt(pTL, pBL, tw);
+          const iTR = lerpPt(pTR, pBR, tw);
+          ctx.fillStyle = ovColor;
+          ctx.beginPath();
+          ctx.moveTo(pTL.x, pTL.y);
+          ctx.lineTo(pTR.x, pTR.y);
+          ctx.lineTo(iTR.x, iTR.y);
+          ctx.lineTo(iTL.x, iTL.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // ── EAST (voisin x+1 de type différent) ──
+      if (!(mask & BIT_E)) {
+        const neighbor = this.terrain.tileAt(q.x + 1, q.y);
+        if (neighbor && neighbor.type !== q.type) {
+          const ovColor = this.overlayColor(neighbor.type, 0.45);
+          // Bande du bord est : inner_TR → TR → BR → inner_BR
+          const iTR = lerpPt(pTL, pTR, 1 - tw);
+          const iBR = lerpPt(pBL, pBR, 1 - tw);
+          ctx.fillStyle = ovColor;
+          ctx.beginPath();
+          ctx.moveTo(iTR.x, iTR.y);
+          ctx.lineTo(pTR.x, pTR.y);
+          ctx.lineTo(pBR.x, pBR.y);
+          ctx.lineTo(iBR.x, iBR.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // ── SOUTH (voisin y+1 de type différent) ──
+      if (!(mask & BIT_S)) {
+        const neighbor = this.terrain.tileAt(q.x, q.y + 1);
+        if (neighbor && neighbor.type !== q.type) {
+          const ovColor = this.overlayColor(neighbor.type, 0.45);
+          // Bande du bord sud : iBL → iBR → BR → BL
+          const iBL = lerpPt(pTL, pBL, 1 - tw);
+          const iBR = lerpPt(pTR, pBR, 1 - tw);
+          ctx.fillStyle = ovColor;
+          ctx.beginPath();
+          ctx.moveTo(iBL.x, iBL.y);
+          ctx.lineTo(iBR.x, iBR.y);
+          ctx.lineTo(pBR.x, pBR.y);
+          ctx.lineTo(pBL.x, pBL.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // ── WEST (voisin x-1 de type différent) ──
+      if (!(mask & BIT_W)) {
+        const neighbor = this.terrain.tileAt(q.x - 1, q.y);
+        if (neighbor && neighbor.type !== q.type) {
+          const ovColor = this.overlayColor(neighbor.type, 0.45);
+          // Bande du bord ouest : TL → iTL → iBL → BL
+          const iTL = lerpPt(pTL, pTR, tw);
+          const iBL = lerpPt(pBL, pBR, tw);
+          ctx.fillStyle = ovColor;
+          ctx.beginPath();
+          ctx.moveTo(pTL.x, pTL.y);
+          ctx.lineTo(iTL.x, iTL.y);
+          ctx.lineTo(iBL.x, iBL.y);
+          ctx.lineTo(pBL.x, pBL.y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+  }
+
+  /** Couleur de l'overlay avec opacité */
+  private overlayColor(type: TileType, alpha: number): string {
+    const c = baseColorForType(type);
+    // Convertir #RRGGBB en rgba
+    const r = parseInt(c.slice(1, 3), 16);
+    const g = parseInt(c.slice(3, 5), 16);
+    const b = parseInt(c.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
   }
 
   // ================================================================
