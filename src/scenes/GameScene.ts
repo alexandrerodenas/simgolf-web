@@ -3,7 +3,7 @@
  *
  * Affiche le terrain 16×16 en quadrilatères isométriques 2D.
  * Chaque tuile est projetée depuis ses 4 hauteurs de coin.
- * Arbres FLC animés placés sur la carte.
+ * Arbres FLC animés placés sur les tuiles TREE (Woods) générées.
  * Navigation : drag scroll + zoom molette.
  */
 
@@ -16,9 +16,7 @@ import { mapToScreen } from '../render/CoordinateSystem';
 import {
   calculateTransitionBitmask,
   getTransitionTextureKey,
-  TerrainTransitionMaps,
 } from '../render/TransitionLUT';
-import { TILE } from '../config';
 
 interface TreeDef {
   atlasKey: string;
@@ -28,11 +26,9 @@ interface TreeDef {
   groundOriginY: number;
 }
 
-const TREES: TreeDef[] = [
-  // WillowTree : 85x78, sol à y=56/78
-  { atlasKey: 'flic_willow', tileX: 8, tileY: 8, groundOriginY: 56 / 78 },
-  // TreeMapleMedium : 59x76, sol à y=63/76
-  { atlasKey: 'flic_maple',  tileX: 6, tileY: 7, groundOriginY: 63 / 76 },
+const TREE_ATLASES: { atlasKey: string; groundOriginY: number }[] = [
+  { atlasKey: 'flic_willow', groundOriginY: 56 / 78 },
+  { atlasKey: 'flic_maple',  groundOriginY: 63 / 76 },
 ];
 
 export class GameScene extends Phaser.Scene {
@@ -51,38 +47,18 @@ export class GameScene extends Phaser.Scene {
     const gen = new TerrainGenerator();
     gen.generateNatural(terrain);
 
-    // ── Chercher des tuiles plates pour les arbres ──
-    const flatTiles = this.findFlatTiles(terrain);
-
-    if (flatTiles.length === 0) {
-      console.warn('[GameScene] Aucune tuile plate trouvée pour les arbres');
-    }
-
-    // Associer chaque arbre à une tuile plate
-    const placedTrees: TreeDef[] = [];
-    for (let i = 0; i < TREES.length && i < flatTiles.length; i++) {
-      const ft = flatTiles[i];
-      placedTrees.push({ ...TREES[i], tileX: ft.x, tileY: ft.y });
-    }
-
-    // ── Sol Woods sous les arbres (AVANT le rendu) ──
-    for (const t of placedTrees) {
-      const hash = (t.tileX * 73 + t.tileY * 37 + 42) & 0x7fffffff;
-      terrain.setTileType(t.tileX, t.tileY, TileType.TREE, (hash % 36) + 1);
-      // Voisins cardinaux → ROUGH (lisière de forêt)
-      this.setNeighborRough(terrain, t.tileX - 1, t.tileY);
-      this.setNeighborRough(terrain, t.tileX + 1, t.tileY);
-      this.setNeighborRough(terrain, t.tileX, t.tileY - 1);
-      this.setNeighborRough(terrain, t.tileX, t.tileY + 1);
-    }
-
     this.isoRenderer = new IsometricRenderer(this, terrain, {
       zoom: 1,
       enableDrag: true,
     });
     this.isoRenderer.init();
 
-    // ── Arbres FLC ──
+    // ── Arbres FLC sur les tuiles TREE (Woods) ──
+    // Le TerrainGenerator a déjà placé des tuiles TREE (~8% de l'herbe).
+    // On associe chaque arbre FLC à une tuile TREE aléatoire.
+    const treeTiles = this.findTreeTiles(terrain);
+    const placedTrees = this.placeTreesOnTiles(terrain, treeTiles);
+
     for (const t of placedTrees) {
       this.spawnTree(terrain, t);
     }
@@ -96,44 +72,63 @@ export class GameScene extends Phaser.Scene {
     this.createDebugButton();
   }
 
+  /** Trouve les tuiles TREE (Woods) pour y placer des sprites FLC */
+  private findTreeTiles(terrain: TerrainEngine): Array<{ x: number; y: number }> {
+    const tiles: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < terrain.height; y++) {
+      for (let x = 0; x < terrain.width; x++) {
+        const tile = terrain.tileAt(x, y);
+        if (tile && tile.type === TileType.TREE) {
+          tiles.push({ x, y });
+        }
+      }
+    }
+    return tiles;
+  }
+
+  /** Associe les sprites FLC aux tuiles TREE disponibles */
+  private placeTreesOnTiles(
+    terrain: TerrainEngine,
+    treeTiles: Array<{ x: number; y: number }>,
+  ): TreeDef[] {
+    // On mélange les tuiles TREE (déterministe selon position)
+    const shuffled = [...treeTiles].sort((a, b) => {
+      const ha = (a.x * 73 + a.y * 37) % 65536;
+      const hb = (b.x * 73 + b.y * 37) % 65536;
+      return ha - hb;
+    });
+
+    const placed: TreeDef[] = [];
+    const count = Math.min(TREE_ATLASES.length, shuffled.length);
+
+    for (let i = 0; i < count; i++) {
+      const tile = shuffled[i];
+      // Épaissir le sol autour (voisins → ROUGH pour créer une lisière)
+      this.setNeighborRough(terrain, tile.x - 1, tile.y);
+      this.setNeighborRough(terrain, tile.x + 1, tile.y);
+      this.setNeighborRough(terrain, tile.x, tile.y - 1);
+      this.setNeighborRough(terrain, tile.x, tile.y + 1);
+
+      placed.push({
+        atlasKey: TREE_ATLASES[i].atlasKey,
+        tileX: tile.x,
+        tileY: tile.y,
+        groundOriginY: TREE_ATLASES[i].groundOriginY,
+      });
+    }
+
+    return placed;
+  }
+
   /** Passe un voisin en ROUGH si c'est de l'herbe (lisière de forêt) */
   private setNeighborRough(terrain: TerrainEngine, x: number, y: number): void {
     const tile = terrain.tileAt(x, y);
     if (!tile) return;
-    // Ne change que les tuiles GRASS, pas les ROCK, TREE, WATER etc.
     if (tile.type === TileType.GRASS) {
       const hash = (x * 17 + y * 31 + 7) & 0x7fffffff;
-      const variant = (hash % 9) + 1; // 1..9
+      const variant = (hash % 9) + 1;
       terrain.setTileType(x, y, TileType.ROUGH, variant);
     }
-  }
-
-  /** Trouve les tuiles plates (4 coins à la même hauteur), non ROCK */
-  private findFlatTiles(
-    terrain: TerrainEngine,
-  ): Array<{ x: number; y: number; height: number }> {
-    const tiles: Array<{ x: number; y: number; height: number }> = [];
-    for (let y = 1; y < terrain.height - 1; y++) {
-      for (let x = 1; x < terrain.width - 1; x++) {
-        const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(x, y);
-        if (hTL === hTR && hTR === hBR && hBR === hBL) {
-          // Pas de rocher sur cette tuile
-          const tile = terrain.tileAt(x, y);
-          if (tile && tile.type !== TileType.ROCK) {
-            tiles.push({ x, y, height: hTL });
-          }
-        }
-      }
-    }
-    // Trier par proximité au centre de la carte
-    const cx = terrain.width / 2;
-    const cy = terrain.height / 2;
-    tiles.sort((a, b) => {
-      const da = Math.abs(a.x - cx) + Math.abs(a.y - cy);
-      const db = Math.abs(b.x - cx) + Math.abs(b.y - cy);
-      return da - db;
-    });
-    return tiles;
   }
 
   update(): void {
@@ -146,11 +141,9 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const { atlasKey, tileX, tileY, groundOriginY } = def;
 
-    // Hauteur moyenne au centre de la tuile
     const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(tileX, tileY);
     const hAvg = (hTL + hTR + hBR + hBL) / 4;
 
-    // Position isométrique au centre de la tuile + hauteur
     const p = mapToScreen(tileX + 0.5, tileY + 0.5, hAvg);
 
     const tex = this.textures.get(atlasKey);
@@ -163,12 +156,12 @@ export class GameScene extends Phaser.Scene {
     if (frames.length === 0) return;
 
     const img = this.add.image(p.screenX, p.screenY, atlasKey, frames[0]);
-    img.setOrigin(0.5, groundOriginY);            // Ancré sur la ligne de sol (pas au bas de l'image)
-    img.setDepth(tileX + tileY + 1);              // Painter's depth au-dessus du terrain
+    img.setOrigin(0.5, groundOriginY);
+    img.setDepth(tileX + tileY + 1);
 
     console.log(
-      `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → ` +
-      `écran (${p.screenX}, ${p.screenY}), sol_origin=${groundOriginY.toFixed(3)}`,
+      `[GameScene] ${atlasKey} placé sur tuile TREE (${tileX}, ${tileY}) → ` +
+      `écran (${p.screenX}, ${p.screenY})`,
     );
   }
 
@@ -191,45 +184,42 @@ export class GameScene extends Phaser.Scene {
   private toggleDebug(terrain: TerrainEngine): void {
     this.showDebug = !this.showDebug;
 
-    // Détruire les labels existants
     for (const lbl of this.debugLabels) lbl.destroy();
     this.debugLabels = [];
     if (!this.showDebug) return;
 
-    // Créer les labels pour chaque tuile
     for (let y = 0; y < terrain.height; y++) {
       for (let x = 0; x < terrain.width; x++) {
         const tile = terrain.tileAt(x, y);
         if (!tile) continue;
 
-        // Déterminer le label : lettre + chiffre
         let label = '?';
-        if (tile.type === TileType.TREE) {
-          // Pour Woods : extraire depuis la LUT comme drawWoodsTile
-          const group = (tile.variation - 1) % 4;
-          const variation = (tile.variation - 1) % 9 + 1;
-          const mask = this.calculateBitmask(terrain, x, y, TileType.TREE);
+        if (tile.type === TileType.TREE || tile.type === TileType.ROUGH) {
+          const group = ((tile.variation - 1) % 4 + 4) % 4;
+          const variation = ((tile.variation - 1) % 9 + 9) % 9 + 1;
+          const mask = this.calculateBitmask(terrain, x, y, tile.type);
+          const prefix = tile.type === TileType.TREE ? 'Woods' : 'Rough';
           const key = getTransitionTextureKey(
-            'Woods', group, variation, mask,
+            prefix, group, variation, mask,
             (k: string) => this.textures.exists(k),
           );
-          // Extraire groupe + suffixe : "WOODSA0005" → "A5"
-          const m = key.match(/WOODS([A-D])(\d+)/);
-          if (m) label = `${m[1]}${parseInt(m[2], 10)}`;
+          const m = key.match(/(WOODS|ROUGH)([A-D])(\d+)/);
+          if (m) label = this.shortenType(tile.type) + `${m[2]}${parseInt(m[3], 10)}`;
+        } else if (tile.type === TileType.GRASS) {
+          label = `G${tile.variation || ''}`;
         } else {
-          // Autres types : lettre du type + variation
           const typeNames: Record<number, string> = {
             [TileType.GRASS]: 'G', [TileType.FAIRWAY]: 'F',
             [TileType.GREEN]: 'GN', [TileType.SAND]: 'S',
             [TileType.WATER]: 'W', [TileType.PATH]: 'P',
             [TileType.TEE]: 'T', [TileType.ROUGH]: 'R',
-            [TileType.ROCK]: 'K',
+            [TileType.ROCK]: 'K', [TileType.TREE]: 'W',
+            [TileType.FLOWER]: 'FL',
           };
           const ch = typeNames[tile.type] ?? `${tile.type}`;
           label = `${ch}${tile.variation || ''}`;
         }
 
-        // Centre de la tuile en isométrique
         const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(x, y);
         const hAvg = (hTL + hTR + hBR + hBL) / 4;
         const pos = mapToScreen(x + 0.5, y + 0.5, hAvg);
@@ -247,21 +237,19 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Calcule le bitmask 8-way (copie de TileRenderer.calculateBitmask) */
+  private shortenType(type: TileType): string {
+    const map: Record<number, string> = {
+      [TileType.TREE]: 'W', [TileType.ROUGH]: 'R',
+    };
+    return map[type] ?? '?';
+  }
+
+  /** Calcule le bitmask 8-way (délègue à TransitionLUT) */
   private calculateBitmask(
     terrain: TerrainEngine,
     x: number, y: number,
     tileType: TileType,
   ): number {
-    const dirs: [number, number, number][] = [
-      [0, -1, 1], [1, -1, 2], [1, 0, 4], [1, 1, 8],
-      [0, 1, 16], [-1, 1, 32], [-1, 0, 64], [-1, -1, 128],
-    ];
-    let mask = 0;
-    for (const [dx, dy, bit] of dirs) {
-      const n = terrain.tileAt(x + dx, y + dy);
-      if (n && n.type === tileType) mask |= bit;
-    }
-    return mask;
+    return calculateTransitionBitmask(terrain, x, y, tileType);
   }
 }

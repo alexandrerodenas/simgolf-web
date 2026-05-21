@@ -227,13 +227,8 @@ export class TileRenderer {
       } else if (TerrainTransitionMaps[typeToPrefix(q.type)]) {
         // Transition tile (Woods, Rough, Sand, Water, Green, Grass...)
         this.drawTransitionTile(ctx, q);
-      } else if (q.type === TileType.ROUGH) {
-        ctx.fillStyle = '#3a7a3a';
-        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-        ctx.fillStyle = fillStyle;
-        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
       } else {
+        // Fallback : tuiles sans LUT (PATH, TEE, BUILDING...)
         ctx.fillStyle = '#4a8f4a';
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
         ctx.fillStyle = fillStyle;
