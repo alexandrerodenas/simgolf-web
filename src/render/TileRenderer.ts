@@ -38,6 +38,17 @@ const ROCK_TEXTURES = (() => {
   return names;
 })();
 
+/** Noms des textures Woods (4 groupes × 9 variantes = 36) */
+const WOODS_TEXTURES = (() => {
+  const names: string[] = [];
+  for (const group of ['A', 'B', 'C', 'D']) {
+    for (let v = 1; v <= 9; v++) {
+      names.push(`WOODS${group}${v.toString().padStart(4, '0')}`);
+    }
+  }
+  return names;
+})();
+
 // ================================================================
 // Éclairage directionnel
 // ================================================================
@@ -199,6 +210,9 @@ export class TileRenderer {
       if (q.type === TileType.ROCK) {
         // Texture rocheuse en pattern fill
         this.drawRockTile(ctx, q);
+      } else if (q.type === TileType.TREE) {
+        // Texture Woods (sol forestier)
+        this.drawWoodsTile(ctx, q);
       } else {
         // Fond opaque vert (anti-gap de transparence)
         ctx.fillStyle = '#4a8f4a';
@@ -431,6 +445,66 @@ export class TileRenderer {
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
   }
 
+  // ================================================================
+  // Rendu des tuiles WOODS (sol forestier)
+  // ================================================================
+
+  /**
+   * Dessine une tuile TREE avec sa texture Woods pattern fill.
+   * La variation (1-36) détermine quelle texture WOODSA/D0001-0009 utiliser.
+   */
+  private drawWoodsTile(
+    ctx: CanvasRenderingContext2D,
+    quad: QuadTile,
+  ): void {
+    const [pTL, pTR, pBR, pBL] = quad.verts;
+    const idx = (quad.variation - 1) % WOODS_TEXTURES.length;
+    const textureKey = WOODS_TEXTURES[idx];
+
+    // Fond opaque vert foncé (couleur de base de la forêt)
+    ctx.fillStyle = '#2d5a1e';
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+
+    // Pattern Woods
+    const pattern = this.getWoodsPattern(ctx, textureKey);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+    } else {
+      const grassPattern = this.createGrassPattern(ctx);
+      ctx.fillStyle = grassPattern || '#2d5a1e';
+    }
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+  }
+
+  /** Cache de patterns Woods */
+  private woodsPatternCache = new Map<string, CanvasPattern | null>();
+
+  private getWoodsPattern(
+    ctx: CanvasRenderingContext2D,
+    textureKey: string,
+  ): CanvasPattern | null {
+    if (this.woodsPatternCache.has(textureKey)) {
+      return this.woodsPatternCache.get(textureKey) ?? null;
+    }
+
+    const tex = this.scene.textures.get(textureKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        this.woodsPatternCache.set(textureKey, p ?? null);
+        return p ?? null;
+      } catch {
+        // fallback
+      }
+    }
+
+    this.woodsPatternCache.set(textureKey, null);
+    return null;
+  }
+
   /** Cache de patterns Rock */
   private rockPatternCache = new Map<string, CanvasPattern | null>();
 
@@ -541,6 +615,7 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
+    this.woodsPatternCache.clear();
     this.rockPatternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);

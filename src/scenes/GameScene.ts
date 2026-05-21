@@ -9,6 +9,7 @@
 
 import Phaser from 'phaser';
 import { TerrainEngine, TerrainGenerator } from '../core';
+import { TileType } from '../core/types';
 import { MAP_SIZE } from '../config';
 import { IsometricRenderer } from '../render';
 import { mapToScreen } from '../render/CoordinateSystem';
@@ -45,6 +46,12 @@ export class GameScene extends Phaser.Scene {
       enableDrag: true,
     });
     this.isoRenderer.init();
+
+    // ── Sol Woods sous les arbres ──
+    for (const t of TREES) {
+      const hash = (t.tileX * 73 + t.tileY * 37 + 42) & 0x7fffffff;
+      terrain.setTileType(t.tileX, t.tileY, TileType.TREE, (hash % 36) + 1);
+    }
 
     // ── Arbres FLC ──
     for (const t of TREES) {
