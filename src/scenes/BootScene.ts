@@ -1,45 +1,68 @@
 /**
  * BootScene — Chargement minimal des assets.
  *
- * - RoughA0001..E0005 : textures de base pour le pattern fill herbe
- * - WoodsA0001..D0009 : textures de tuiles terrain boisées (36 textures)
+ * Textures organisées en sous-dossiers, tous les noms en MAJUSCULES.
+ * Subdirs : rough/, fairway/, green/, sand/, water/, woods/, rock/
+ * Clés Phaser : ROUGHA0001, FAIRWAYA0001, WOODSA0001, etc.
  */
 
 import Phaser from 'phaser';
 
-/** Textures d'herbe du jeu original (thème Parkland) */
+/** Textures d'herbe (thème Parkland) */
 const TEXTURES = (() => {
-  const letters = ['A', 'B', 'C', 'D', 'E'];
   const keys: string[] = [];
-  for (const letter of letters) {
+  const groups = ['A', 'B', 'C', 'D', 'E'];
+  for (const group of groups) {
     for (let v = 1; v <= 5; v++) {
-      keys.push(`Rough${letter}${v.toString().padStart(4, '0')}`);
+      keys.push(`ROUGH${group}${v.toString().padStart(4, '0')}`);
     }
   }
   return keys;
 })();
 
-/** Textures Woods (tuiles terrain boisées, 4 groupes × 9 variantes) */
+const TEXTURE_SUBDIRS: Record<string, string> = {
+  ROUGH: 'rough',
+  FAIRWAY: 'fairway',
+  PUTTINGGREEN: 'green',
+  SANDBUNKER1: 'sand',
+  WATERDEEP: 'water',
+  WATERMIDDLE: 'water',
+  WATERSHALLOW: 'water',
+  WOODS: 'woods',
+  ROCK: 'rock',
+};
+
+/** Textures Woods (4 groupes × 9 variantes) */
 const WOODS = (() => {
   const keys: string[] = [];
   for (const group of ['A', 'B', 'C', 'D']) {
     for (let v = 1; v <= 9; v++) {
-      keys.push(`woods${group}${v.toString().padStart(4, '0')}`);
+      keys.push(`WOODS${group}${v.toString().padStart(4, '0')}`);
     }
   }
   return keys;
 })();
 
-/** Textures Rock (sol rocheux, 5 groupes × 9 variantes) */
+/** Textures Rock (5 groupes × 9 variantes) */
 const ROCKS = (() => {
   const keys: string[] = [];
   for (const group of ['A', 'B', 'C', 'D', 'E']) {
     for (let v = 1; v <= 9; v++) {
-      keys.push(`rock${group}${v.toString().padStart(4, '0')}`);
+      keys.push(`ROCK${group}${v.toString().padStart(4, '0')}`);
     }
   }
   return keys;
 })();
+
+function keyToPath(key: string): string {
+  // Cherche le préfixe dans TEXTURE_SUBDIRS
+  for (const [prefix, subdir] of Object.entries(TEXTURE_SUBDIRS)) {
+    if (key.startsWith(prefix)) {
+      return `assets/textures/parkland/${subdir}/${key}.webp`;
+    }
+  }
+  return `assets/textures/parkland/rough/${key}.webp`;
+}
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -48,16 +71,16 @@ export class BootScene extends Phaser.Scene {
 
   preload(): void {
     for (const key of TEXTURES) {
-      this.load.image(key, `assets/textures/parkland/${key}.webp`);
+      this.load.image(key, keyToPath(key));
     }
     for (const key of WOODS) {
-      this.load.image(key, `assets/textures/parkland/${key}.webp`);
+      this.load.image(key, keyToPath(key));
     }
     for (const key of ROCKS) {
-      this.load.image(key, `assets/textures/parkland/${key}.webp`);
+      this.load.image(key, keyToPath(key));
     }
 
-    // FLC Sprite : Willow Tree (arbre animé)
+    // FLC Sprite : Willow Tree
     this.load.atlas(
       'flic_willow',
       'assets/flics/WillowTree/WillowTree.png',

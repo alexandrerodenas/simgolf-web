@@ -32,7 +32,7 @@ const ROCK_TEXTURES = (() => {
   const names: string[] = [];
   for (const group of ['A', 'B', 'C', 'D', 'E']) {
     for (let v = 1; v <= 9; v++) {
-      names.push(`rock${group}${v.toString().padStart(4, '0')}`);
+      names.push(`ROCK${group}${v.toString().padStart(4, '0')}`);
     }
   }
   return names;
@@ -464,7 +464,7 @@ export class TileRenderer {
   // ================================================================
 
   private createGrassPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
-    const srcKey = 'RoughA0001';
+    const srcKey = 'ROUGHA0001';
     const tex = this.scene.textures.get(srcKey);
     const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
 
