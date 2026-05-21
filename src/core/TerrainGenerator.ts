@@ -43,23 +43,13 @@ export class TerrainGenerator {
       }
     }
 
-    // ── 5. Tout en herbe (GRASS) avec variante déterministe ──
+    // ── 5. Tout en herbe (GRASS) ──
+    // Pas d'arbres en tuiles terrain — les arbres FLC sont des sprites overlay
     for (let y = 0; y < terrain.height; y++) {
       for (let x = 0; x < terrain.width; x++) {
         const hash = (x * 31 + y * 17) & 0x7fffffff;
         const variant = (hash % 9) + 1; // 1..9
         terrain.setTileType(x, y, TileType.GRASS, variant);
-      }
-    }
-
-    // ── 6. Arbres : ~10% des tuiles deviennent des TREE ──
-    // Variantes 1..36 = WoodsA0001..WoodsD0009 (4 groupes × 9)
-    for (let y = 0; y < terrain.height; y++) {
-      for (let x = 0; x < terrain.width; x++) {
-        const hash = (x * 73 + y * 37 + 42) & 0x7fffffff;
-        if (hash % 10 === 0) {
-          terrain.setTileType(x, y, TileType.TREE, (hash % 36) + 1);
-        }
       }
     }
   }
