@@ -377,6 +377,10 @@ export class TileRenderer {
       const tw = TRANSITION_WIDTH;
       const ownPriority = LAYER_PRIORITY[q.type] ?? 0;
 
+      // Pattern du terrain dominant
+      const dominantPattern = this.getPatternForQuad(ctx, q);
+      const fallbackColor = baseColorForType(q.type);
+
       // ── NORTH (voisin y-1) ──
       if (!(mask & BIT_N)) {
         const neighbor = this.terrain.tileAt(q.x, q.y - 1);
@@ -384,10 +388,9 @@ export class TileRenderer {
             ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTL = lerpPt(pTL, pBL, tw);
           const iTR = lerpPt(pTR, pBR, tw);
-          this.fillTransitionGradient(
+          this.fillTransitionPattern(
             ctx, pTL, pTR, iTR, iTL,
-            baseColorForType(neighbor.type),  // couleur à l'arête (voisin)
-            baseColorForType(q.type),          // couleur au bord intérieur (dominant)
+            dominantPattern, fallbackColor, tw,
           );
         }
       }
@@ -399,10 +402,9 @@ export class TileRenderer {
             ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTR = lerpPt(pTL, pTR, 1 - tw);
           const iBR = lerpPt(pBL, pBR, 1 - tw);
-          this.fillTransitionGradient(
+          this.fillTransitionPattern(
             ctx, iTR, pTR, pBR, iBR,
-            baseColorForType(neighbor.type),
-            baseColorForType(q.type),
+            dominantPattern, fallbackColor, tw,
           );
         }
       }
@@ -414,10 +416,9 @@ export class TileRenderer {
             ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iBL = lerpPt(pTL, pBL, 1 - tw);
           const iBR = lerpPt(pTR, pBR, 1 - tw);
-          this.fillTransitionGradient(
+          this.fillTransitionPattern(
             ctx, iBL, iBR, pBR, pBL,
-            baseColorForType(neighbor.type),
-            baseColorForType(q.type),
+            dominantPattern, fallbackColor, tw,
           );
         }
       }
@@ -429,10 +430,9 @@ export class TileRenderer {
             ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTL = lerpPt(pTL, pTR, tw);
           const iBL = lerpPt(pBL, pBR, tw);
-          this.fillTransitionGradient(
+          this.fillTransitionPattern(
             ctx, pTL, iTL, iBL, pBL,
-            baseColorForType(neighbor.type),
-            baseColorForType(q.type),
+            dominantPattern, fallbackColor, tw,
           );
         }
       }
@@ -440,45 +440,77 @@ export class TileRenderer {
   }
 
   /**
-   * Remplit un quadrilatère de transition avec un dégradé linéaire.
+   * Remplit un quadrilatère de transition avec la texture pattern
+   * du terrain dominant, atténuée par un fondu en escalier (stepped alpha).
    *
-   * Le dégradé part de la couleur du terrain VOISIN (côté bord de la tuile)
-   * vers la couleur du terrain DOMINANT (côté intérieur). Le gradient est
-   * perpendiculaire à l'arête partagée.
+   * La bande est divisée en N sous-bandes. Chaque sous-bande est
+   * remplie avec EXACTEMENT le même pattern que la tuile dominante,
+   * à une opacité croissante : ~15% à l'arête (côté voisin) → 100%
+   * au bord intérieur (côté dominant). Le résultat est un motif
+   * texturé qui s'estompe progressivement, pas une couleur unie.
    *
    * @param edgeA, edgeB — les deux points sur l'arête partagée (côté voisin)
    * @param innerA, innerB — les deux points côté intérieur (côté dominant)
-   * @param edgeColor — couleur du terrain voisin (arête)
-   * @param innerColor — couleur du terrain dominant (intérieur)
+   * @param pattern — la texture pattern du terrain dominant
+   * @param tw — largeur de la bande de transition (fraction de la tuile)
    */
-  private fillTransitionGradient(
+  private fillTransitionPattern(
     ctx: CanvasRenderingContext2D,
     edgeA: { x: number; y: number },
     edgeB: { x: number; y: number },
     innerA: { x: number; y: number },
     innerB: { x: number; y: number },
-    edgeColor: string,
-    innerColor: string,
+    pattern: CanvasPattern | null,
+    fallbackColor: string,
+    tw: number,
   ): void {
-    // Milieu de l'arête (côté voisin) → couleur du voisin
-    const ex = (edgeA.x + edgeB.x) / 2;
-    const ey = (edgeA.y + edgeB.y) / 2;
-    // Milieu du bord intérieur (côté dominant) → couleur du dominant
-    const ix = (innerA.x + innerB.x) / 2;
-    const iy = (innerA.y + innerB.y) / 2;
+    const STEPS = 6;
 
-    const grad = ctx.createLinearGradient(ex, ey, ix, iy);
-    grad.addColorStop(0, edgeColor);   // arête → couleur voisin
-    grad.addColorStop(1, innerColor);  // intérieur → couleur dominant
+    for (let k = 0; k < STEPS; k++) {
+      const fOut  = (k)     / STEPS; // 0, 1/6, 2/6, …
+      const fIn   = (k + 1) / STEPS; // 1/6, 2/6, …, 1
+      const alpha = (k + 1) / STEPS; // ~0.17, ~0.33, …, 1.0
 
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(edgeA.x, edgeA.y);
-    ctx.lineTo(edgeB.x, edgeB.y);
-    ctx.lineTo(innerB.x, innerB.y);
-    ctx.lineTo(innerA.x, innerA.y);
-    ctx.closePath();
-    ctx.fill();
+      // Points du bord extérieur de cette sous-bande
+      const outerLeft  = lerpPt(edgeA, innerA, fOut);
+      const outerRight = lerpPt(edgeB, innerB, fOut);
+      // Points du bord intérieur
+      const innerLeft  = lerpPt(edgeA, innerA, fIn);
+      const innerRight = lerpPt(edgeB, innerB, fIn);
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = pattern || fallbackColor;
+      ctx.beginPath();
+      ctx.moveTo(outerLeft.x, outerLeft.y);
+      ctx.lineTo(outerRight.x, outerRight.y);
+      ctx.lineTo(innerRight.x, innerRight.y);
+      ctx.lineTo(innerLeft.x, innerLeft.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Retourne le CanvasPattern (texture tileable) correspondant
+   * au type de terrain d'une tuile. Utilisé par les overlays de
+   * transition pour que ce soit la VRAIE texture qui s'estompe.
+   */
+  private getPatternForQuad(
+    ctx: CanvasRenderingContext2D,
+    q: QuadTile,
+  ): CanvasPattern | null {
+    if (q.type === TileType.TREE) {
+      const idx = (q.variation - 1) % WOODS_TEXTURES.length;
+      return this.getWoodsPattern(ctx, WOODS_TEXTURES[idx]);
+    }
+    if (q.type === TileType.ROCK) {
+      const idx = (q.variation - 1) % ROCK_TEXTURES.length;
+      return this.getRockPattern(ctx, ROCK_TEXTURES[idx]);
+    }
+    // Default : pattern herbe (RoughA0001)
+    return this.createGrassPattern(ctx);
   }
 
   // ================================================================
