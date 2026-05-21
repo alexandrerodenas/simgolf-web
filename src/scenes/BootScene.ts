@@ -80,11 +80,18 @@ export class BootScene extends Phaser.Scene {
       this.load.image(key, keyToPath(key));
     }
 
-    // FLC Sprite : Willow Tree
+    // FLC Sprite : Willow Tree (arbre animé)
     this.load.atlas(
       'flic_willow',
       'assets/flics/WillowTree/WillowTree.png',
       'assets/flics/WillowTree/WillowTree.json',
+    );
+
+    // FLC Sprite : Maple Medium (arbre animé)
+    this.load.atlas(
+      'flic_maple',
+      'assets/flics/TreeMapleMedium/TreeMapleMedium.png',
+      'assets/flics/TreeMapleMedium/TreeMapleMedium.json',
     );
   }
 

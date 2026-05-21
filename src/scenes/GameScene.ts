@@ -3,7 +3,7 @@
  *
  * Affiche le terrain 16×16 en quadrilatères isométriques 2D.
  * Chaque tuile est projetée depuis ses 4 hauteurs de coin.
- * Arbre FLC WillowTree animé au centre (8, 8).
+ * Arbres FLC animés placés sur la carte.
  * Navigation : drag scroll + zoom molette.
  */
 
@@ -13,9 +13,19 @@ import { MAP_SIZE } from '../config';
 import { IsometricRenderer } from '../render';
 import { mapToScreen } from '../render/CoordinateSystem';
 
+interface TreeDef {
+  atlasKey: string;
+  tileX: number;
+  tileY: number;
+}
+
+const TREES: TreeDef[] = [
+  { atlasKey: 'flic_willow', tileX: 8, tileY: 8 },
+  { atlasKey: 'flic_maple',  tileX: 6, tileY: 7 },
+];
+
 export class GameScene extends Phaser.Scene {
   private isoRenderer!: IsometricRenderer;
-  private centerTree: Phaser.GameObjects.Sprite | null = null;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -30,46 +40,46 @@ export class GameScene extends Phaser.Scene {
       zoom: 1,
       enableDrag: true,
     });
-
-    // Place l'arbre AVANT init pour qu'il soit pris en compte
-    // dans le positionnement initial du canvas
     this.isoRenderer.init();
 
-    // ── Arbre FLC au centre (8, 8) ──
-    this.spawnCenterTree(terrain);
+    // ── Arbres FLC ──
+    for (const t of TREES) {
+      this.spawnTree(terrain, t.atlasKey, t.tileX, t.tileY);
+    }
   }
 
   update(): void {
     this.isoRenderer.update();
   }
 
-  private spawnCenterTree(terrain: TerrainEngine): void {
-    const cx = MAP_SIZE / 2;    // 8
-    const cy = MAP_SIZE / 2;    // 8
-
-    // Hauteur moyenne au centre de la tuile (8, 8)
-    const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(cx, cy);
+  private spawnTree(
+    terrain: TerrainEngine,
+    atlasKey: string,
+    tileX: number,
+    tileY: number,
+  ): void {
+    // Hauteur moyenne au centre de la tuile
+    const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(tileX, tileY);
     const hAvg = (hTL + hTR + hBR + hBL) / 4;
 
     // Position isométrique au centre de la tuile + hauteur
-    const p = mapToScreen(cx + 0.5, cy + 0.5, hAvg);
+    const p = mapToScreen(tileX + 0.5, tileY + 0.5, hAvg);
 
-    const tex = this.textures.get('flic_willow');
+    const tex = this.textures.get(atlasKey);
     if (!tex || !tex.key) {
-      console.warn('[GameScene] Texture flic_willow non trouvée');
+      console.warn(`[GameScene] Texture ${atlasKey} non trouvée`);
       return;
     }
 
-    // Première frame du spritesheet
     const frames = tex.getFrameNames();
     if (frames.length === 0) return;
 
-    const img = this.add.image(p.screenX, p.screenY, 'flic_willow', frames[0]);
-    img.setOrigin(0.5, 1);                // Ancré bas-centre → le sol touche le terrain
-    img.setDepth(cx + cy + 1);            // Painter's depth au-dessus du terrain
-    img.setScale(1);
+    const img = this.add.image(p.screenX, p.screenY, atlasKey, frames[0]);
+    img.setOrigin(0.5, 1);                    // Ancré bas-centre → le sol touche le terrain
+    img.setDepth(tileX + tileY + 1);          // Painter's depth au-dessus du terrain
 
-    this.centerTree = img as Phaser.GameObjects.Sprite;
-    console.log(`[GameScene] Arbre placé au centre (${cx}, ${cy}) → écran (${p.screenX}, ${p.screenY})`);
+    console.log(
+      `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → écran (${p.screenX}, ${p.screenY})`,
+    );
   }
 }
