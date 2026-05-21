@@ -22,34 +22,17 @@
  *   deux tuiles voisines lisent le même vertex de la heightmap.
  */
 
-import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
-import { woodsTextureKey } from './TransitionLUT';
+import {
+  calculateTransitionBitmask,
+  getTransitionTextureKey,
+  TerrainTransitionMaps,
+} from './TransitionLUT';
 
 /** Nombre de subdivisions par tuile pour l'éclairage */
 const LIGHT_SUBDIV = 1;
-
-// ================================================================
-// Auto-Tiling : poids des bits 8-way
-// ================================================================
-
-const BIT_N   = 1;
-const BIT_NE  = 2;
-const BIT_E   = 4;
-const BIT_SE  = 8;
-const BIT_S   = 16;
-const BIT_SW  = 32;
-const BIT_W   = 64;
-const BIT_NW  = 128;
-
-const BIT_DIRS: [number, number, number][] = [
-  [0, -1, BIT_N],   [1, -1, BIT_NE],
-  [1,  0, BIT_E],   [1,  1, BIT_SE],
-  [0,  1, BIT_S],   [-1, 1, BIT_SW],
-  [-1, 0, BIT_W],   [-1,-1, BIT_NW],
-];
 
 // ================================================================
 // Textures Rock
@@ -115,6 +98,21 @@ function dot(
 /** Interpolation linéaire */
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+/** Mappe un TileType vers le préfixe de texture (ex: TREE → "Woods") */
+function typeToPrefix(type: TileType): string {
+  const map: Partial<Record<TileType, string>> = {
+    [TileType.TREE]:  "Woods",
+    [TileType.ROUGH]: "Rough",
+    [TileType.SAND]:  "Sand",
+    [TileType.WATER]: "Water",
+    [TileType.GREEN]: "Green",
+    [TileType.GRASS]: "Grass",
+    [TileType.FAIRWAY]: "Fairway",
+    [TileType.ROCK]:  "Rock",
+  };
+  return map[type] ?? "";
 }
 
 // ================================================================
@@ -226,8 +224,9 @@ export class TileRenderer {
 
       if (q.type === TileType.ROCK) {
         this.drawRockTile(ctx, q);
-      } else if (q.type === TileType.TREE) {
-        this.drawWoodsTile(ctx, q);
+      } else if (TerrainTransitionMaps[typeToPrefix(q.type)]) {
+        // Transition tile (Woods, Rough, Sand, Water, Green, Grass...)
+        this.drawTransitionTile(ctx, q);
       } else if (q.type === TileType.ROUGH) {
         ctx.fillStyle = '#3a7a3a';
         this.fillQuad(ctx, pTL, pTR, pBR, pBL);
@@ -251,29 +250,6 @@ export class TileRenderer {
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
-  }
-
-  // ================================================================
-  // Auto-Tiling : bitmask 8-way + Look-Up Table (LUT)
-  // ================================================================
-
-  /**
-   * Calcule le bitmask 8-way pour une tuile.
-   * Compare le type de la tuile centrale avec ses 8 voisins.
-   *
-   * Poids : N=1, NE=2, E=4, SE=8, S=16, SW=32, W=64, NW=128
-   *
-   * @returns un entier 0-255
-   */
-  private calculateBitmask(x: number, y: number, tileType: TileType): number {
-    let mask = 0;
-    for (const [dx, dy, bit] of BIT_DIRS) {
-      const n = this.terrain.tileAt(x + dx, y + dy);
-      if (n && n.type === tileType) {
-        mask |= bit;
-      }
-    }
-    return mask;
   }
 
   // ================================================================
@@ -491,49 +467,91 @@ export class TileRenderer {
   // ================================================================
 
   /**
-   * Dessine une tuile TREE avec sa texture Woods.
-   * La texture sélectionnée dépend du bitmask 8-way (transition LUT)
-   * et de la variation cosmétique (1-36).
+   * Dessine une tuile avec transition LUT.
    *
-   * Si la texture de transition (ex: WOODSA0005) n'existe pas encore
-   * dans Phaser, on tombe sur la texture de base 0001-0009.
+   * La texture sélectionnée dépend du bitmask 8-way (priority-aware),
+   * du type de terrain et de la variation cosmétique (1-36).
+   *
+   * Si la texture de transition n'existe pas dans Phaser, on tombe
+   * sur la texture de base (fallback cosmétique).
    */
-  private drawWoodsTile(
+  private drawTransitionTile(
     ctx: CanvasRenderingContext2D,
     quad: QuadTile,
   ): void {
     const [pTL, pTR, pBR, pBL] = quad.verts;
-    const group = (quad.variation - 1) % 4; // A, B, C, D
+    const group = (quad.variation - 1) % 4;  // A, B, C, D
     const variation = (quad.variation - 1) % 9 + 1; // 1-9
+    const prefix = typeToPrefix(quad.type);
 
-    // Bitmask 8-way pour la transition
-    const mask = this.calculateBitmask(quad.x, quad.y, TileType.TREE);
+    // Bitmask 8-way avec priorité des calques
+    const mask = calculateTransitionBitmask(
+      this.terrain, quad.x, quad.y, quad.type,
+    );
 
-    // Clé de texture via la LUT (avec fallback si la texture n'existe pas)
-    const textureKey = woodsTextureKey(
-      group,
-      variation,
-      mask,
+    // Clé de texture via la LUT
+    const textureKey = getTransitionTextureKey(
+      prefix, group, variation, mask,
       (key: string) => this.scene.textures.exists(key),
     );
 
-    // Fond opaque vert foncé (couleur de base de la forêt)
-    ctx.fillStyle = '#2d5a1e';
+    // Fond opaque (couleur de base du type)
+    ctx.fillStyle = this.baseColor(quad.type);
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
 
-    // Pattern Woods
-    const pattern = this.getWoodsPattern(ctx, textureKey);
-    if (pattern) {
-      ctx.fillStyle = pattern;
-    } else {
-      const grassPattern = this.createGrassPattern(ctx);
-      ctx.fillStyle = grassPattern || '#2d5a1e';
-    }
+    // Pattern de la texture sélectionnée
+    const pattern = this.getAnyPattern(ctx, textureKey);
+    const fallbackGrass = this.createGrassPattern(ctx);
+    ctx.fillStyle = pattern || fallbackGrass || this.baseColor(quad.type);
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
   }
 
-  /** Cache de patterns Woods */
+  /** Couleur de base pour un type de terrain */
+  private baseColor(type: TileType): string {
+    switch (type) {
+      case TileType.TREE:   return '#2d5a1e';
+      case TileType.ROUGH:  return '#3a7a3a';
+      case TileType.GRASS:  return '#4a8f4a';
+      case TileType.ROCK:   return '#6a5a4a';
+      case TileType.SAND:   return '#c4b878';
+      case TileType.WATER:  return '#3a7ab8';
+      case TileType.GREEN:  return '#3a9a3a';
+      case TileType.FAIRWAY: return '#5a9f4a';
+      default:              return '#4a8f4a';
+    }
+  }
+
+  /** Cache de patterns générique (par clé de texture) */
+  private patternCache = new Map<string, CanvasPattern | null>();
+
+  /**
+   * Retourne un CanvasPattern pour n'importe quelle clé de texture
+   * existant dans Phaser. Cache partagé par tous les types.
+   */
+  private getAnyPattern(
+    ctx: CanvasRenderingContext2D,
+    textureKey: string,
+  ): CanvasPattern | null {
+    if (this.patternCache.has(textureKey)) {
+      return this.patternCache.get(textureKey) ?? null;
+    }
+    const tex = this.scene.textures.get(textureKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        this.patternCache.set(textureKey, p ?? null);
+        return p ?? null;
+      } catch {
+        // fallback
+      }
+    }
+    this.patternCache.set(textureKey, null);
+    return null;
+  }
+
+  /** Cache de patterns Woods (rétrocompatibilité) */
   private woodsPatternCache = new Map<string, CanvasPattern | null>();
 
   private getWoodsPattern(

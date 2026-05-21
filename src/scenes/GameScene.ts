@@ -13,7 +13,11 @@ import { TileType } from '../core/types';
 import { MAP_SIZE } from '../config';
 import { IsometricRenderer } from '../render';
 import { mapToScreen } from '../render/CoordinateSystem';
-import { woodsTextureKey } from '../render/TransitionLUT';
+import {
+  calculateTransitionBitmask,
+  getTransitionTextureKey,
+  TerrainTransitionMaps,
+} from '../render/TransitionLUT';
 import { TILE } from '../config';
 
 interface TreeDef {
@@ -205,8 +209,8 @@ export class GameScene extends Phaser.Scene {
           const group = (tile.variation - 1) % 4;
           const variation = (tile.variation - 1) % 9 + 1;
           const mask = this.calculateBitmask(terrain, x, y, TileType.TREE);
-          const key = woodsTextureKey(
-            group, variation, mask,
+          const key = getTransitionTextureKey(
+            'Woods', group, variation, mask,
             (k: string) => this.textures.exists(k),
           );
           // Extraire groupe + suffixe : "WOODSA0005" → "A5"

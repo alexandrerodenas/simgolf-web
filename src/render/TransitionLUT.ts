@@ -1,164 +1,247 @@
 /**
- * TransitionLUT — Table de correspondance bitmask → sprite
+ * TransitionLUT — Registre global des transitions de terrain
  *
- * ÉDITION MANUELLE : Modifie WoodsTransitionMap ci-dessous.
- * Chaque clé est un masque cardinal 4-bit (N=1, E=2, S=4, W=8).
- * Chaque valeur est le suffixe texture (ex: "0005" → WOODSA0005).
+ * Chaque type de terrain peut avoir son propre mapping bitmask → suffixe.
+ * Le système utilise un masque cardinal 4-bit (N=1, E=2, S=4, W=8),
+ * soit 16 états possibles, pour sélectionner le sprite Firaxis approprié.
  *
- * Pour régler le mapping :
- *   1. Place une tuile Woods isolée (tous voisins ≠ Woods)
- *   2. Active le debug [D], regarde quel suffixe s'affiche
- *   3. Regarde le sprite : si le bord dessiné ne correspond pas
+ * Le bitmask 8-way (N/NE/E/SE/S/SW/W/NW) est calculé en amont par
+ * calculateTransitionBitmask(), qui intègre la hiérarchie des calques :
+ * un voisin est considéré comme "même type" si sa priorité est >=
+ * celle de la tuile courante.
+ *
+ * ─────────────────────────────────────────────────────────────────
+ * 🔧 ÉDITION MANUELLE : Modifie TerrainTransitionMaps ci-dessous.
+ *    Chaque clé = masque cardinal 4-bit (0-15)
+ *    Chaque valeur = suffixe texture (ex: "0005" → WOODSA0005)
+ * ─────────────────────────────────────────────────────────────────
+ *
+ * Pour régler visuellement :
+ *   1. Active [D] pour voir les suffixes affichés sur chaque tuile
+ *   2. Regarde le sprite : si le bord dessiné ne correspond pas
  *      à la bonne direction, change le numéro dans le dictionnaire
- *
- * ─────────────────────────────────────────────────────────────────
- * WoodsTransitionMap — 🔧 ÉDITE ICI LES VALEURS
- * ─────────────────────────────────────────────────────────────────
- *
- * Masque cardinal (bits) : N=1, E=2, S=4, W=8
- *
- * Clé       Signification                  Suffixe actuel
- * ───       ─────────────                  ──────────────
- *  0        Isolé (tous voisins ≠ Woods)      0002
- *  1=N      Bord Nord seul                    0003
- *  2=E      Bord Est seul                     0005
- *  4=S      Bord Sud seul                     0006
- *  8=W      Bord Ouest seul                   0008
- *  3=N+E    Coin NE                           0010
- *  5=N+S    Opposés N/S                       0010
- *  6=E+S    Coin SE (à vérifier)              0005
- *  9=N+W    Coin NW                           0009
- * 10=E+W    Opposés E/W                       0011
- * 12=S+W    Coin SW                           0007
- *  7=N+E+S  3 côtés (N,E,S)                   0012
- * 11=N+E+W  3 côtés (N,E,W)                   0013
- * 13=N+S+W  3 côtés (N,S,W)                   0015
- * 14=E+S+W  3 côtés (E,S,W)                   0014
- * 15=N+E+S+W Centre (tous voisins = Woods)    0001
+ *   3. Rebuild : les nouveaux suffixes s'affichent instantanément
  */
 
-// Poids des bits (8-way — utilisés par calculateBitmask)
-const N  = 1;
-const NE = 2;
-const E  = 4;
-const SE = 8;
-const S  = 16;
-const SW = 32;
-const W  = 64;
-const NW = 128;
-
 // ================================================================
-// 🔧 WoodsTransitionMap — ÉDITION MANUELLE
-// ================================================================
-// Clé = masque cardinal 4-bit (N=1, E=2, S=4, W=8)
-// Valeur = suffixe texture (ex: "0005" → WOODSA0005)
+// Poids des bits (8-way)
 // ================================================================
 
-export const WoodsTransitionMap: Record<number, string> = {
-  //  Card mask   Suffixe   Situation
-  [0]:           "0002",  // isolé (tous voisins ≠ Woods)
-  [1]:           "0003",  // N seulement
-  [2]:           "0005",  // E seulement
-  [4]:           "0006",  // S seulement
-  [8]:           "0008",  // W seulement
-  [3]:           "0010",  // N+E  — coin NE
-  [5]:           "0010",  // N+S  — opposés N/S
-  [6]:           "0005",  // E+S  — coin SE
-  [9]:           "0009",  // N+W  — coin NW
-  [10]:          "0011",  // E+W  — opposés E/W
-  [12]:          "0007",  // S+W  — coin SW
-  [7]:           "0012",  // N+E+S — 3 côtés
-  [11]:          "0013",  // N+E+W — 3 côtés
-  [13]:          "0015",  // N+S+W — 3 côtés
-  [14]:          "0014",  // E+S+W — 3 côtés
-  [15]:          "0001",  // centre (tous voisins = Woods)
+export const B_N  = 1;
+export const B_NE = 2;
+export const B_E  = 4;
+export const B_SE = 8;
+export const B_S  = 16;
+export const B_SW = 32;
+export const B_W  = 64;
+export const B_NW = 128;
+
+export const BIT_DIRS: [number, number, number][] = [
+  [0, -1, B_N],   [1, -1, B_NE],
+  [1,  0, B_E],   [1,  1, B_SE],
+  [0,  1, B_S],   [-1, 1, B_SW],
+  [-1, 0, B_W],   [-1,-1, B_NW],
+];
+
+// ================================================================
+// Hiérarchie des calques (Layer Priority)
+// Bas → Haut : Water < Sand < Fairway < Green < Grass < Rough < Rock < Woods
+// ================================================================
+
+import { TileType } from '../core/types';
+import { TerrainEngine } from '../core';
+
+export const LAYER_PRIORITY: Record<TileType, number> = {
+  [TileType.WATER]:        0,
+  [TileType.WATER_HAZARD]: 0,
+  [TileType.SAND]:         1,
+  [TileType.FAIRWAY]:      2,
+  [TileType.GREEN]:        3,
+  [TileType.GRASS]:        4,
+  [TileType.ROUGH]:        5,
+  [TileType.ROCK]:         6,
+  [TileType.TREE]:         7,
+  [TileType.BUSH]:         5,
+  [TileType.FLOWER]:       4,
+  [TileType.PATH]:         6,
+  [TileType.TEE]:          4,
+  [TileType.BUILDING]:     8,
+  [TileType.BRIDGE]:       6,
+  [TileType.HOLE]:         8,
+  [TileType.EMPTY]:        0,
 };
 
 // ================================================================
-// Fonctions internes
+// Squelette 16 états (Bitmask cardinal 4-way)
+//
+// Nord=1 (Haut-Droite), Est=2 (Bas-Droite),
+// Sud=4 (Bas-Gauche), Ouest=8 (Haut-Gauche)
+// ================================================================
+
+const Default16StateMap: Record<number, string> = {
+  [0]:  "000?", // Isolé (4 bords arrondis)
+  [15]: "000?", // Centre (Texture pleine)
+  [1]:  "000?", // Voisin NORD (Connexion Haut-Droite)
+  [2]:  "000?", // Voisin EST (Connexion Bas-Droite)
+  [4]:  "000?", // Voisin SUD (Connexion Bas-Gauche)
+  [8]:  "000?", // Voisin OUEST (Connexion Haut-Gauche)
+  [5]:  "000?", // Voisins NORD+SUD (Ligne diagonale \ )
+  [10]: "000?", // Voisins EST+OUEST (Ligne diagonale / )
+  [3]:  "000?", // Angle Extérieur NORD+EST
+  [6]:  "000?", // Angle Extérieur EST+SUD
+  [12]: "000?", // Angle Extérieur SUD+OUEST
+  [9]:  "000?", // Angle Extérieur OUEST+NORD
+  [7]:  "000?", // 3 Voisins (Bord arrondi vers OUEST)
+  [14]: "000?", // 3 Voisins (Bord arrondi vers NORD)
+  [13]: "000?", // 3 Voisins (Bord arrondi vers EST)
+  [11]: "000?", // 3 Voisins (Bord arrondi vers SUD)
+};
+
+// ================================================================
+// 🔧 TerrainTransitionMaps — Registre global
+// ================================================================
+// Édite les valeurs ci-dessous pour chaque type de terrain.
+// Reprends la structure Default16StateMap et remplace les "000?".
+// ================================================================
+
+export const TerrainTransitionMaps: Record<string, Record<number, string>> = {
+  "Woods": {
+    ...Default16StateMap,
+    [0]:  "0002",  // isolé
+    [15]: "0001",  // centre
+    [1]:  "0003",  // N
+    [2]:  "0005",  // E
+    [4]:  "0006",  // S
+    [8]:  "0008",  // W
+  },
+  "Rough": { ...Default16StateMap },
+  "Sand":  { ...Default16StateMap },
+  "Water": { ...Default16StateMap },
+  "Green": { ...Default16StateMap },
+  // Herbe (Grass) = calque du fond, transitions optionnelles
+  "Grass": { ...Default16StateMap },
+};
+
+// ================================================================
+// Calcul du bitmask avec priorité des calques
+// ================================================================
+
+/**
+ * Calcule le bitmask 8-way pour une tuile, en respectant la
+ * hiérarchie des calques.
+ *
+ * Un voisin est considéré comme "même type" (bit=1) si sa priorité
+ * est SUPÉRIEURE OU ÉGALE à celle de la tuile courante.
+ *
+ * Ainsi :
+ *   - Woods (prio 7) → seuls d'autres Woods sont "same bits"
+ *   - Grass (prio 4) → Grass, Rough, Woods sont "same bits"
+ *   - Sand  (prio 1) → tout est "same bit" (jamais de transition)
+ */
+export function calculateTransitionBitmask(
+  terrain: TerrainEngine,
+  x: number, y: number,
+  tileType: TileType,
+): number {
+  const ownPriority = LAYER_PRIORITY[tileType] ?? 0;
+  let mask = 0;
+  for (const [dx, dy, bit] of BIT_DIRS) {
+    const n = terrain.tileAt(x + dx, y + dy);
+    if (n) {
+      const neighborPriority = LAYER_PRIORITY[n.type] ?? 0;
+      if (neighborPriority >= ownPriority) {
+        mask |= bit;
+      }
+    }
+  }
+  return mask;
+}
+
+// ================================================================
+// Lookup dans le registre
 // ================================================================
 
 /** Convertit un bitmask 8-way (0-255) en masque cardinal 4-bit */
-function cardinalMask(mask: number): number {
+export function toCardinalMask(mask: number): number {
   let c = 0;
-  if (mask & N)  c |= 1;  // N=1
-  if (mask & E)  c |= 2;  // E=4 → 2
-  if (mask & S)  c |= 4;  // S=16 → 4
-  if (mask & W)  c |= 8;  // W=64 → 8
+  if (mask & B_N)  c |= 1;
+  if (mask & B_E)  c |= 2;
+  if (mask & B_S)  c |= 4;
+  if (mask & B_W)  c |= 8;
   return c;
 }
 
-// LUT complète 256 entrées (dérivée du dictionnaire ci-dessus)
-const _fullLUT = new Map<number, string>();
-
-function buildFullLUT(): void {
-  for (let mask = 0; mask < 256; mask++) {
-    const card = cardinalMask(mask);
-    let suffix = WoodsTransitionMap[card] ?? "0001";
-
-    // Corrections diagonales (ébauche)
-    const hasNE = !!(mask & NE);
-    const hasSE = !!(mask & SE);
-    const hasSW = !!(mask & SW);
-    const hasNW = !!(mask & NW);
-    const hasN  = !!(mask & N);
-    const hasE  = !!(mask & E);
-    const hasS  = !!(mask & S);
-    const hasW  = !!(mask & W);
-
-    // Diagonale seule sans cardinaux adjacents
-    if (hasNE && !hasN && !hasE) suffix = "0003";
-    if (hasSE && !hasS && !hasE) suffix = "0005";
-    if (hasSW && !hasS && !hasW) suffix = "0007";
-    if (hasNW && !hasN && !hasW) suffix = "0009";
-
-    _fullLUT.set(mask, suffix);
-  }
-}
-
-buildFullLUT();
-
-// ================================================================
-// API publique
-// ================================================================
-
 /**
- * Retourne le suffixe sprite pour un bitmask 8-way.
- * Lit depuis la LUT complète, avec fallback "0001".
+ * Retourne le nom de la map de transition pour un TileType.
+ * Ex: TileType.TREE → "Woods", TileType.ROUGH → "Rough"
  */
-export function woodsTransitionSuffix(mask: number): string {
-  return _fullLUT.get(mask) ?? "0001";
+function typeToMapName(type: TileType): string | null {
+  const map: Partial<Record<TileType, string>> = {
+    [TileType.TREE]:  "Woods",
+    [TileType.ROUGH]: "Rough",
+    [TileType.SAND]:  "Sand",
+    [TileType.WATER]: "Water",
+    [TileType.GREEN]: "Green",
+    [TileType.GRASS]: "Grass",
+  };
+  return map[type] ?? null;
 }
 
 /**
- * Retourne la clé de texture Phaser complète pour une tuile Woods,
- * en combinant le groupe de variation (A-D) et le suffixe LUT.
+ * Retourne le suffixe de transition pour une tuile, en fonction
+ * de son type et de son bitmask 8-way.
+ *
+ * @returns Suffixe "0005" ou null si le type n'a pas de map
+ */
+export function getTransitionSuffix(
+  tileType: TileType,
+  mask: number,
+): string | null {
+  const mapName = typeToMapName(tileType);
+  if (!mapName) return null;
+  const map = TerrainTransitionMaps[mapName];
+  if (!map) return null;
+  const card = toCardinalMask(mask);
+  return map[card] ?? null;
+}
+
+/**
+ * Retourne la clé de texture Phaser complète pour une tuile,
+ * en combinant le préfixe du type, la lettre de groupe, et le
+ * suffixe de transition.
  *
  * Fallback si la texture de transition n'existe pas :
- *   transition → variation cosmétique → WOODSA0001
+ *   transition → variation cosmétique → texture par défaut
+ *
+ * @param prefix   Préfixe de texture (ex: "WOODS", "ROUGH")
+ * @param group    Groupe décoratif (0=A, 1=B, 2=C, 3=D)
+ * @param variation Variation cosmétique (1-9)
+ * @param mask     Bitmask 8-way
+ * @param textureExists  Callback de vérification
+ * @param defaultKey     Clé de dernier recours
  */
-export function woodsTextureKey(
+export function getTransitionTextureKey(
+  prefix: string,
   group: number,
   variation: number,
   mask: number,
   textureExists: (key: string) => boolean,
+  defaultKey = `${prefix}A0001`,
 ): string {
   const groups = ['A', 'B', 'C', 'D'];
   const g = groups[group % groups.length];
-  const suffix = woodsTransitionSuffix(mask);
 
-  // Essayer la texture de transition d'abord
-  const transitionKey = `WOODS${g}${suffix}`;
-  if (textureExists(transitionKey)) {
-    return transitionKey;
+  // Essayer le suffixe LUT
+  const card = toCardinalMask(mask);
+  const suffix = TerrainTransitionMaps[prefix]?.[card];
+  if (suffix) {
+    const transitionKey = `${prefix}${g}${suffix}`;
+    if (textureExists(transitionKey)) return transitionKey;
   }
 
-  // Fallback : texture cosmétique 0001-0009
-  const fallbackKey = `WOODS${g}${variation.toString().padStart(4, '0')}`;
-  if (textureExists(fallbackKey)) {
-    return fallbackKey;
-  }
+  // Fallback : texture cosmétique
+  const fallbackKey = `${prefix}${g}${variation.toString().padStart(4, '0')}`;
+  if (textureExists(fallbackKey)) return fallbackKey;
 
-  // Dernier recours
-  return 'WOODSA0001';
+  return defaultKey;
 }
