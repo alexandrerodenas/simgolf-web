@@ -408,8 +408,15 @@ export class TileRenderer {
     const idx = (quad.variation - 1) % ROCK_TEXTURES.length;
     const textureKey = ROCK_TEXTURES[idx];
 
+    // Debug : vérifier si la texture est trouvée
+    const texCheck = this.scene.textures.get(textureKey);
+    if (!texCheck || !texCheck.key) {
+      console.warn(`[TileRenderer] Texture Rock introuvable: "${textureKey}"`);
+    }
+
     // Fond opaque gris-brun (couleur de base de la roche)
     ctx.fillStyle = '#6a5a4a';
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
 
     // Pattern rock
@@ -417,8 +424,9 @@ export class TileRenderer {
     if (pattern) {
       ctx.fillStyle = pattern;
     } else {
-      // Fallback : gris uni
-      ctx.fillStyle = '#8a7a6a';
+      // Fallback : utiliser la même texture herbe que le reste
+      const grassPattern = this.createGrassPattern(ctx);
+      ctx.fillStyle = grassPattern || '#4a8f4a';
     }
     this.fillQuad(ctx, pTL, pTR, pBR, pBL);
   }
