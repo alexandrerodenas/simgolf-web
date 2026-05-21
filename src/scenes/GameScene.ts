@@ -59,6 +59,11 @@ export class GameScene extends Phaser.Scene {
     for (const t of placedTrees) {
       const hash = (t.tileX * 73 + t.tileY * 37 + 42) & 0x7fffffff;
       terrain.setTileType(t.tileX, t.tileY, TileType.TREE, (hash % 36) + 1);
+      // Voisins cardinaux → ROUGH (lisière de forêt)
+      this.setNeighborRough(terrain, t.tileX - 1, t.tileY);
+      this.setNeighborRough(terrain, t.tileX + 1, t.tileY);
+      this.setNeighborRough(terrain, t.tileX, t.tileY - 1);
+      this.setNeighborRough(terrain, t.tileX, t.tileY + 1);
     }
 
     this.isoRenderer = new IsometricRenderer(this, terrain, {
@@ -70,6 +75,18 @@ export class GameScene extends Phaser.Scene {
     // ── Arbres FLC ──
     for (const t of placedTrees) {
       this.spawnTree(terrain, t);
+    }
+  }
+
+  /** Passe un voisin en ROUGH si c'est de l'herbe (lisière de forêt) */
+  private setNeighborRough(terrain: TerrainEngine, x: number, y: number): void {
+    const tile = terrain.tileAt(x, y);
+    if (!tile) return;
+    // Ne change que les tuiles GRASS, pas les ROCK, TREE, WATER etc.
+    if (tile.type === TileType.GRASS) {
+      const hash = (x * 17 + y * 31 + 7) & 0x7fffffff;
+      const variant = (hash % 9) + 1; // 1..9
+      terrain.setTileType(x, y, TileType.ROUGH, variant);
     }
   }
 

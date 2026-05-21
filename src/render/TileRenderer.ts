@@ -213,6 +213,13 @@ export class TileRenderer {
       } else if (q.type === TileType.TREE) {
         // Texture Woods (sol forestier)
         this.drawWoodsTile(ctx, q);
+      } else if (q.type === TileType.ROUGH) {
+        // Herbe haute (Rough) — même pattern herbe, fond plus foncé
+        ctx.fillStyle = '#3a7a3a';
+        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+        ctx.fillStyle = fillStyle;
+        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
       } else {
         // Fond opaque vert (anti-gap de transparence)
         ctx.fillStyle = '#4a8f4a';
