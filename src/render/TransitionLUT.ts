@@ -1,42 +1,43 @@
 /**
  * TransitionLUT — Table de correspondance bitmask → sprite
  *
- * ÉBAUCHE / DRAFT — v0.1.0
+ * ÉDITION MANUELLE : Modifie WoodsTransitionMap ci-dessous.
+ * Chaque clé est un masque cardinal 4-bit (N=1, E=2, S=4, W=8).
+ * Chaque valeur est le suffixe texture (ex: "0005" → WOODSA0005).
  *
- * Mappe les 256 valeurs possibles du bitmask 8-way calculateBitmask()
- * vers les suffixes numériques des sprites de transition Firaxis
- * (0001 = tuile pleine, 0002-0016+ = lisières, coins, multi-bords).
+ * Pour régler le mapping :
+ *   1. Place une tuile Woods isolée (tous voisins ≠ Woods)
+ *   2. Active le debug [D], regarde quel suffixe s'affiche
+ *   3. Regarde le sprite : si le bord dessiné ne correspond pas
+ *      à la bonne direction, change le numéro dans le dictionnaire
  *
- * Convention des bits (8 directions) :
- *   N=1, NE=2, E=4, SE=8, S=16, SW=32, W=64, NW=128
+ * ─────────────────────────────────────────────────────────────────
+ * WoodsTransitionMap — 🔧 ÉDITE ICI LES VALEURS
+ * ─────────────────────────────────────────────────────────────────
  *
- * Le bit vaut 1 quand le voisin est du MÊME type de terrain.
+ * Masque cardinal (bits) : N=1, E=2, S=4, W=8
  *
- * Dans le système Firaxis (SimGolf/Civ), les sprites sont organisés
- * comme suit (à confirmer avec les vrais assets extraits) :
- *
- *   0001 = tuile centrale (tous voisins OK → mask=255)
- *   0002 = bord N          0003 = bord NE (coin intérieur)
- *   0004 = bord E          0005 = bord SE (coin intérieur)
- *   0006 = bord S          0007 = bord SW (coin intérieur)
- *   0008 = bord W          0009 = bord NW (coin intérieur)
- *   0010 = N+E             0011 = E+W (opposés)
- *   0012 = N+E+S           0013 = N+E+W
- *   0014 = S+E+W           0015 = N+S+W
- *   0016 = tous (aucun voisin = mask=0)
- *
- * Données utilisateur (exemples) :
- *   mask=0  → 0002   (isolé, aucun voisin du même type)
- *   mask=4  → 0005   (E only)
- *   mask=5  → 0010   (N+E)
- *
- * @todo Valider chaque entrée avec les sprites réels Firaxis.
+ * Clé       Signification                  Suffixe actuel
+ * ───       ─────────────                  ──────────────
+ *  0        Isolé (tous voisins ≠ Woods)      0002
+ *  1=N      Bord Nord seul                    0003
+ *  2=E      Bord Est seul                     0005
+ *  4=S      Bord Sud seul                     0006
+ *  8=W      Bord Ouest seul                   0008
+ *  3=N+E    Coin NE                           0010
+ *  5=N+S    Opposés N/S                       0010
+ *  6=E+S    Coin SE (à vérifier)              0005
+ *  9=N+W    Coin NW                           0009
+ * 10=E+W    Opposés E/W                       0011
+ * 12=S+W    Coin SW                           0007
+ *  7=N+E+S  3 côtés (N,E,S)                   0012
+ * 11=N+E+W  3 côtés (N,E,W)                   0013
+ * 13=N+S+W  3 côtés (N,S,W)                   0015
+ * 14=E+S+W  3 côtés (E,S,W)                   0014
+ * 15=N+E+S+W Centre (tous voisins = Woods)    0001
  */
 
-// ================================================================
-// Poids des bits
-// ================================================================
-
+// Poids des bits (8-way — utilisés par calculateBitmask)
 const N  = 1;
 const NE = 2;
 const E  = 4;
@@ -47,82 +48,55 @@ const W  = 64;
 const NW = 128;
 
 // ================================================================
-// Masque cardinal 4-bit (on ignore les diagonales)
-// Bits : N=1, E=2, S=4, W=8
+// 🔧 WoodsTransitionMap — ÉDITION MANUELLE
+// ================================================================
+// Clé = masque cardinal 4-bit (N=1, E=2, S=4, W=8)
+// Valeur = suffixe texture (ex: "0005" → WOODSA0005)
 // ================================================================
 
-function cardinalMask(mask: number): number {
-  let c = 0;
-  if (mask & N)  c |= 1;
-  if (mask & E)  c |= 2;
-  if (mask & S)  c |= 4;
-  if (mask & W)  c |= 8;
-  return c;
-}
-
-// ================================================================
-// LUT : masque cardinal 4-bit → suffixe sprite (1-16)
-// ================================================================
-//
-// ÉBAUCHE — les valeurs marquées « TODO » sont des hypothèses à
-// vérifier avec les assets réels. Seuls les 3 cas fournis par
-// l'utilisateur sont considérés comme fiables.
-//
-// Grille 4×4 organisée par masque cardinal [N][E][S][W] :
-//
-//   mask → idx → (col, row) → suffixe
-//
-// Les suffixes au-delà de 0009 (0010-0016) n'ont pas encore de
-// fichier WebP généré — le renderer tombera sur la texture 0001.
-//
-// ----------------------------------------------------------------
-
-const CARDINAL_LUT: Record<number, number> = {
-  //  N E S W   → suffixe  notes
-  // ────────     ────────  ─────────────────────────────────
-  [0]:          2,     // isolé (tous voisins ≠ soi-même)
-  [N]:          3,     // N only → bord nord
-  [E]:          5,     // E only → bord est
-  [S]:          6,     // S only → bord sud
-  [W]:          8,     // W only → bord ouest
-
-  [N | E]:     10,     // N+E    → coin NE
-  [N | S]:     10,     // N+S    → opposés N/S
-  [N | W]:      9,     // N+W    → coin NW
-  [E | S]:      5,     // E+S    → coin SE
-  [E | W]:     11,     // E+W    → opposés E/W
-  [S | W]:      7,     // S+W    → coin SW
-
-  [N | E | S]:     12, // N+E+S  → 3 côtés
-  [N | E | W]:     13, // N+E+W  → 3 côtés
-  [N | S | W]:     15, // N+S+W  → 3 côtés
-  [E | S | W]:     14, // E+S+W  → 3 côtés
-
-  [N | E | S | W]: 1,  // centre (tous voisins = soi-même)
+export const WoodsTransitionMap: Record<number, string> = {
+  //  Card mask   Suffixe   Situation
+  [0]:           "0002",  // isolé (tous voisins ≠ Woods)
+  [1]:           "0003",  // N seulement
+  [2]:           "0005",  // E seulement
+  [4]:           "0006",  // S seulement
+  [8]:           "0008",  // W seulement
+  [3]:           "0010",  // N+E  — coin NE
+  [5]:           "0010",  // N+S  — opposés N/S
+  [6]:           "0005",  // E+S  — coin SE
+  [9]:           "0009",  // N+W  — coin NW
+  [10]:          "0011",  // E+W  — opposés E/W
+  [12]:          "0007",  // S+W  — coin SW
+  [7]:           "0012",  // N+E+S — 3 côtés
+  [11]:          "0013",  // N+E+W — 3 côtés
+  [13]:          "0015",  // N+S+W — 3 côtés
+  [14]:          "0014",  // E+S+W — 3 côtés
+  [15]:          "0001",  // centre (tous voisins = Woods)
 };
 
 // ================================================================
-// LUT complète 8-bit (256 entrées) — générée par délégation
+// Fonctions internes
 // ================================================================
-//
-// Pour les masks 8-bit qui incluent des bits diagonaux,
-// on dérive le suffixe depuis le masque cardinal puis on
-// applique des corrections pour les diagonales non-couvertes.
-//
-// TODO: Remplacer ce dérivé par une LUT exhaustive quand les
-// sprites 0005-0016+ seront disponibles.
 
-const _fullLUT = new Map<number, number>();
+/** Convertit un bitmask 8-way (0-255) en masque cardinal 4-bit */
+function cardinalMask(mask: number): number {
+  let c = 0;
+  if (mask & N)  c |= 1;  // N=1
+  if (mask & E)  c |= 2;  // E=4 → 2
+  if (mask & S)  c |= 4;  // S=16 → 4
+  if (mask & W)  c |= 8;  // W=64 → 8
+  return c;
+}
+
+// LUT complète 256 entrées (dérivée du dictionnaire ci-dessus)
+const _fullLUT = new Map<number, string>();
 
 function buildFullLUT(): void {
   for (let mask = 0; mask < 256; mask++) {
     const card = cardinalMask(mask);
-    let suffix = CARDINAL_LUT[card] ?? 1;
+    let suffix = WoodsTransitionMap[card] ?? "0001";
 
-    // Corrections diagonales (ébauche) :
-    // - Si un bit diagonal est présent sans ses cardinaux adjacents,
-    //   on peut avoir besoin d'un sprite différent.
-    // - Exemple : NE seul sans N ni E → nécessite un sprite spécial
+    // Corrections diagonales (ébauche)
     const hasNE = !!(mask & NE);
     const hasSE = !!(mask & SE);
     const hasSW = !!(mask & SW);
@@ -132,12 +106,11 @@ function buildFullLUT(): void {
     const hasS  = !!(mask & S);
     const hasW  = !!(mask & W);
 
-    // Coin intérieur diagonal (sans les cardinaux adjacents)
-    // Ex: NE sans N ni E = bordure diagonale → TODO
-    if (hasNE && !hasN && !hasE) { suffix = 3; }     // NE corner inner
-    if (hasSE && !hasS && !hasE) { suffix = 5; }     // SE corner inner
-    if (hasSW && !hasS && !hasW) { suffix = 7; }     // SW corner inner
-    if (hasNW && !hasN && !hasW) { suffix = 9; }     // NW corner inner
+    // Diagonale seule sans cardinaux adjacents
+    if (hasNE && !hasN && !hasE) suffix = "0003";
+    if (hasSE && !hasS && !hasE) suffix = "0005";
+    if (hasSW && !hasS && !hasW) suffix = "0007";
+    if (hasNW && !hasN && !hasW) suffix = "0009";
 
     _fullLUT.set(mask, suffix);
   }
@@ -150,28 +123,19 @@ buildFullLUT();
 // ================================================================
 
 /**
- * Retourne le suffixe sprite (1-16+) pour une tuile Woods
- * en fonction de son bitmask 8-way.
- *
- * @param mask  Bitmask 8-way (0-255) de la tuile.
- * @returns     Numéro de sprite (1 = 0001, 5 = 0005, 16 = 0016).
- *
- * ÉBAUCHE : seuls mask=0→1, mask=4→5, mask=5→10 sont validés.
+ * Retourne le suffixe sprite pour un bitmask 8-way.
+ * Lit depuis la LUT complète, avec fallback "0001".
  */
-export function woodsTransitionSuffix(mask: number): number {
-  return _fullLUT.get(mask) ?? 1;
+export function woodsTransitionSuffix(mask: number): string {
+  return _fullLUT.get(mask) ?? "0001";
 }
 
 /**
  * Retourne la clé de texture Phaser complète pour une tuile Woods,
- * en combinant le groupe de variation (A-D), le suffixe de transition
- * et le numéro cosmétique.
+ * en combinant le groupe de variation (A-D) et le suffixe LUT.
  *
- * @param group       Groupe de variation (0=A, 1=B, 2=C, 3=D)
- * @param variation   Variation cosmétique (1-9)
- * @param mask        Bitmask 8-way
- * @param scene       Scène Phaser (pour vérifier si la texture existe)
- * @returns           Clé de texture (ex: 'WOODSA0005')
+ * Fallback si la texture de transition n'existe pas :
+ *   transition → variation cosmétique → WOODSA0001
  */
 export function woodsTextureKey(
   group: number,
@@ -184,17 +148,17 @@ export function woodsTextureKey(
   const suffix = woodsTransitionSuffix(mask);
 
   // Essayer la texture de transition d'abord
-  const transitionKey = `WOODS${g}${suffix.toString().padStart(4, '0')}`;
+  const transitionKey = `WOODS${g}${suffix}`;
   if (textureExists(transitionKey)) {
     return transitionKey;
   }
 
-  // Fallback : texture 0001 (pleine) avec la variation demandée
+  // Fallback : texture cosmétique 0001-0009
   const fallbackKey = `WOODS${g}${variation.toString().padStart(4, '0')}`;
   if (textureExists(fallbackKey)) {
     return fallbackKey;
   }
 
-  // Dernier recours : WOODSA0001
+  // Dernier recours
   return 'WOODSA0001';
 }

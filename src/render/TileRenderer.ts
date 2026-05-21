@@ -29,7 +29,7 @@ import { mapToScreen } from './CoordinateSystem';
 import { woodsTextureKey } from './TransitionLUT';
 
 /** Nombre de subdivisions par tuile pour l'éclairage */
-const LIGHT_SUBDIV = 8;
+const LIGHT_SUBDIV = 1;
 
 // ================================================================
 // Auto-Tiling : poids des bits 8-way
