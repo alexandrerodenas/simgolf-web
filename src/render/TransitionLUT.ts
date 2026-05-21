@@ -26,7 +26,7 @@
  *   0016 = tous (aucun voisin = mask=0)
  *
  * Données utilisateur (exemples) :
- *   mask=0  → 0001   (isolé, aucun voisin du même type)
+ *   mask=0  → 0002   (isolé, aucun voisin du même type)
  *   mask=4  → 0005   (E only)
  *   mask=5  → 0010   (N+E)
  *
@@ -80,25 +80,25 @@ function cardinalMask(mask: number): number {
 const CARDINAL_LUT: Record<number, number> = {
   //  N E S W   → suffixe  notes
   // ────────     ────────  ─────────────────────────────────
-  [0]:          1,     // aucun → tuile pleine (✓ utilisateur)
-  [N]:          2,     // N only → bord nord
-  [E]:          5,     // E only → bord est  (✓ utilisateur)
+  [0]:          2,     // isolé (tous voisins ≠ soi-même)
+  [N]:          3,     // N only → bord nord
+  [E]:          5,     // E only → bord est
   [S]:          6,     // S only → bord sud
   [W]:          8,     // W only → bord ouest
 
-  [N | E]:     10,     // N+E    → coin NE   (✓ utilisateur)
-  [N | S]:     10,     // N+S    → opposés N/S (même sprite que N+E? à vérifier)
-  [N | W]:      9,     // N+W    → coin NW intérieur
-  [E | S]:      5,     // E+S    → coin SE (à vérifier)
+  [N | E]:     10,     // N+E    → coin NE
+  [N | S]:     10,     // N+S    → opposés N/S
+  [N | W]:      9,     // N+W    → coin NW
+  [E | S]:      5,     // E+S    → coin SE
   [E | W]:     11,     // E+W    → opposés E/W
-  [S | W]:      7,     // S+W    → coin SW intérieur
+  [S | W]:      7,     // S+W    → coin SW
 
   [N | E | S]:     12, // N+E+S  → 3 côtés
   [N | E | W]:     13, // N+E+W  → 3 côtés
   [N | S | W]:     15, // N+S+W  → 3 côtés
   [E | S | W]:     14, // E+S+W  → 3 côtés
 
-  [N | E | S | W]: 16, // tous cardinaux → tuile entourée
+  [N | E | S | W]: 1,  // centre (tous voisins = soi-même)
 };
 
 // ================================================================
