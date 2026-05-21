@@ -13,6 +13,8 @@ import { TileType } from '../core/types';
 import { MAP_SIZE } from '../config';
 import { IsometricRenderer } from '../render';
 import { mapToScreen } from '../render/CoordinateSystem';
+import { woodsTextureKey } from '../render/TransitionLUT';
+import { TILE } from '../config';
 
 interface TreeDef {
   atlasKey: string;
@@ -31,6 +33,8 @@ const TREES: TreeDef[] = [
 
 export class GameScene extends Phaser.Scene {
   private isoRenderer!: IsometricRenderer;
+  private debugLabels: Phaser.GameObjects.Text[] = [];
+  private showDebug = false;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -76,6 +80,11 @@ export class GameScene extends Phaser.Scene {
     for (const t of placedTrees) {
       this.spawnTree(terrain, t);
     }
+
+    // ── Debug : touche D → labels de texture ──
+    this.input.keyboard!.on('keydown-D', () => {
+      this.toggleDebug(terrain);
+    });
   }
 
   /** Passe un voisin en ROUGH si c'est de l'herbe (lisière de forêt) */
@@ -152,5 +161,83 @@ export class GameScene extends Phaser.Scene {
       `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → ` +
       `écran (${p.screenX}, ${p.screenY}), sol_origin=${groundOriginY.toFixed(3)}`,
     );
+  }
+
+  /** Bascule l'affichage des labels de debug (touche D) */
+  private toggleDebug(terrain: TerrainEngine): void {
+    this.showDebug = !this.showDebug;
+
+    // Détruire les labels existants
+    for (const lbl of this.debugLabels) lbl.destroy();
+    this.debugLabels = [];
+    if (!this.showDebug) return;
+
+    // Créer les labels pour chaque tuile
+    for (let y = 0; y < terrain.height; y++) {
+      for (let x = 0; x < terrain.width; x++) {
+        const tile = terrain.tileAt(x, y);
+        if (!tile) continue;
+
+        // Déterminer le label : lettre + chiffre
+        let label = '?';
+        if (tile.type === TileType.TREE) {
+          // Pour Woods : extraire depuis la LUT comme drawWoodsTile
+          const group = (tile.variation - 1) % 4;
+          const variation = (tile.variation - 1) % 9 + 1;
+          const mask = this.calculateBitmask(terrain, x, y, TileType.TREE);
+          const key = woodsTextureKey(
+            group, variation, mask,
+            (k: string) => this.textures.exists(k),
+          );
+          // Extraire groupe + suffixe : "WOODSA0005" → "A5"
+          const m = key.match(/WOODS([A-D])(\d+)/);
+          if (m) label = `${m[1]}${parseInt(m[2], 10)}`;
+        } else {
+          // Autres types : lettre du type + variation
+          const typeNames: Record<number, string> = {
+            [TileType.GRASS]: 'G', [TileType.FAIRWAY]: 'F',
+            [TileType.GREEN]: 'GN', [TileType.SAND]: 'S',
+            [TileType.WATER]: 'W', [TileType.PATH]: 'P',
+            [TileType.TEE]: 'T', [TileType.ROUGH]: 'R',
+            [TileType.ROCK]: 'K',
+          };
+          const ch = typeNames[tile.type] ?? `${tile.type}`;
+          label = `${ch}${tile.variation || ''}`;
+        }
+
+        // Centre de la tuile en isométrique
+        const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(x, y);
+        const hAvg = (hTL + hTR + hBR + hBL) / 4;
+        const pos = mapToScreen(x + 0.5, y + 0.5, hAvg);
+
+        const txt = this.add.text(pos.screenX, pos.screenY, label, {
+          fontFamily: 'monospace',
+          fontSize: '10px',
+          color: '#ffffff',
+          stroke: '#000000',
+          strokeThickness: 2,
+        }).setOrigin(0.5, 0.5).setDepth(x + y + 2);
+
+        this.debugLabels.push(txt);
+      }
+    }
+  }
+
+  /** Calcule le bitmask 8-way (copie de TileRenderer.calculateBitmask) */
+  private calculateBitmask(
+    terrain: TerrainEngine,
+    x: number, y: number,
+    tileType: TileType,
+  ): number {
+    const dirs: [number, number, number][] = [
+      [0, -1, 1], [1, -1, 2], [1, 0, 4], [1, 1, 8],
+      [0, 1, 16], [-1, 1, 32], [-1, 0, 64], [-1, -1, 128],
+    ];
+    let mask = 0;
+    for (const [dx, dy, bit] of dirs) {
+      const n = terrain.tileAt(x + dx, y + dy);
+      if (n && n.type === tileType) mask |= bit;
+    }
+    return mask;
   }
 }
