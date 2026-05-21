@@ -6,18 +6,22 @@
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
- * Éclairage : vertex lighting simulé par overlay de dégradés
- * par triangle (faux Gouraud shading). Les normales sont calculées
- * par différences finies sur la heightmap, la lumière directionnelle
- * fixe simule un soleil de fin de matinée.
- *
- * - GRASS : textures Rough en pattern fill + overlay éclairage
+ * Éclairage :
+ *   Vertex lighting (Gouraud shading) par tessellation.
+ *   Chaque tuile est subdivisée en N×N sous-quads. Pour chaque sous-quad,
+ *   la luminosité est interpolée bilinéairement depuis les 4 coins,
+ *   puis appliquée via globalCompositeOperation = 'multiply'.
+ *   La continuité inter-tuile est garantie car les coins adjacents de
+ *   deux tuiles voisines lisent le même vertex de la heightmap.
  */
 
 import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
+
+/** Nombre de subdivisions par tuile pour l'éclairage */
+const LIGHT_SUBDIV = 8;
 
 // ================================================================
 // Éclairage directionnel
@@ -26,15 +30,15 @@ import { mapToScreen } from './CoordinateSystem';
 /** Vecteur lumière directionnelle normalisé — simule un soleil
  *  venant du Nord-Ouest (haut-gauche en isométrique). */
 const LIGHT_DIR: readonly [number, number, number] = [
-  -0.409,   // composante X (Est-Ouest)
-  -0.613,   // composante Y (Nord-Sud)
-   0.707,   // composante Z (verticale)
+  -0.409,  // X (Est-Ouest)
+  -0.613,  // Y (Nord-Sud)
+   0.707,  // Z (verticale)
 ];
 
-/** Intensité minimale (ombre max) */
+/** Intensité minimale (ombre max) — les creux restent visibles */
 const MIN_BRIGHTNESS = 0.65;
 
-/** Pas de la grille pour le calcul des normales */
+/** Pas spatial pour le calcul des normales */
 const STEP = 2;
 
 // ================================================================
@@ -65,16 +69,30 @@ function dot(
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/** Interpolation linéaire */
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
 // ================================================================
-// Quad interfa
+// Types internes
 // ================================================================
 
 interface QuadTile {
   x: number; y: number;
-  verts: Array<{ x: number; y: number }>;
-  type: TileType;
-  variation: number;
+  verts: readonly [
+    { x: number; y: number },  // TL
+    { x: number; y: number },  // TR
+    { x: number; y: number },  // BR
+    { x: number; y: number },  // BL
+  ];
 }
+
+/**
+ * Brightness aux 4 coins d'une tuile, dans [MIN_BRIGHTNESS, 1.0].
+ * Ordre : [TL, TR, BR, BL].
+ */
+type TileBrightness = [number, number, number, number];
 
 export class TileRenderer {
   private scene: Phaser.Scene;
@@ -95,13 +113,14 @@ export class TileRenderer {
     if (tiles.length === 0) return;
     this.clearAll();
 
-    // ── 1. Collecter les 4 sommets de chaque tuile ──
+    // ── 1. Collecter les quads + brightness ──
     const origin = mapToScreen(0, 0);
     const quads: QuadTile[] = [];
+    const brightMap = new Map<string, TileBrightness>();
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
 
-    for (const { x, y, data } of tiles) {
+    for (const { x, y } of tiles) {
       const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
 
       const verts = [
@@ -109,7 +128,7 @@ export class TileRenderer {
         this.vert(x + 1, y,     hTR, origin), // TR
         this.vert(x + 1, y + 1, hBR, origin), // BR
         this.vert(x,     y + 1, hBL, origin), // BL
-      ];
+      ] as const;
 
       for (const v of verts) {
         if (v.x < minX) minX = v.x;
@@ -118,7 +137,11 @@ export class TileRenderer {
         if (v.y > maxY) maxY = v.y;
       }
 
-      quads.push({ x, y, verts, type: data.type, variation: data.variation });
+      quads.push({ x, y, verts });
+
+      // Brightness – calculé une fois par tuile, stocké par clé
+      const key = `${x},${y}`;
+      brightMap.set(key, this.computeTileBrightness(x, y));
     }
 
     // ── 2. Tri painter's : arrière → avant ──
@@ -152,160 +175,199 @@ export class TileRenderer {
     const grassPattern = this.createGrassPattern(ctx);
     const fillStyle = grassPattern || '#4a8f4a';
 
-    // ── 5. Rendu de chaque tuile : pattern + éclairage ──
+    // ── 5. Dessiner le terrain (pattern fill seulement) ──
     for (const q of quads) {
       const [pTL, pTR, pBR, pBL] = q.verts;
 
-      // Fond opaque + pattern fill
+      // Fond opaque vert (anti-gap de transparence)
       ctx.fillStyle = '#4a8f4a';
       this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+
+      // Pattern herbe
       ctx.fillStyle = fillStyle;
       this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-
-      // ── Éclairage : vertex lighting par-dessus le pattern ──
-      const brightness = this.computeTileBrightness(q.x, q.y);
-      this.drawLighting(ctx, pTL, pTR, pBR, pBL, brightness);
     }
+
+    // ── 6. Lightmap overlay (multiply blend) ──
+    this.renderLightmap(ctx, cw, ch, offsetX, offsetY, quads, brightMap);
 
     canvas.refresh();
 
-    // ── 6. Image Phaser unique ──
+    // ── 7. Image Phaser unique ──
     this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
     this.mapImage.setOrigin(0, 0);
     this.mapImage.setDepth(0);
   }
 
   // ================================================================
-  // Éclairage
+  // Lightmap par tessellation (Gouraud shading)
+  // ================================================================
+
+  /**
+   * Génère la lightmap par tessellation et la composite en mode multiply.
+   *
+   * Chaque tuile est divisée en LIGHT_SUBDIV × LIGHT_SUBDIV sous-quads.
+   * La luminosité de chaque sommet de sous-quad est interpolée
+   * bilinéairement depuis les 4 brightness des coins de la tuile.
+   *
+   * Chaque sous-quad est rempli d'un gris uniforme correspondant à la
+   * moyenne de ses 4 coins. L'ensemble est composité sur le ctx
+   * avec globalCompositeOperation = 'multiply'.
+   */
+  private renderLightmap(
+    ctx: CanvasRenderingContext2D,
+    cw: number,
+    ch: number,
+    offsetX: number,
+    offsetY: number,
+    quads: QuadTile[],
+    brightMap: Map<string, TileBrightness>,
+  ): void {
+    // Canvas offscreen pour la lightmap
+    const lmCanvas = document.createElement('canvas');
+    lmCanvas.width = cw;
+    lmCanvas.height = ch;
+    const lmCtx = lmCanvas.getContext('2d')!;
+    // Fond blanc = 100% lumineux (aucun effet de multiply)
+    lmCtx.fillStyle = '#ffffff';
+    lmCtx.fillRect(0, 0, cw, ch);
+    lmCtx.translate(-offsetX, -offsetY);
+
+    const n = LIGHT_SUBDIV;
+
+    for (const q of quads) {
+      const [pTL, pTR, pBR, pBL] = q.verts;
+      const b = brightMap.get(`${q.x},${q.y}`)!;
+      if (!b) continue;
+
+      const [bTL, bTR, bBR, bBL] = b;
+
+      // Tessellation : parcourir chaque sous-cellule
+      for (let sy = 0; sy < n; sy++) {
+        for (let sx = 0; sx < n; sx++) {
+          // UV des 4 coins de la sous-cellule
+          const u0 = sx / n;
+          const u1 = (sx + 1) / n;
+          const v0 = sy / n;
+          const v1 = (sy + 1) / n;
+
+          // Position écran des 4 coins de la sous-cellule
+          // Par interpolation linéaire sur le quad
+          const subTL = this.lerp2D(pTL, pTR, pBL, pBR, u0, v0);
+          const subTR = this.lerp2D(pTL, pTR, pBL, pBR, u1, v0);
+          const subBR = this.lerp2D(pTL, pTR, pBL, pBR, u1, v1);
+          const subBL = this.lerp2D(pTL, pTR, pBL, pBR, u0, v1);
+
+          // Brightness interpolé bilinéairement
+          const bTLsub = lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v0);
+          const bTRsub = lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v0);
+          const bBRsub = lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v1);
+          const bBLsub = lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v1);
+
+          // Luminosité moyenne de la sous-cellule
+          const avgB = (bTLsub + bTRsub + bBRsub + bBLsub) / 4;
+
+          // Valeur de gris = brightness
+          const gray = Math.round(avgB * 255);
+          const hex = `rgb(${gray},${gray},${gray})`;
+
+          lmCtx.fillStyle = hex;
+          lmCtx.beginPath();
+          lmCtx.moveTo(subTL.x, subTL.y);
+          lmCtx.lineTo(subTR.x, subTR.y);
+          lmCtx.lineTo(subBR.x, subBR.y);
+          lmCtx.lineTo(subBL.x, subBL.y);
+          lmCtx.closePath();
+          lmCtx.fill();
+        }
+      }
+    }
+
+    // Composition : multiply = terrain × lightmap
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset world transform
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.drawImage(lmCanvas, 0, 0);
+    ctx.restore();
+  }
+
+  /**
+   * Interpolation bilinéaire sur un quadrilatère isométrique.
+   * Calcule la position (x, y) correspondant aux coordonnées
+   * locales (u, v) ∈ [0, 1]² dans le quad.
+   *
+   * Utilise deux interpolations linéaires : d'abord entre les
+   * bords gauche et droit selon v, puis entre les résultats selon u.
+   */
+  private lerp2D(
+    pTL: { x: number; y: number },
+    pTR: { x: number; y: number },
+    pBL: { x: number; y: number },
+    pBR: { x: number; y: number },
+    u: number,
+    v: number,
+  ): { x: number; y: number } {
+    // Interpolation verticale : bord gauche (TL→BL) et bord droit (TR→BR)
+    const leftX  = lerp(pTL.x, pBL.x, v);
+    const leftY  = lerp(pTL.y, pBL.y, v);
+    const rightX = lerp(pTR.x, pBR.x, v);
+    const rightY = lerp(pTR.y, pBR.y, v);
+
+    // Interpolation horizontale entre les bords gauche et droit
+    return {
+      x: lerp(leftX, rightX, u),
+      y: lerp(leftY, rightY, u),
+    };
+  }
+
+  // ================================================================
+  // Calcul des normales et de l'éclairage
   // ================================================================
 
   /**
    * Calcule les 4 intensités lumineuses des coins de la tuile (x, y).
    * Retourne [bTL, bTR, bBR, bBL] dans [MIN_BRIGHTNESS, 1.0].
+   *
+   * Continuité garantie : le coin BR de la tuile (x, y) est STRICTEMENT
+   * IDENTIQUE au coin TL de la tuile (x+1, y+1) car les deux lisent
+   * le même vertex (x+1, y+1) de la heightmap.
    */
-  private computeTileBrightness(
-    tileX: number,
-    tileY: number,
-  ): [number, number, number, number] {
-    const terrain = this.terrain;
-    const vx = tileX, vy = tileY;
-
-    // Normales aux 4 coins de la tuile
-    const nTL = this.vertexNormal(terrain, vx,     vy);
-    const nTR = this.vertexNormal(terrain, vx + 1, vy);
-    const nBR = this.vertexNormal(terrain, vx + 1, vy + 1);
-    const nBL = this.vertexNormal(terrain, vx,     vy + 1);
+  private computeTileBrightness(tileX: number, tileY: number): TileBrightness {
+    const t = this.terrain;
 
     return [
-      this.brightness(nTL),
-      this.brightness(nTR),
-      this.brightness(nBR),
-      this.brightness(nBL),
+      this.vertexBrightness(t, tileX,     tileY),      // TL
+      this.vertexBrightness(t, tileX + 1, tileY),      // TR
+      this.vertexBrightness(t, tileX + 1, tileY + 1),  // BR
+      this.vertexBrightness(t, tileX,     tileY + 1),  // BL
     ];
   }
 
   /**
-   * Calcule la normale d'un sommet de la heightmap par différences finies.
+   * Calcule la normale d'un sommet de la heightmap par différences finies
+   * centrées, puis retourne le brightness (dot product avec LIGHT_DIR).
    *
-   * La normale est le produit vectoriel des tangentes X et Y au sommet.
-   * Les hauteurs voisines (hL, hR, hU, hD) sont lues depuis la heightmap.
-   * Le pas spatial horizontal/vertical est STEP (2 unités isométriques).
+   * La normale = normalize(cross(dx, dy)) où :
+   *   dx = [STEP, 0, hR - hL]    (tangente horizontale)
+   *   dy = [0, STEP, hU - hD]    (tangente verticale)
    */
-  private vertexNormal(
+  private vertexBrightness(
     terrain: TerrainEngine,
     vx: number,
     vy: number,
-  ): [number, number, number] {
-    const hC = terrain.getVertex(vx, vy);
+  ): number {
     const hL = terrain.getVertex(vx - 1, vy);
     const hR = terrain.getVertex(vx + 1, vy);
     const hU = terrain.getVertex(vx, vy - 1);
     const hD = terrain.getVertex(vx, vy + 1);
 
-    // Tangentes : différence finie centrée
     const dx: [number, number, number] = [STEP, 0, hR - hL];
     const dy: [number, number, number] = [0, STEP, hU - hD];
+    const normal = normalize(cross(dx, dy));
 
-    // Normale = cross(dx, dy), normalisée
-    return normalize(cross(dx, dy));
-  }
-
-  /**
-   * Produit scalaire normal → lumière, clampé dans [MIN_BRIGHTNESS, 1.0].
-   */
-  private brightness(normal: [number, number, number]): number {
+    // Produit scalaire → remappé dans [MIN_BRIGHTNESS, 1.0]
     const d = dot(normal, LIGHT_DIR);
-    // d ∈ [-1, 1] → on remappe dans [MIN_BRIGHTNESS, 1.0]
     return MIN_BRIGHTNESS + (1 - MIN_BRIGHTNESS) * (d + 1) / 2;
-  }
-
-  /**
-   * Dessine l'overlay d'éclairage sur un quad.
-   *
-   * Le quad est divisé en 2 triangles. Chaque triangle reçoit un
-   * gradient linéaire entre son sommet le plus lumineux et le plus
-   * sombre, avec une opacité inversement proportionnelle à la luminosité.
-   *
-   * Pour chaque triangle on dessine un gradient noir semi-transparent
-   * dont l'alpha varie de (1 - brightness_max) à (1 - brightness_min).
-   */
-  private drawLighting(
-    ctx: CanvasRenderingContext2D,
-    pTL: { x: number; y: number },
-    pTR: { x: number; y: number },
-    pBR: { x: number; y: number },
-    pBL: { x: number; y: number },
-    [bTL, bTR, bBR, bBL]: [number, number, number, number],
-  ): void {
-    // Triangle 1 : (TL, TR, BR)
-    this.drawTriangleLighting(ctx, pTL, pTR, pBR, bTL, bTR, bBR);
-    // Triangle 2 : (TL, BR, BL)
-    this.drawTriangleLighting(ctx, pTL, pBR, pBL, bTL, bBR, bBL);
-  }
-
-  /**
-   * Dessine l'overlay d'éclairage pour un triangle.
-   * Crée un gradient linéaire entre le point le plus lumineux et
-   * le plus sombre.
-   */
-  private drawTriangleLighting(
-    ctx: CanvasRenderingContext2D,
-    pA: { x: number; y: number },
-    pB: { x: number; y: number },
-    pC: { x: number; y: number },
-    bA: number,
-    bB: number,
-    bC: number,
-  ): void {
-    // Trouver le point le plus lumineux et le plus sombre
-    let brightP = pA, darkP = pA;
-    let bRight = bA, bDark = bA;
-
-    const check = (p: { x: number; y: number }, b: number) => {
-      if (b > bRight) { bRight = b; brightP = p; }
-      if (b < bDark)  { bDark  = b; darkP  = p; }
-    };
-    check(pB, bB);
-    check(pC, bC);
-
-    // Si pas de variation de luminosité → rien à dessiner
-    if (bRight <= bDark) return;
-
-    // Gradient du point lumineux vers le point sombre
-    const alphaLight = 1 - bRight; // ~0 au max
-    const alphaDark  = 1 - bDark;  // ~0.35 au max
-
-    const grad = ctx.createLinearGradient(brightP.x, brightP.y, darkP.x, darkP.y);
-    grad.addColorStop(0, `rgba(0, 0, 0, ${alphaLight.toFixed(3)})`);
-    grad.addColorStop(1, `rgba(0, 0, 0, ${alphaDark.toFixed(3)})`);
-
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(pA.x, pA.y);
-    ctx.lineTo(pB.x, pB.y);
-    ctx.lineTo(pC.x, pC.y);
-    ctx.closePath();
-    ctx.fill();
   }
 
   // ================================================================
