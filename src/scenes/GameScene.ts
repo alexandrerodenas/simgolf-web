@@ -41,22 +41,64 @@ export class GameScene extends Phaser.Scene {
     const gen = new TerrainGenerator();
     gen.generateNatural(terrain);
 
+    // ── Chercher des tuiles plates pour les arbres ──
+    const flatTiles = this.findFlatTiles(terrain);
+
+    if (flatTiles.length === 0) {
+      console.warn('[GameScene] Aucune tuile plate trouvée pour les arbres');
+    }
+
+    // Associer chaque arbre à une tuile plate
+    const placedTrees: TreeDef[] = [];
+    for (let i = 0; i < TREES.length && i < flatTiles.length; i++) {
+      const ft = flatTiles[i];
+      placedTrees.push({ ...TREES[i], tileX: ft.x, tileY: ft.y });
+    }
+
+    // ── Sol Woods sous les arbres (AVANT le rendu) ──
+    for (const t of placedTrees) {
+      const hash = (t.tileX * 73 + t.tileY * 37 + 42) & 0x7fffffff;
+      terrain.setTileType(t.tileX, t.tileY, TileType.TREE, (hash % 36) + 1);
+    }
+
     this.isoRenderer = new IsometricRenderer(this, terrain, {
       zoom: 1,
       enableDrag: true,
     });
     this.isoRenderer.init();
 
-    // ── Sol Woods sous les arbres ──
-    for (const t of TREES) {
-      const hash = (t.tileX * 73 + t.tileY * 37 + 42) & 0x7fffffff;
-      terrain.setTileType(t.tileX, t.tileY, TileType.TREE, (hash % 36) + 1);
-    }
-
     // ── Arbres FLC ──
-    for (const t of TREES) {
+    for (const t of placedTrees) {
       this.spawnTree(terrain, t);
     }
+  }
+
+  /** Trouve les tuiles plates (4 coins à la même hauteur), non ROCK */
+  private findFlatTiles(
+    terrain: TerrainEngine,
+  ): Array<{ x: number; y: number; height: number }> {
+    const tiles: Array<{ x: number; y: number; height: number }> = [];
+    for (let y = 1; y < terrain.height - 1; y++) {
+      for (let x = 1; x < terrain.width - 1; x++) {
+        const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(x, y);
+        if (hTL === hTR && hTR === hBR && hBR === hBL) {
+          // Pas de rocher sur cette tuile
+          const tile = terrain.tileAt(x, y);
+          if (tile && tile.type !== TileType.ROCK) {
+            tiles.push({ x, y, height: hTL });
+          }
+        }
+      }
+    }
+    // Trier par proximité au centre de la carte
+    const cx = terrain.width / 2;
+    const cy = terrain.height / 2;
+    tiles.sort((a, b) => {
+      const da = Math.abs(a.x - cx) + Math.abs(a.y - cy);
+      const db = Math.abs(b.x - cx) + Math.abs(b.y - cy);
+      return da - db;
+    });
+    return tiles;
   }
 
   update(): void {
