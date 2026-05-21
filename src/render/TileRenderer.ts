@@ -6,12 +6,12 @@
  * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
  * Tri painter's algorithm par profondeur (x + y).
  *
- * Auto-Tiling (8-way bitmask) :
- *   Pour chaque tuile, on analyse les 8 voisins. Si le voisin est du
- *   même type, le bit correspondant est activé (N=1, NE=2, E=4, SE=8,
- *   S=16, SW=32, W=64, NW=128). Les tuiles en bordure reçoivent un
- *   overlay de transition semi-transparent le long de l'arête partagée
- *   avec un type différent → bords arrondis et naturels.
+ * Transitions par sprites pré-rendus (LUT Firaxis) :
+ *   Le bitmask 8-way (N=1, NE=2, E=4, SE=8, S=16, SW=32, W=64, NW=128)
+ *   est calculé pour chaque tuile. TransitionLUT.woodsTextureKey() mappe
+ *   ce mask vers le suffixe du sprite Firaxis (0001 = plein, 0005-0016+
+ *   = lisières/coins). La texture exacte est chargée directement comme
+ *   pattern fill — plus d'overlays procéduraux.
  *
  * Éclairage :
  *   Vertex lighting (Gouraud shading) par tessellation.
@@ -26,6 +26,7 @@ import Phaser from 'phaser';
 import { TileData, TerrainEngine } from '../core';
 import { TileType } from '../core/types';
 import { mapToScreen } from './CoordinateSystem';
+import { woodsTextureKey } from './TransitionLUT';
 
 /** Nombre de subdivisions par tuile pour l'éclairage */
 const LIGHT_SUBDIV = 8;
@@ -50,62 +51,6 @@ const BIT_DIRS: [number, number, number][] = [
   [-1, 0, BIT_W],   [-1,-1, BIT_NW],
 ];
 
-/** Largeur de la bande de transition (fraction de la tuile) */
-const TRANSITION_WIDTH = 0.18; // 18% depuis le bord
-
-// ================================================================
-// Hiérarchie stricte des calques (Layer Priority)
-// Bas → Haut : Water < Sand < Fairway < Green < Grass < Rough < Rock < Woods
-// Seul le terrain de priorité la PLUS HAUTE dessine sa transition
-// ================================================================
-
-const LAYER_PRIORITY: Record<TileType, number> = {
-  [TileType.WATER]:        0,
-  [TileType.WATER_HAZARD]: 0,
-  [TileType.SAND]:         1,
-  [TileType.FAIRWAY]:      2,
-  [TileType.GREEN]:        3,
-  [TileType.GRASS]:        4,
-  [TileType.ROUGH]:        5,
-  [TileType.ROCK]:         6,
-  [TileType.TREE]:         7,
-  [TileType.BUSH]:         5,
-  [TileType.FLOWER]:       4,
-  [TileType.PATH]:         6,
-  [TileType.TEE]:          4,
-  [TileType.BUILDING]:     8,
-  [TileType.BRIDGE]:       6,
-  [TileType.HOLE]:         8,
-  [TileType.EMPTY]:        0,
-};
-
-// ================================================================
-// Couleurs de base par type de terrain (pour les overlays)
-// ================================================================
-
-function baseColorForType(type: TileType): string {
-  switch (type) {
-    case TileType.GRASS: return '#4a8f4a';
-    case TileType.FAIRWAY: return '#5a9f4a';
-    case TileType.GREEN: return '#3a9a3a';
-    case TileType.SAND: return '#c4b878';
-    case TileType.WATER: return '#3a7ab8';
-    case TileType.PATH: return '#8a7a5a';
-    case TileType.TEE: return '#4a8f4a';
-    case TileType.BUILDING: return '#6a6a6a';
-    case TileType.TREE: return '#2d5a1e';
-    case TileType.BUSH: return '#3a7a2a';
-    case TileType.FLOWER: return '#5a8a3a';
-    case TileType.ROUGH: return '#3a7a3a';
-    case TileType.BRIDGE: return '#6a5a3a';
-    case TileType.HOLE: return '#2a3a2a';
-    case TileType.WATER_HAZARD: return '#3a7ab8';
-    case TileType.EMPTY: return '#1a2a1a';
-    case TileType.ROCK: return '#6a5a4a';
-    default: return '#4a8f4a';
-  }
-}
-
 // ================================================================
 // Textures Rock
 // ================================================================
@@ -116,17 +61,6 @@ const ROCK_TEXTURES = (() => {
   for (const group of ['A', 'B', 'C', 'D', 'E']) {
     for (let v = 1; v <= 9; v++) {
       names.push(`ROCK${group}${v.toString().padStart(4, '0')}`);
-    }
-  }
-  return names;
-})();
-
-/** Noms des textures Woods (4 groupes × 9 variantes = 36) */
-const WOODS_TEXTURES = (() => {
-  const names: string[] = [];
-  for (const group of ['A', 'B', 'C', 'D']) {
-    for (let v = 1; v <= 9; v++) {
-      names.push(`WOODS${group}${v.toString().padStart(4, '0')}`);
     }
   }
   return names;
@@ -181,15 +115,6 @@ function dot(
 /** Interpolation linéaire */
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
-}
-
-/** Interpolation point 2D */
-function lerpPt(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-  t: number,
-): { x: number; y: number } {
-  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) };
 }
 
 // ================================================================
@@ -317,10 +242,7 @@ export class TileRenderer {
       }
     }
 
-    // ── 6. Transitions auto-tiling (overlays semi-transparents) ──
-    this.renderAutoTileOverlays(ctx, quads);
-
-    // ── 7. Lightmap overlay (multiply blend) ──
+    // ── 6. Lightmap overlay (multiply blend) ──
     this.renderLightmap(ctx, cw, ch, offsetX, offsetY, quads, brightMap);
 
     canvas.refresh();
@@ -332,7 +254,7 @@ export class TileRenderer {
   }
 
   // ================================================================
-  // Auto-Tiling : bitmask 8-way + overlays de transition
+  // Auto-Tiling : bitmask 8-way + Look-Up Table (LUT)
   // ================================================================
 
   /**
@@ -352,165 +274,6 @@ export class TileRenderer {
       }
     }
     return mask;
-  }
-
-  /**
-   * Rendu des overlays de transition — blend asymétrique par hiérarchie.
-   *
-   * Seul le terrain de priorité la PLUS HAUTE dessine sa transition.
-   * La bande (18% depuis l'arête) est remplie d'un dégradé linéaire
-   * allant de la couleur du terrain dominant (bord intérieur) à la
-   * couleur du terrain voisin (bord de la tuile). Cela crée un fondu
-   * du terrain dominant vers le terrain dominé — la forêt "meurt"
-   * dans l'herbe au lieu que l'herbe envahisse la forêt.
-   *
-   * Le bitmask 8-way est conservé pour les futurs sprites de jonction
-   * (index 0005-0016+ dans les assets Firaxis).
-   */
-  private renderAutoTileOverlays(
-    ctx: CanvasRenderingContext2D,
-    quads: QuadTile[],
-  ): void {
-    for (const q of quads) {
-      const mask = this.calculateBitmask(q.x, q.y, q.type);
-      const [pTL, pTR, pBR, pBL] = q.verts;
-      const tw = TRANSITION_WIDTH;
-      const ownPriority = LAYER_PRIORITY[q.type] ?? 0;
-
-      // Pattern du terrain dominant
-      const dominantPattern = this.getPatternForQuad(ctx, q);
-      const fallbackColor = baseColorForType(q.type);
-
-      // ── NORTH (voisin y-1) ──
-      if (!(mask & BIT_N)) {
-        const neighbor = this.terrain.tileAt(q.x, q.y - 1);
-        if (neighbor && neighbor.type !== q.type &&
-            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
-          const iTL = lerpPt(pTL, pBL, tw);
-          const iTR = lerpPt(pTR, pBR, tw);
-          this.fillTransitionPattern(
-            ctx, pTL, pTR, iTR, iTL,
-            dominantPattern, fallbackColor, tw,
-          );
-        }
-      }
-
-      // ── EAST (voisin x+1) ──
-      if (!(mask & BIT_E)) {
-        const neighbor = this.terrain.tileAt(q.x + 1, q.y);
-        if (neighbor && neighbor.type !== q.type &&
-            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
-          const iTR = lerpPt(pTL, pTR, 1 - tw);
-          const iBR = lerpPt(pBL, pBR, 1 - tw);
-          this.fillTransitionPattern(
-            ctx, iTR, pTR, pBR, iBR,
-            dominantPattern, fallbackColor, tw,
-          );
-        }
-      }
-
-      // ── SOUTH (voisin y+1) ──
-      if (!(mask & BIT_S)) {
-        const neighbor = this.terrain.tileAt(q.x, q.y + 1);
-        if (neighbor && neighbor.type !== q.type &&
-            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
-          const iBL = lerpPt(pTL, pBL, 1 - tw);
-          const iBR = lerpPt(pTR, pBR, 1 - tw);
-          this.fillTransitionPattern(
-            ctx, iBL, iBR, pBR, pBL,
-            dominantPattern, fallbackColor, tw,
-          );
-        }
-      }
-
-      // ── WEST (voisin x-1) ──
-      if (!(mask & BIT_W)) {
-        const neighbor = this.terrain.tileAt(q.x - 1, q.y);
-        if (neighbor && neighbor.type !== q.type &&
-            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
-          const iTL = lerpPt(pTL, pTR, tw);
-          const iBL = lerpPt(pBL, pBR, tw);
-          this.fillTransitionPattern(
-            ctx, pTL, iTL, iBL, pBL,
-            dominantPattern, fallbackColor, tw,
-          );
-        }
-      }
-    }
-  }
-
-  /**
-   * Remplit un quadrilatère de transition avec la texture pattern
-   * du terrain dominant, atténuée par un fondu en escalier (stepped alpha).
-   *
-   * La bande est divisée en N sous-bandes. Chaque sous-bande est
-   * remplie avec EXACTEMENT le même pattern que la tuile dominante,
-   * à une opacité croissante : ~15% à l'arête (côté voisin) → 100%
-   * au bord intérieur (côté dominant). Le résultat est un motif
-   * texturé qui s'estompe progressivement, pas une couleur unie.
-   *
-   * @param edgeA, edgeB — les deux points sur l'arête partagée (côté voisin)
-   * @param innerA, innerB — les deux points côté intérieur (côté dominant)
-   * @param pattern — la texture pattern du terrain dominant
-   * @param tw — largeur de la bande de transition (fraction de la tuile)
-   */
-  private fillTransitionPattern(
-    ctx: CanvasRenderingContext2D,
-    edgeA: { x: number; y: number },
-    edgeB: { x: number; y: number },
-    innerA: { x: number; y: number },
-    innerB: { x: number; y: number },
-    pattern: CanvasPattern | null,
-    fallbackColor: string,
-    tw: number,
-  ): void {
-    const STEPS = 6;
-
-    for (let k = 0; k < STEPS; k++) {
-      const fOut  = (k)     / STEPS; // 0, 1/6, 2/6, …
-      const fIn   = (k + 1) / STEPS; // 1/6, 2/6, …, 1
-      const alpha = (k + 1) / STEPS; // ~0.17, ~0.33, …, 1.0
-
-      // Points du bord extérieur de cette sous-bande
-      const outerLeft  = lerpPt(edgeA, innerA, fOut);
-      const outerRight = lerpPt(edgeB, innerB, fOut);
-      // Points du bord intérieur
-      const innerLeft  = lerpPt(edgeA, innerA, fIn);
-      const innerRight = lerpPt(edgeB, innerB, fIn);
-
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = pattern || fallbackColor;
-      ctx.beginPath();
-      ctx.moveTo(outerLeft.x, outerLeft.y);
-      ctx.lineTo(outerRight.x, outerRight.y);
-      ctx.lineTo(innerRight.x, innerRight.y);
-      ctx.lineTo(innerLeft.x, innerLeft.y);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  /**
-   * Retourne le CanvasPattern (texture tileable) correspondant
-   * au type de terrain d'une tuile. Utilisé par les overlays de
-   * transition pour que ce soit la VRAIE texture qui s'estompe.
-   */
-  private getPatternForQuad(
-    ctx: CanvasRenderingContext2D,
-    q: QuadTile,
-  ): CanvasPattern | null {
-    if (q.type === TileType.TREE) {
-      const idx = (q.variation - 1) % WOODS_TEXTURES.length;
-      return this.getWoodsPattern(ctx, WOODS_TEXTURES[idx]);
-    }
-    if (q.type === TileType.ROCK) {
-      const idx = (q.variation - 1) % ROCK_TEXTURES.length;
-      return this.getRockPattern(ctx, ROCK_TEXTURES[idx]);
-    }
-    // Default : pattern herbe (RoughA0001)
-    return this.createGrassPattern(ctx);
   }
 
   // ================================================================
@@ -728,16 +491,31 @@ export class TileRenderer {
   // ================================================================
 
   /**
-   * Dessine une tuile TREE avec sa texture Woods pattern fill.
-   * La variation (1-36) détermine quelle texture WOODSA/D0001-0009 utiliser.
+   * Dessine une tuile TREE avec sa texture Woods.
+   * La texture sélectionnée dépend du bitmask 8-way (transition LUT)
+   * et de la variation cosmétique (1-36).
+   *
+   * Si la texture de transition (ex: WOODSA0005) n'existe pas encore
+   * dans Phaser, on tombe sur la texture de base 0001-0009.
    */
   private drawWoodsTile(
     ctx: CanvasRenderingContext2D,
     quad: QuadTile,
   ): void {
     const [pTL, pTR, pBR, pBL] = quad.verts;
-    const idx = (quad.variation - 1) % WOODS_TEXTURES.length;
-    const textureKey = WOODS_TEXTURES[idx];
+    const group = (quad.variation - 1) % 4; // A, B, C, D
+    const variation = (quad.variation - 1) % 9 + 1; // 1-9
+
+    // Bitmask 8-way pour la transition
+    const mask = this.calculateBitmask(quad.x, quad.y, TileType.TREE);
+
+    // Clé de texture via la LUT (avec fallback si la texture n'existe pas)
+    const textureKey = woodsTextureKey(
+      group,
+      variation,
+      mask,
+      (key: string) => this.scene.textures.exists(key),
+    );
 
     // Fond opaque vert foncé (couleur de base de la forêt)
     ctx.fillStyle = '#2d5a1e';
