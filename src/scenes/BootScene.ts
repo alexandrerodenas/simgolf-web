@@ -42,6 +42,13 @@ export class BootScene extends Phaser.Scene {
     for (const key of WOODS) {
       this.load.image(key, `assets/textures/parkland/${key}.webp`);
     }
+
+    // FLC Sprite : Willow Tree (arbre animé)
+    this.load.atlas(
+      'flic_willow',
+      'assets/flics/WillowTree/WillowTree.png',
+      'assets/flics/WillowTree/WillowTree.json',
+    );
   }
 
   create(): void {
