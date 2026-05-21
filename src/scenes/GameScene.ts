@@ -17,11 +17,15 @@ interface TreeDef {
   atlasKey: string;
   tileX: number;
   tileY: number;
+  /** Position Y de la ligne de sol dans l'image (0=top, 1=bottom) */
+  groundOriginY: number;
 }
 
 const TREES: TreeDef[] = [
-  { atlasKey: 'flic_willow', tileX: 8, tileY: 8 },
-  { atlasKey: 'flic_maple',  tileX: 6, tileY: 7 },
+  // WillowTree : 85x78, sol à y=56/78
+  { atlasKey: 'flic_willow', tileX: 8, tileY: 8, groundOriginY: 56 / 78 },
+  // TreeMapleMedium : 59x76, sol à y=63/76
+  { atlasKey: 'flic_maple',  tileX: 6, tileY: 7, groundOriginY: 63 / 76 },
 ];
 
 export class GameScene extends Phaser.Scene {
@@ -44,7 +48,7 @@ export class GameScene extends Phaser.Scene {
 
     // ── Arbres FLC ──
     for (const t of TREES) {
-      this.spawnTree(terrain, t.atlasKey, t.tileX, t.tileY);
+      this.spawnTree(terrain, t);
     }
   }
 
@@ -54,10 +58,10 @@ export class GameScene extends Phaser.Scene {
 
   private spawnTree(
     terrain: TerrainEngine,
-    atlasKey: string,
-    tileX: number,
-    tileY: number,
+    def: TreeDef,
   ): void {
+    const { atlasKey, tileX, tileY, groundOriginY } = def;
+
     // Hauteur moyenne au centre de la tuile
     const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(tileX, tileY);
     const hAvg = (hTL + hTR + hBR + hBL) / 4;
@@ -75,11 +79,12 @@ export class GameScene extends Phaser.Scene {
     if (frames.length === 0) return;
 
     const img = this.add.image(p.screenX, p.screenY, atlasKey, frames[0]);
-    img.setOrigin(0.5, 1);                    // Ancré bas-centre → le sol touche le terrain
-    img.setDepth(tileX + tileY + 1);          // Painter's depth au-dessus du terrain
+    img.setOrigin(0.5, groundOriginY);            // Ancré sur la ligne de sol (pas au bas de l'image)
+    img.setDepth(tileX + tileY + 1);              // Painter's depth au-dessus du terrain
 
     console.log(
-      `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → écran (${p.screenX}, ${p.screenY})`,
+      `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → ` +
+      `écran (${p.screenX}, ${p.screenY}), sol_origin=${groundOriginY.toFixed(3)}`,
     );
   }
 }
