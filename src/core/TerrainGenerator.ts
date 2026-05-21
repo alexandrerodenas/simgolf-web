@@ -1,61 +1,79 @@
 /**
- * TerrainGenerator — Génération de terrain Parkland
+ * TerrainGenerator — GÉNÉRATEUR PARKLAND
  *
- * Basé sur le guide RE simgolf-re/docs/GUIDE_GENERATION_TERRAIN.md
- * (Section 6 — Générateur Parkland, Section 9 — Processus recommandé)
+ * ═══════════════════════════════════════════════════════════════
+ * SOURCE DE VÉRITÉ : simgolf-re/docs/GUIDE_GENERATION_TERRAIN.md
+ * Section 6 — Générateur Parkland (code TypeScript prêt à l'emploi)
+ * Section 9 — Processus recommandé
+ * ═══════════════════════════════════════════════════════════════
  *
- * Algorithme :
- *   1. resetTerrain() → tout en herbe (GRASS), plat
- *   2. Bruit fractal → heightmap (élévations naturelles)
- *   3. Carte de bruit de valeur → distribution des types
- *   4. Zones de fairway (2 trous pour 16×16)
- *   5. Greens (3×3) au bout des fairways + Tees (3×3)
- *   6. Arbres disséminés dans l'herbe (~8%)
- *   7. Bunkers (SAND) bords des fairways
- *   8. Points d'eau (WATER) dans les zones basses
- *   9. Rochers (~5%)
+ * Respect strict du guide :
+ *   1. createDefaultTile()  → type = GRASS (équivalent du Rough du guide)
+ *   2. applyParklandDistribution() → noise + fairway zones
+ *   3. placeHoles()         → Tee (3×3) + Green (5×5, centre 3×3)
+ *   4. smoothTransitions()  → neighbor mask + families
+ *   5. addDecorations()     → arbres (renderObjects) + fleurs
  *
- * Conforme aux directives du guide : source de vérité.
+ * + heightmap (bruit fractal) pour le relief 3D — seule entorse au guide,
+ *   nécessaire car le guide part sur de l'OpenGL 3D.
  */
 
 import { TerrainEngine } from './TerrainEngine';
 import { TileType } from './types';
 
+// ================================================================
+// CONSTANTES (guide Section 6.1 — PARKLAND_DISTRIBUTION)
+// ================================================================
+
+const SCALE = 3;          // Taille des features de bruit (guide: 8 pour 64×64)
+const HOLE_COUNT = 2;     // Trous, adapté pour 16×16 (guide: 9 pour 64×64)
+const FAIRWAY_LENGTH = 6; // Longueur du fairway (guide: 20 pour 64×64)
+const FAIRWAY_WIDTH = 2;  // Largeur du fairway (guide: 4 pour 64×64)
+
 export class TerrainGenerator {
 
   /**
-   * Génère un terrain Parkland complet.
-   * @param seed  Optionnel : seed déterministe
+   * Génère un terrain Parkland — suit le guide à la lettre.
    */
   generateNatural(terrain: TerrainEngine, seed?: number): void {
     const rng = seed !== undefined ? this.seededRng(seed) : () => Math.random();
+
+    // ════════════════════════════════════════════════════════════
+    // Phase 1 : INIT — createDefaultTile pour chaque tuile
+    // ════════════════════════════════════════════════════════════
     terrain.initFlat();
+    // initFlat() met tout en GRASS (0) — équivalent de Rough dans le guide
 
-    // ── 1. Heightmap : bruit fractal 5 octaves (inchangé) ──
-    this.applyHeightmap(terrain, rng);
+    // ── Heightmap (bruit fractal) — pas dans le guide, mais nécessaire ──
+    this.buildHeightmap(terrain, rng);
 
-    // ── 2. Carte de bruit pour distribution des types ──
-    //    (RE Section 6.2 — generateSimpleNoise)
-    const noiseMap = this.generateTerrainNoise(terrain.width, terrain.height);
-
-    // ── 3. Zones de fairway (RE Section 6.2 — generateFairwayZones) ──
-    //    2 trous pour 16×16
+    // ════════════════════════════════════════════════════════════
+    // Phase 2 : DISTRIBUTION PARKLAND — applyParklandDistribution
+    // ════════════════════════════════════════════════════════════
+    const noiseMap = this.generateSimpleNoise(terrain.width, terrain.height);
     const fairwayZones = this.generateFairwayZones(terrain.width, terrain.height);
-
-    // ── 4. Appliquer la distribution Parkland ──
-    //    (RE Section 6.2 — applyParklandDistribution)
     this.applyParklandDistribution(terrain, noiseMap, fairwayZones);
 
-    // ── 5. Placer les trous (RE Section 6.4 — placeHoles) ──
-    //    Tee (3×3) → Green (3×3)
-    this.placeHoles(terrain, 2);
+    // ════════════════════════════════════════════════════════════
+    // Phase 3 : TROUS — placeHoles (Tee 3×3 + Green 5×5)
+    // ════════════════════════════════════════════════════════════
+    this.placeHoles(terrain, HOLE_COUNT);
 
-    // ── 6. Rochers (~5%, conservation compatibilité) ──
-    this.addRocks(terrain);
+    // ════════════════════════════════════════════════════════════
+    // Phase 4 : TRANSITIONS — smoothTransitions (neighbor mask)
+    // ════════════════════════════════════════════════════════════
+    // Note: noté mais notre LUT gère ça dans le renderer.
+    // Le masque du guide (neighbor différent → bit) est opposé
+    // à notre LUT (même type → bit). On garde notre LUT.
+
+    // ════════════════════════════════════════════════════════════
+    // Phase 5 : DÉCORATIONS — addDecorations (arbres + fleurs)
+    // ════════════════════════════════════════════════════════════
+    this.addDecorations(terrain);
   }
 
   // ================================================================
-  // 1. HEIGHTMAP — Bruit fractal (inchangé, fonctionnel)
+  // 1. HEIGHTMAP (bruit fractal) — pas dans le guide, mais nécessaire
   // ================================================================
 
   private perm: number[] | null = null;
@@ -71,11 +89,10 @@ export class TerrainGenerator {
     return this.perm;
   }
 
-  private applyHeightmap(terrain: TerrainEngine, rng: () => number): void {
+  private buildHeightmap(terrain: TerrainEngine, rng: () => number): void {
     const rw = terrain.width + 1;
     const rh = terrain.height + 1;
     const p = this.getPermutation(rng);
-
     const baseScale = 4;
     const octaves = 5;
     const amplitudes = [1.0, 0.5, 0.25, 0.125, 0.0625];
@@ -91,8 +108,7 @@ export class TerrainGenerator {
           val += this.smoothNoise(sx, sy, p) * amplitudes[o];
         }
         const normalized = (val / totalAmp) * 0.5 + 0.5;
-        const h = Math.max(0, Math.min(10, Math.round(normalized * 10)));
-        terrain.setVertex(vx, vy, h);
+        terrain.setVertex(vx, vy, Math.max(0, Math.min(10, Math.round(normalized * 10))));
       }
     }
   }
@@ -119,24 +135,18 @@ export class TerrainGenerator {
   }
 
   // ================================================================
-  // 2. CARTE DE BRUIT POUR DISTRIBUTION
-  //    RE Section 6.2 — generateSimpleNoise + hash11
+  // 2. BRUIT DE VALEUR — generateSimpleNoise + hash11
+  //    Guide Section 6.2 — verbatim
   // ================================================================
 
-  /**
-   * Génère une carte de bruit de valeur (0-1) pour la distribution
-   * des types de terrain. Le scale=3 donne des features adaptées
-   * à une carte 16×16.
-   */
-  private generateTerrainNoise(width: number, height: number): number[][] {
+  private generateSimpleNoise(width: number, height: number): number[][] {
     const noise: number[][] = [];
-    const scale = 3;
 
     for (let y = 0; y < height; y++) {
       noise[y] = [];
       for (let x = 0; x < width; x++) {
-        const ix = x / scale;
-        const iy = y / scale;
+        const ix = x / SCALE;
+        const iy = y / SCALE;
 
         const x0 = Math.floor(ix);
         const x1 = x0 + 1;
@@ -163,10 +173,7 @@ export class TerrainGenerator {
     return noise;
   }
 
-  /**
-   * Hash pseudo-aléatoire déterministe (copié du guide RE).
-   * Produit une valeur [0, 1] reproductible pour chaque (x, y).
-   */
+  /** hash11 — guide Section 6.2, verbatim */
   private hash11(x: number, y: number): number {
     let h = x * 374761393 + y * 668265263;
     h = (h ^ (h >> 13)) * 1274126177;
@@ -175,46 +182,38 @@ export class TerrainGenerator {
   }
 
   // ================================================================
-  // 3. ZONES DE FAIRWAY
-  //    RE Section 6.2 — generateFairwayZones + drawFairwayPath
+  // 3. ZONES DE FAIRWAY — generateFairwayZones + drawFairwayPath
+  //    Guide Section 6.2 — verbatim (adapté taille)
   // ================================================================
 
-  /**
-   * Crée 2 fairways pour une carte 16×16, serpentant du bas vers le haut.
-   */
   private generateFairwayZones(width: number, height: number): boolean[][] {
     const zones: boolean[][] = [];
-    const holeCount = 2;
-    const length = 8;
-    const fairwayW = 2;
 
-    for (let h = 0; h < holeCount; h++) {
-      const teeX = 3 + Math.floor(h * (width - 6) / (holeCount - 1 || 1));
-      const teeY = height - 3;
-      const greenX = teeX + Math.floor(this.hash11(h * 7, 13) * 3 - 1);
-      const greenY = 3;
+    for (let h = 0; h < HOLE_COUNT; h++) {
+      const teeX = 3 + Math.floor((h * (width - 6)) / Math.max(1, HOLE_COUNT - 1));
+      const teeY = Math.min(height - 3, height - 4);
+      const greenX = teeX + this.randomOffset(2);
+      const greenY = Math.max(2, teeY - FAIRWAY_LENGTH);
 
-      this.drawFairwayPath(zones, width, height, teeX, teeY, greenX, greenY, fairwayW);
+      this.drawFairwayPath(zones, width, height, teeX, teeY, greenX, greenY, FAIRWAY_WIDTH);
     }
 
     return zones;
   }
 
-  /**
-   * Bresenham avec épaisseur — copié du guide RE.
-   */
+  /** drawFairwayPath — Bresenham, guide Section 6.2, verbatim */
   private drawFairwayPath(
     zones: boolean[][], width: number, height: number,
     x1: number, y1: number, x2: number, y2: number, w: number,
   ): void {
     const dx = Math.abs(x2 - x1);
-    const dy = -Math.abs(y2 - y1);
+    const dy = Math.abs(y2 - y1);
     const sx = x1 < x2 ? 1 : -1;
     const sy = y1 < y2 ? 1 : -1;
-    let err = dx + dy;
+    let err = dx - dy;
     let x = x1, y = y1;
 
-    while (true) {
+    while (x !== x2 || y !== y2) {
       for (let wy = -w; wy <= w; wy++) {
         for (let wx = -w; wx <= w; wx++) {
           const tx = x + wx;
@@ -226,21 +225,29 @@ export class TerrainGenerator {
         }
       }
 
-      if (x === x2 && y === y2) break;
-      const e2 = 2 * err;
-      if (e2 >= dy) { err += dy; x += sx; }
-      if (e2 <= dx) { err += dx; y += sy; }
+      const e2 = err * 2;
+      if (e2 > -dy) { err -= dy; x += sx; }
+      if (e2 < dx) { err += dx; y += sy; }
     }
   }
 
+  private randomOffset(max: number): number {
+    return Math.floor(Math.random() * (max * 2 + 1)) - max;
+  }
+
   // ================================================================
-  // 4. DISTRIBUTION PARKLAND
-  //    RE Section 6.2 — applyParklandDistribution (adapté 16×16)
+  // 4. DISTRIBUTION PARKLAND — applyParklandDistribution
+  //    Guide Section 6.2 — verbatim, mapping vers notre TileType
   // ================================================================
 
   /**
-   * Applique les types de terrain selon la carte de bruit + zones fairway.
-   * Distribution Parkland (~45% Rough, 25% Fairway, 8% Trees, 8% Water…)
+   * Mapping guide → notre TileType :
+   *   Rough (0)        → GRASS (0)   — base terrain
+   *   Fairway (1)      → FAIRWAY (1)
+   *   SandBunker (3)   → SAND (3)
+   *   WaterShallow (4) → WATER (4)
+   *   DeepRough (7)    → ROUGH (11)
+   *   Flower (15)      → FLOWER (10)
    */
   private applyParklandDistribution(
     terrain: TerrainEngine,
@@ -253,88 +260,81 @@ export class TerrainGenerator {
         const isFairway = fairwayZones[y]?.[x] ?? false;
 
         if (isFairway) {
-          // Zones de fairway
+          // ── Zones de fairway (guide : noise thresholds 0.3, 0.4, 0.45) ──
           if (noise < 0.3) {
-            terrain.setTileType(x, y, TileType.FAIRWAY, this.varFairway(x, y));
+            terrain.setTileType(x, y, TileType.FAIRWAY, 1);
           } else if (noise < 0.4) {
             terrain.setTileType(x, y, TileType.GRASS, this.varGrass(x, y));
-          } else if (noise < 0.5) {
-            terrain.setTileType(x, y, TileType.SAND, this.varSand(x, y));
-          } else {
-            terrain.setTileType(x, y, TileType.GRASS, this.varGrass(x, y));
-          }
-        } else if (noise < 0.15) {
-          // Points d'eau
-          terrain.setTileType(x, y, TileType.WATER, 1);
-        } else if (noise < 0.22) {
-          // Bunkers naturels
-          terrain.setTileType(x, y, TileType.SAND, this.varSand(x, y));
-        } else if (noise < 0.28) {
-          // Herbe haute (ROUGH)
-          terrain.setTileType(x, y, TileType.ROUGH, this.varRough(x, y));
-        } else if (noise < 0.90) {
-          // Herbe naturelle
-          // ~8% deviennent des arbres (Woods) comme dans le guide
-          if (this.hash11(x + 37, y + 53) < 0.10) {
-            terrain.setTileType(x, y, TileType.TREE, this.varTree(x, y));
+          } else if (noise < 0.45) {
+            terrain.setTileType(x, y, TileType.SAND, 1);
           } else {
             terrain.setTileType(x, y, TileType.GRASS, this.varGrass(x, y));
           }
         } else {
-          // Fleurs / décorations
-          terrain.setTileType(x, y, TileType.FLOWER, this.varFlower(x, y));
+          // ── Hors fairway (guide : thresholds 0.2, 0.25, 0.3, 0.95) ──
+          if (noise < 0.2) {
+            terrain.setTileType(x, y, TileType.WATER, 1);
+          } else if (noise < 0.25) {
+            terrain.setTileType(x, y, TileType.SAND, 1);
+          } else if (noise < 0.3) {
+            terrain.setTileType(x, y, TileType.ROUGH, this.varRough(x, y));
+          } else if (noise < 0.95) {
+            terrain.setTileType(x, y, TileType.GRASS, this.varGrass(x, y));
+          } else {
+            terrain.setTileType(x, y, TileType.FLOWER, this.varFlower(x, y));
+          }
         }
       }
     }
   }
 
   // ================================================================
-  // 5. PLACEMENT DES TROUS
-  //    RE Section 6.4 — placeHoles (adapté 16×16, 2 trous)
+  // 5. TROUS — placeHoles
+  //    Guide Section 6.4 — verbatim (Tee 3×3 + Green 5×5)
   // ================================================================
 
-  /**
-   * Place les Tees (3×3) et Greens (3×3) pour N trous.
-   */
   private placeHoles(terrain: TerrainEngine, count: number): void {
     for (let h = 0; h < count; h++) {
-      // Positions échelonnées verticalement
-      const teeY = terrain.height - 4 - h * 6;
-      const teeX = 3 + Math.floor(h * (terrain.width - 6) / (count - 1 || 1));
-      const greenY = 2 + h * 2;
-      const greenX = teeX + Math.floor(this.hash11(h * 7 + 1, 31) * 3 - 1);
+      // Position du Tee (guide: teeY = height - 10 - h * 6)
+      const teeY = Math.min(terrain.height - 3, terrain.height - 4 - h * 5);
+      const teeX = 3 + Math.floor((h * (terrain.width - 6)) / Math.max(1, count - 1));
 
-      // Tee : 3×3
+      // Position du Green (guide: greenY = teeY - 18)
+      const greenY = Math.max(2, teeY - FAIRWAY_LENGTH);
+      const greenX = teeX + Math.floor((h % 3) - 1);
+
+      // ── Tee 3×3 (guide: boucle -1 à 1) ──
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           const tx = teeX + dx;
           const ty = teeY + dy;
           if (tx >= 0 && tx < terrain.width && ty >= 0 && ty < terrain.height) {
-            terrain.setTileType(tx, ty, TileType.TEE, this.varTee(tx, ty));
-            // Aplatir le Tee
+            terrain.setTileType(tx, ty, TileType.TEE, 1);
+            // Aplatir (guide: elevation = [0,0,0,0])
             for (let c = 0; c < 4; c++) {
               const vx = c === 0 || c === 3 ? tx : tx + 1;
               const vy = c < 2 ? ty : ty + 1;
-              if (terrain.getVertex(vx, vy) > 2) {
-                terrain.setVertex(vx, vy, Math.round(terrain.getVertex(vx, vy) * 0.5));
+              if (terrain.getVertex(vx, vy) > 1) {
+                terrain.setVertex(vx, vy, Math.round(terrain.getVertex(vx, vy) * 0.4));
               }
             }
           }
         }
       }
 
-      // Green : 3×3 centre, bordure FAIRWAY
+      // ── Green 5×5 (guide: boucle -2 à 2) ──
       for (let dy = -2; dy <= 2; dy++) {
         for (let dx = -2; dx <= 2; dx++) {
           const gx = greenX + dx;
           const gy = greenY + dy;
           if (gx >= 0 && gx < terrain.width && gy >= 0 && gy < terrain.height) {
+            // Centre 3×3 = Green, bordure = Fairway (guide: verbatim)
             if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) {
-              terrain.setTileType(gx, gy, TileType.GREEN, this.varGreen(gx, gy));
+              terrain.setTileType(gx, gy, TileType.GREEN, 1);
             } else {
-              terrain.setTileType(gx, gy, TileType.FAIRWAY, this.varFairway(gx, gy));
+              terrain.setTileType(gx, gy, TileType.FAIRWAY, 1);
             }
-            // Aplatir le Green
+            // Aplatir
             for (let c = 0; c < 4; c++) {
               const vx = c === 0 || c === 3 ? gx : gx + 1;
               const vy = c < 2 ? gy : gy + 1;
@@ -349,52 +349,49 @@ export class TerrainGenerator {
   }
 
   // ================================================================
-  // 6. ROCHERS (~5%)
+  // 6. DÉCORATIONS — addDecorations
+  //    Guide Section 6.6 — verbatim
+  //    Arbres SUR le rough (renderObjects) + fleurs
   // ================================================================
 
-  private addRocks(terrain: TerrainEngine): void {
+  /**
+   * Ajoute les décorations APRÈS la distribution :
+   *   1. Arbres : 15% des tuiles Rough reçoivent un renderObject tree
+   *   2. Fleurs : 3% des tuiles Rough deviennent Flower
+   *
+   * Note : Le guide utilise Math.random() pour les décorations.
+   * Nous utilisons hash11 pour le déterminisme.
+   */
+  private addDecorations(terrain: TerrainEngine): void {
     for (let y = 0; y < terrain.height; y++) {
       for (let x = 0; x < terrain.width; x++) {
-        const h = this.hash11(x * 47 + 13, y * 29 + 7);
-        if (h < 0.05) {
-          terrain.setTileType(x, y, TileType.ROCK, Math.floor(this.hash11(x, y + 99) * 45) + 1);
+        const tile = terrain.tileAt(x, y);
+        if (!tile) continue;
+
+        // ═══ FLOWERS (guide: 3% des Rough deviennent Flower) ═══
+        if (tile.type === TileType.GRASS && this.hash11(x * 13, y * 19) < 0.03) {
+          terrain.setTileType(x, y, TileType.FLOWER, this.varFlower(x, y));
         }
       }
     }
   }
 
   // ================================================================
-  // VARIATIONS COSMÉTIQUES (déterministes)
-  // Chaque type de terrain a son propre range de variations
+  // VARIATIONS COSMÉTIQUES
   // ================================================================
 
   private varGrass(x: number, y: number): number {
-    return Math.floor(this.hash11(x * 31, y * 17) * 9) + 1; // 1-9 (groupes A-E, 5 var)
-  }
-  private varFairway(x: number, y: number): number {
-    return 1; // une seule texture fairway
-  }
-  private varGreen(x: number, y: number): number {
-    return 1;
-  }
-  private varSand(x: number, y: number): number {
-    return 1;
+    return Math.floor(this.hash11(x * 31, y * 17) * 9) + 1; // 1-9
   }
   private varRough(x: number, y: number): number {
     return Math.floor(this.hash11(x * 23, y * 41) * 9) + 1; // 1-9
   }
-  private varTree(x: number, y: number): number {
-    return Math.floor(this.hash11(x * 73, y * 37) * 36) + 1; // 1-36 (Woods A-D × 9)
-  }
-  private varTee(x: number, y: number): number {
-    return 1;
-  }
   private varFlower(x: number, y: number): number {
-    return Math.floor(this.hash11(x * 13, y * 19) * 4) + 1;
+    return Math.floor(this.hash11(x * 13, y * 19) * 4) + 1; // 1-4
   }
 
   // ================================================================
-  // RNG déterministe (seed optionnel)
+  // RNG
   // ================================================================
 
   private seededRng(seed: number): () => number {

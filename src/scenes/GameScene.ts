@@ -1,10 +1,10 @@
 /**
  * GameScene — Scène principale du jeu.
  *
- * Affiche le terrain 16×16 en quadrilatères isométriques 2D.
- * Chaque tuile est projetée depuis ses 4 hauteurs de coin.
- * Arbres FLC animés placés sur les tuiles TREE (Woods) générées.
+ * Affiche le terrain généré par TerrainGenerator (guide RE Parkland).
+ * Arbres FLC animés placés sur des tuiles GRASS choisies.
  * Navigation : drag scroll + zoom molette.
+ * Debug : touche [D] → labels de texture.
  */
 
 import Phaser from 'phaser';
@@ -22,7 +22,6 @@ interface TreeDef {
   atlasKey: string;
   tileX: number;
   tileY: number;
-  /** Position Y de la ligne de sol dans l'image (0=top, 1=bottom) */
   groundOriginY: number;
 }
 
@@ -53,63 +52,27 @@ export class GameScene extends Phaser.Scene {
     });
     this.isoRenderer.init();
 
-    // ── Arbres FLC sur les tuiles TREE (Woods) ──
-    // Le TerrainGenerator a déjà placé des tuiles TREE (~8% de l'herbe).
-    // On associe chaque arbre FLC à une tuile TREE aléatoire.
-    const treeTiles = this.findTreeTiles(terrain);
-    const placedTrees = this.placeTreesOnTiles(terrain, treeTiles);
-
-    for (const t of placedTrees) {
-      this.spawnTree(terrain, t);
-    }
-
-    // ── Debug : touche D → labels de texture ──
-    this.input.keyboard!.on('keydown-D', () => {
-      this.toggleDebug(terrain);
+    // ── Arbres FLC sur des tuiles GRASS ──
+    const grassTiles = this.findTilesOfType(terrain, TileType.GRASS);
+    const shuffled = [...grassTiles].sort((a, b) => {
+      return (a.x * 73 + a.y * 37) % 65536 - (b.x * 73 + b.y * 37) % 65536;
     });
 
-    // ── Debug : bouton tactile (mobile) ──
-    this.createDebugButton();
-  }
-
-  /** Trouve les tuiles TREE (Woods) pour y placer des sprites FLC */
-  private findTreeTiles(terrain: TerrainEngine): Array<{ x: number; y: number }> {
-    const tiles: Array<{ x: number; y: number }> = [];
-    for (let y = 0; y < terrain.height; y++) {
-      for (let x = 0; x < terrain.width; x++) {
-        const tile = terrain.tileAt(x, y);
-        if (tile && tile.type === TileType.TREE) {
-          tiles.push({ x, y });
-        }
-      }
-    }
-    return tiles;
-  }
-
-  /** Associe les sprites FLC aux tuiles TREE disponibles */
-  private placeTreesOnTiles(
-    terrain: TerrainEngine,
-    treeTiles: Array<{ x: number; y: number }>,
-  ): TreeDef[] {
-    // On mélange les tuiles TREE (déterministe selon position)
-    const shuffled = [...treeTiles].sort((a, b) => {
-      const ha = (a.x * 73 + a.y * 37) % 65536;
-      const hb = (b.x * 73 + b.y * 37) % 65536;
-      return ha - hb;
-    });
-
-    const placed: TreeDef[] = [];
-    const count = Math.min(TREE_ATLASES.length, shuffled.length);
-
-    for (let i = 0; i < count; i++) {
+    const placedTrees: TreeDef[] = [];
+    for (let i = 0; i < Math.min(TREE_ATLASES.length, shuffled.length); i++) {
       const tile = shuffled[i];
-      // Épaissir le sol autour (voisins → ROUGH pour créer une lisière)
+
+      // Convertir la tuile en TREE (Woods) pour le sol forestier
+      const hash = (tile.x * 73 + tile.y * 37 + 42) & 0x7fffffff;
+      terrain.setTileType(tile.x, tile.y, TileType.TREE, (hash % 36) + 1);
+
+      // Voisins en ROUGH (lisière)
       this.setNeighborRough(terrain, tile.x - 1, tile.y);
       this.setNeighborRough(terrain, tile.x + 1, tile.y);
       this.setNeighborRough(terrain, tile.x, tile.y - 1);
       this.setNeighborRough(terrain, tile.x, tile.y + 1);
 
-      placed.push({
+      placedTrees.push({
         atlasKey: TREE_ATLASES[i].atlasKey,
         tileX: tile.x,
         tileY: tile.y,
@@ -117,17 +80,37 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    return placed;
+    // Re-rendre après modifications
+    this.isoRenderer.fullRender();
+
+    for (const t of placedTrees) {
+      this.spawnTree(terrain, t);
+    }
+
+    // ── Debug : touche D ──
+    this.input.keyboard!.on('keydown-D', () => this.toggleDebug(terrain));
+    this.createDebugButton();
   }
 
-  /** Passe un voisin en ROUGH si c'est de l'herbe (lisière de forêt) */
+  private findTilesOfType(terrain: TerrainEngine, type: TileType): Array<{ x: number; y: number }> {
+    const tiles: Array<{ x: number; y: number }> = [];
+    for (let y = 1; y < terrain.height - 1; y++) {
+      for (let x = 1; x < terrain.width - 1; x++) {
+        const tile = terrain.tileAt(x, y);
+        if (tile && tile.type === type) {
+          tiles.push({ x, y });
+        }
+      }
+    }
+    return tiles;
+  }
+
   private setNeighborRough(terrain: TerrainEngine, x: number, y: number): void {
     const tile = terrain.tileAt(x, y);
     if (!tile) return;
-    if (tile.type === TileType.GRASS) {
+    if (tile.type === TileType.GRASS || tile.type === TileType.ROUGH) {
       const hash = (x * 17 + y * 31 + 7) & 0x7fffffff;
-      const variant = (hash % 9) + 1;
-      terrain.setTileType(x, y, TileType.ROUGH, variant);
+      terrain.setTileType(x, y, TileType.ROUGH, (hash % 9) + 1);
     }
   }
 
@@ -135,22 +118,14 @@ export class GameScene extends Phaser.Scene {
     this.isoRenderer.update();
   }
 
-  private spawnTree(
-    terrain: TerrainEngine,
-    def: TreeDef,
-  ): void {
+  private spawnTree(terrain: TerrainEngine, def: TreeDef): void {
     const { atlasKey, tileX, tileY, groundOriginY } = def;
-
     const [hTL, hTR, hBR, hBL] = terrain.getTileCorners(tileX, tileY);
     const hAvg = (hTL + hTR + hBR + hBL) / 4;
-
     const p = mapToScreen(tileX + 0.5, tileY + 0.5, hAvg);
 
     const tex = this.textures.get(atlasKey);
-    if (!tex || !tex.key) {
-      console.warn(`[GameScene] Texture ${atlasKey} non trouvée`);
-      return;
-    }
+    if (!tex || !tex.key) return;
 
     const frames = tex.getFrameNames();
     if (frames.length === 0) return;
@@ -158,14 +133,8 @@ export class GameScene extends Phaser.Scene {
     const img = this.add.image(p.screenX, p.screenY, atlasKey, frames[0]);
     img.setOrigin(0.5, groundOriginY);
     img.setDepth(tileX + tileY + 1);
-
-    console.log(
-      `[GameScene] ${atlasKey} placé sur tuile TREE (${tileX}, ${tileY}) → ` +
-      `écran (${p.screenX}, ${p.screenY})`,
-    );
   }
 
-  /** Crée le bouton debug tactile (mobile) */
   private createDebugButton(): void {
     const btn = this.add.text(this.scale.width - 10, 10, '[D]', {
       fontFamily: 'monospace',
@@ -174,16 +143,11 @@ export class GameScene extends Phaser.Scene {
       backgroundColor: '#333333cc',
       padding: { x: 8, y: 4 },
     }).setOrigin(1, 0).setDepth(999).setScrollFactor(0).setInteractive({ useHandCursor: true });
-
-    btn.on('pointerdown', () => {
-      this.toggleDebug(this.terrain);
-    });
+    btn.on('pointerdown', () => this.toggleDebug(this.terrain));
   }
 
-  /** Bascule l'affichage des labels de debug (touche D) */
   private toggleDebug(terrain: TerrainEngine): void {
     this.showDebug = !this.showDebug;
-
     for (const lbl of this.debugLabels) lbl.destroy();
     this.debugLabels = [];
     if (!this.showDebug) return;
@@ -197,26 +161,26 @@ export class GameScene extends Phaser.Scene {
         if (tile.type === TileType.TREE || tile.type === TileType.ROUGH) {
           const group = ((tile.variation - 1) % 4 + 4) % 4;
           const variation = ((tile.variation - 1) % 9 + 9) % 9 + 1;
-          const mask = this.calculateBitmask(terrain, x, y, tile.type);
+          const mask = calculateTransitionBitmask(terrain, x, y, tile.type);
           const prefix = tile.type === TileType.TREE ? 'Woods' : 'Rough';
           const key = getTransitionTextureKey(
             prefix, group, variation, mask,
             (k: string) => this.textures.exists(k),
           );
           const m = key.match(/(WOODS|ROUGH)([A-D])(\d+)/);
-          if (m) label = this.shortenType(tile.type) + `${m[2]}${parseInt(m[3], 10)}`;
-        } else if (tile.type === TileType.GRASS) {
-          label = `G${tile.variation || ''}`;
+          if (m) {
+            const typeLabel = tile.type === TileType.TREE ? 'W' : 'R';
+            label = `${typeLabel}${m[2]}${parseInt(m[3], 10)}`;
+          }
         } else {
-          const typeNames: Record<number, string> = {
+          const names: Record<number, string> = {
             [TileType.GRASS]: 'G', [TileType.FAIRWAY]: 'F',
             [TileType.GREEN]: 'GN', [TileType.SAND]: 'S',
-            [TileType.WATER]: 'W', [TileType.PATH]: 'P',
-            [TileType.TEE]: 'T', [TileType.ROUGH]: 'R',
-            [TileType.ROCK]: 'K', [TileType.TREE]: 'W',
-            [TileType.FLOWER]: 'FL',
+            [TileType.WATER]: 'W', [TileType.TEE]: 'T',
+            [TileType.ROUGH]: 'R', [TileType.ROCK]: 'K',
+            [TileType.TREE]: 'W',
           };
-          const ch = typeNames[tile.type] ?? `${tile.type}`;
+          const ch = names[tile.type] ?? `${tile.type}`;
           label = `${ch}${tile.variation || ''}`;
         }
 
@@ -224,32 +188,14 @@ export class GameScene extends Phaser.Scene {
         const hAvg = (hTL + hTR + hBR + hBL) / 4;
         const pos = mapToScreen(x + 0.5, y + 0.5, hAvg);
 
-        const txt = this.add.text(pos.screenX, pos.screenY, label, {
+        this.add.text(pos.screenX, pos.screenY, label, {
           fontFamily: 'monospace',
           fontSize: '10px',
           color: '#ffffff',
           stroke: '#000000',
           strokeThickness: 2,
         }).setOrigin(0.5, 0.5).setDepth(x + y + 2);
-
-        this.debugLabels.push(txt);
       }
     }
-  }
-
-  private shortenType(type: TileType): string {
-    const map: Record<number, string> = {
-      [TileType.TREE]: 'W', [TileType.ROUGH]: 'R',
-    };
-    return map[type] ?? '?';
-  }
-
-  /** Calcule le bitmask 8-way (délègue à TransitionLUT) */
-  private calculateBitmask(
-    terrain: TerrainEngine,
-    x: number, y: number,
-    tileType: TileType,
-  ): number {
-    return calculateTransitionBitmask(terrain, x, y, tileType);
   }
 }
