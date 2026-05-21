@@ -1,4 +1,4 @@
-/** Types de terrain SimGolf — correspond aux 16 types du jeu original */
+/** Types de terrain SimGolf */
 export enum TileType {
   Rough        = 0,
   Fairway      = 1,
@@ -18,26 +18,14 @@ export enum TileType {
   Flower       = 15,
 }
 
-/** Thèmes de parcours */
-export enum CourseTheme {
-  Parkland  = 0,
-  Links     = 1,
-  Desert    = 2,
-  Tropical  = 3,
-}
-
-/** Une tuile de terrain */
 export interface Tile {
-  x: number;
-  y: number;
+  x: number; y: number;
   type: TileType;
-  elevation: [number, number, number, number]; // [TL, TR, BR, BL]
-  variation: number; // index cosmétique 0..N
+  elevation: [number, number, number, number];
+  variation: number;
 }
 
-/** Données complètes du terrain */
 export interface TerrainData {
-  width: number;
-  height: number;
+  width: number; height: number;
   tiles: Tile[];
 }
