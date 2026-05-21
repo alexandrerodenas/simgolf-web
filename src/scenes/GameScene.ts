@@ -35,6 +35,7 @@ export class GameScene extends Phaser.Scene {
   private isoRenderer!: IsometricRenderer;
   private debugLabels: Phaser.GameObjects.Text[] = [];
   private showDebug = false;
+  private terrain!: TerrainEngine;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -42,6 +43,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     const terrain = new TerrainEngine(MAP_SIZE, MAP_SIZE);
+    this.terrain = terrain;
     const gen = new TerrainGenerator();
     gen.generateNatural(terrain);
 
@@ -85,6 +87,9 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-D', () => {
       this.toggleDebug(terrain);
     });
+
+    // ── Debug : bouton tactile (mobile) ──
+    this.createDebugButton();
   }
 
   /** Passe un voisin en ROUGH si c'est de l'herbe (lisière de forêt) */
@@ -161,6 +166,21 @@ export class GameScene extends Phaser.Scene {
       `[GameScene] ${atlasKey} placé à (${tileX}, ${tileY}) → ` +
       `écran (${p.screenX}, ${p.screenY}), sol_origin=${groundOriginY.toFixed(3)}`,
     );
+  }
+
+  /** Crée le bouton debug tactile (mobile) */
+  private createDebugButton(): void {
+    const btn = this.add.text(this.scale.width - 10, 10, '[D]', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#333333cc',
+      padding: { x: 8, y: 4 },
+    }).setOrigin(1, 0).setDepth(999).setScrollFactor(0).setInteractive({ useHandCursor: true });
+
+    btn.on('pointerdown', () => {
+      this.toggleDebug(this.terrain);
+    });
   }
 
   /** Bascule l'affichage des labels de debug (touche D) */
