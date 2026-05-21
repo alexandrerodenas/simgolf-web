@@ -54,6 +54,32 @@ const BIT_DIRS: [number, number, number][] = [
 const TRANSITION_WIDTH = 0.18; // 18% depuis le bord
 
 // ================================================================
+// Hiérarchie stricte des calques (Layer Priority)
+// Bas → Haut : Water < Sand < Fairway < Green < Grass < Rough < Rock < Woods
+// Seul le terrain de priorité la PLUS HAUTE dessine sa transition
+// ================================================================
+
+const LAYER_PRIORITY: Record<TileType, number> = {
+  [TileType.WATER]:        0,
+  [TileType.WATER_HAZARD]: 0,
+  [TileType.SAND]:         1,
+  [TileType.FAIRWAY]:      2,
+  [TileType.GREEN]:        3,
+  [TileType.GRASS]:        4,
+  [TileType.ROUGH]:        5,
+  [TileType.ROCK]:         6,
+  [TileType.TREE]:         7,
+  [TileType.BUSH]:         5,
+  [TileType.FLOWER]:       4,
+  [TileType.PATH]:         6,
+  [TileType.TEE]:          4,
+  [TileType.BUILDING]:     8,
+  [TileType.BRIDGE]:       6,
+  [TileType.HOLE]:         8,
+  [TileType.EMPTY]:        0,
+};
+
+// ================================================================
 // Couleurs de base par type de terrain (pour les overlays)
 // ================================================================
 
@@ -329,16 +355,17 @@ export class TileRenderer {
   }
 
   /**
-   * Rendu des overlays de transition pour adoucir les bords
-   * entre types de terrain différents.
+   * Rendu des overlays de transition — blend asymétrique par hiérarchie.
    *
-   * Pour chaque tuile, on calcule le bitmask 8-way. Pour chaque
-   * direction cardinale (N/E/S/W) où le voisin est d'un type
-   * différent, on dessine une bande semi-transparente le long
-   * de l'arête partagée, remplie avec la couleur de base du voisin.
+   * Seul le terrain de priorité la PLUS HAUTE dessine sa transition.
+   * La bande (18% depuis l'arête) est remplie d'un dégradé linéaire
+   * allant de la couleur du terrain dominant (bord intérieur) à la
+   * couleur du terrain voisin (bord de la tuile). Cela crée un fondu
+   * du terrain dominant vers le terrain dominé — la forêt "meurt"
+   * dans l'herbe au lieu que l'herbe envahisse la forêt.
    *
-   * Les diagonales (NE/SE/SW/NW) sont gérées par intersection
-   * des bandes cardinales adjacentes.
+   * Le bitmask 8-way est conservé pour les futurs sprites de jonction
+   * (index 0005-0016+ dans les assets Firaxis).
    */
   private renderAutoTileOverlays(
     ctx: CanvasRenderingContext2D,
@@ -348,93 +375,110 @@ export class TileRenderer {
       const mask = this.calculateBitmask(q.x, q.y, q.type);
       const [pTL, pTR, pBR, pBL] = q.verts;
       const tw = TRANSITION_WIDTH;
+      const ownPriority = LAYER_PRIORITY[q.type] ?? 0;
 
-      // ── NORTH (voisin y-1 de type différent) ──
+      // ── NORTH (voisin y-1) ──
       if (!(mask & BIT_N)) {
         const neighbor = this.terrain.tileAt(q.x, q.y - 1);
-        if (neighbor && neighbor.type !== q.type) {
-          const ovColor = this.overlayColor(neighbor.type, 0.45);
-          // Bande du bord nord : TL → TR → inner_TR → inner_TL
+        if (neighbor && neighbor.type !== q.type &&
+            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTL = lerpPt(pTL, pBL, tw);
           const iTR = lerpPt(pTR, pBR, tw);
-          ctx.fillStyle = ovColor;
-          ctx.beginPath();
-          ctx.moveTo(pTL.x, pTL.y);
-          ctx.lineTo(pTR.x, pTR.y);
-          ctx.lineTo(iTR.x, iTR.y);
-          ctx.lineTo(iTL.x, iTL.y);
-          ctx.closePath();
-          ctx.fill();
+          this.fillTransitionGradient(
+            ctx, pTL, pTR, iTR, iTL,
+            baseColorForType(neighbor.type),  // couleur à l'arête (voisin)
+            baseColorForType(q.type),          // couleur au bord intérieur (dominant)
+          );
         }
       }
 
-      // ── EAST (voisin x+1 de type différent) ──
+      // ── EAST (voisin x+1) ──
       if (!(mask & BIT_E)) {
         const neighbor = this.terrain.tileAt(q.x + 1, q.y);
-        if (neighbor && neighbor.type !== q.type) {
-          const ovColor = this.overlayColor(neighbor.type, 0.45);
-          // Bande du bord est : inner_TR → TR → BR → inner_BR
+        if (neighbor && neighbor.type !== q.type &&
+            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTR = lerpPt(pTL, pTR, 1 - tw);
           const iBR = lerpPt(pBL, pBR, 1 - tw);
-          ctx.fillStyle = ovColor;
-          ctx.beginPath();
-          ctx.moveTo(iTR.x, iTR.y);
-          ctx.lineTo(pTR.x, pTR.y);
-          ctx.lineTo(pBR.x, pBR.y);
-          ctx.lineTo(iBR.x, iBR.y);
-          ctx.closePath();
-          ctx.fill();
+          this.fillTransitionGradient(
+            ctx, iTR, pTR, pBR, iBR,
+            baseColorForType(neighbor.type),
+            baseColorForType(q.type),
+          );
         }
       }
 
-      // ── SOUTH (voisin y+1 de type différent) ──
+      // ── SOUTH (voisin y+1) ──
       if (!(mask & BIT_S)) {
         const neighbor = this.terrain.tileAt(q.x, q.y + 1);
-        if (neighbor && neighbor.type !== q.type) {
-          const ovColor = this.overlayColor(neighbor.type, 0.45);
-          // Bande du bord sud : iBL → iBR → BR → BL
+        if (neighbor && neighbor.type !== q.type &&
+            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iBL = lerpPt(pTL, pBL, 1 - tw);
           const iBR = lerpPt(pTR, pBR, 1 - tw);
-          ctx.fillStyle = ovColor;
-          ctx.beginPath();
-          ctx.moveTo(iBL.x, iBL.y);
-          ctx.lineTo(iBR.x, iBR.y);
-          ctx.lineTo(pBR.x, pBR.y);
-          ctx.lineTo(pBL.x, pBL.y);
-          ctx.closePath();
-          ctx.fill();
+          this.fillTransitionGradient(
+            ctx, iBL, iBR, pBR, pBL,
+            baseColorForType(neighbor.type),
+            baseColorForType(q.type),
+          );
         }
       }
 
-      // ── WEST (voisin x-1 de type différent) ──
+      // ── WEST (voisin x-1) ──
       if (!(mask & BIT_W)) {
         const neighbor = this.terrain.tileAt(q.x - 1, q.y);
-        if (neighbor && neighbor.type !== q.type) {
-          const ovColor = this.overlayColor(neighbor.type, 0.45);
-          // Bande du bord ouest : TL → iTL → iBL → BL
+        if (neighbor && neighbor.type !== q.type &&
+            ownPriority > (LAYER_PRIORITY[neighbor.type] ?? 0)) {
           const iTL = lerpPt(pTL, pTR, tw);
           const iBL = lerpPt(pBL, pBR, tw);
-          ctx.fillStyle = ovColor;
-          ctx.beginPath();
-          ctx.moveTo(pTL.x, pTL.y);
-          ctx.lineTo(iTL.x, iTL.y);
-          ctx.lineTo(iBL.x, iBL.y);
-          ctx.lineTo(pBL.x, pBL.y);
-          ctx.closePath();
-          ctx.fill();
+          this.fillTransitionGradient(
+            ctx, pTL, iTL, iBL, pBL,
+            baseColorForType(neighbor.type),
+            baseColorForType(q.type),
+          );
         }
       }
     }
   }
 
-  /** Couleur de l'overlay avec opacité */
-  private overlayColor(type: TileType, alpha: number): string {
-    const c = baseColorForType(type);
-    // Convertir #RRGGBB en rgba
-    const r = parseInt(c.slice(1, 3), 16);
-    const g = parseInt(c.slice(3, 5), 16);
-    const b = parseInt(c.slice(5, 7), 16);
-    return `rgba(${r},${g},${b},${alpha})`;
+  /**
+   * Remplit un quadrilatère de transition avec un dégradé linéaire.
+   *
+   * Le dégradé part de la couleur du terrain VOISIN (côté bord de la tuile)
+   * vers la couleur du terrain DOMINANT (côté intérieur). Le gradient est
+   * perpendiculaire à l'arête partagée.
+   *
+   * @param edgeA, edgeB — les deux points sur l'arête partagée (côté voisin)
+   * @param innerA, innerB — les deux points côté intérieur (côté dominant)
+   * @param edgeColor — couleur du terrain voisin (arête)
+   * @param innerColor — couleur du terrain dominant (intérieur)
+   */
+  private fillTransitionGradient(
+    ctx: CanvasRenderingContext2D,
+    edgeA: { x: number; y: number },
+    edgeB: { x: number; y: number },
+    innerA: { x: number; y: number },
+    innerB: { x: number; y: number },
+    edgeColor: string,
+    innerColor: string,
+  ): void {
+    // Milieu de l'arête (côté voisin) → couleur du voisin
+    const ex = (edgeA.x + edgeB.x) / 2;
+    const ey = (edgeA.y + edgeB.y) / 2;
+    // Milieu du bord intérieur (côté dominant) → couleur du dominant
+    const ix = (innerA.x + innerB.x) / 2;
+    const iy = (innerA.y + innerB.y) / 2;
+
+    const grad = ctx.createLinearGradient(ex, ey, ix, iy);
+    grad.addColorStop(0, edgeColor);   // arête → couleur voisin
+    grad.addColorStop(1, innerColor);  // intérieur → couleur dominant
+
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(edgeA.x, edgeA.y);
+    ctx.lineTo(edgeB.x, edgeB.y);
+    ctx.lineTo(innerB.x, innerB.y);
+    ctx.lineTo(innerA.x, innerA.y);
+    ctx.closePath();
+    ctx.fill();
   }
 
   // ================================================================
