@@ -1,75 +1,79 @@
 /**
- * SimGolf Web — Tile Renderer (pattern fill, géométrie continue)
+ * TileRenderer — rendu isométrique du terrain
  *
- * Chaque tuile est un quadrilatère aux 4 sommets projetés de leurs
- * hauteurs réelles. Remplissage : ctx.createPattern(texture, 'repeat').
- * Toutes les tuiles dans un CANVAS UNIQUE → zéro gap.
- * Tri painter's algorithm par profondeur (x + y).
+ * Chaque tuile est un diamond (losange) coloré selon son type.
+ * Utilise un Canvas 2D pour le rendu avec un tri painter's algorithm.
  *
- * Transitions par sprites pré-rendus (LUT Firaxis) :
- *   Le bitmask 8-way (N=1, NE=2, E=4, SE=8, S=16, SW=32, W=64, NW=128)
- *   est calculé pour chaque tuile. TransitionLUT.woodsTextureKey() mappe
- *   ce mask vers le suffixe du sprite Firaxis (0001 = plein, 0005-0016+
- *   = lisières/coins). La texture exacte est chargée directement comme
- *   pattern fill — plus d'overlays procéduraux.
- *
- * Éclairage :
- *   Vertex lighting (Gouraud shading) par tessellation.
- *   Chaque tuile est subdivisée en N×N sous-quads. Pour chaque sous-quad,
- *   la luminosité est interpolée bilinéairement depuis les 4 coins,
- *   puis appliquée via globalCompositeOperation = 'multiply'.
- *   La continuité inter-tuile est garantie car les coins adjacents de
- *   deux tuiles voisines lisent le même vertex de la heightmap.
+ * Palette Parkland — inspirée des matériaux du jeu original :
+ *   ambiante verte, diffuse douce, direction lumière NO.
  */
 
-import { TileData, TerrainEngine } from '../core';
-import { TileType } from '../core/types';
-import { mapToScreen } from './CoordinateSystem';
-import {
-  calculateTransitionBitmask,
-  getTransitionTextureKey,
-  TerrainTransitionMaps,
-} from './TransitionLUT';
-
-/** Nombre de subdivisions par tuile pour l'éclairage */
-const LIGHT_SUBDIV = 1;
+import Phaser from 'phaser';
+import { TileType, Tile, TerrainData } from '../core/types';
+import { TILE_W, TILE_H, HEIGHT_SCALE, mapToScreen } from './CoordinateSystem';
 
 // ================================================================
-// Textures Rock
+// Palette Parkland (couleurs de base par type)
 // ================================================================
 
-/** Noms des textures Rock (5 groupes × 9 variantes = 45) */
-const ROCK_TEXTURES = (() => {
-  const names: string[] = [];
-  for (const group of ['A', 'B', 'C', 'D', 'E']) {
-    for (let v = 1; v <= 9; v++) {
-      names.push(`ROCK${group}${v.toString().padStart(4, '0')}`);
-    }
-  }
-  return names;
-})();
+const PALETTE: Record<TileType, string> = {
+  [TileType.Rough]:        '#3a7d3a',
+  [TileType.Fairway]:      '#4ea64e',
+  [TileType.Green]:        '#2ecc40',
+  [TileType.SandBunker]:   '#e8d5a0',
+  [TileType.WaterShallow]: '#3388cc',
+  [TileType.WaterMiddle]:  '#2277bb',
+  [TileType.WaterDeep]:    '#1166aa',
+  [TileType.DeepRough]:    '#2d5a1e',
+  [TileType.GrassySand]:   '#c8b878',
+  [TileType.GrassBunker]:  '#dcc890',
+  [TileType.Tee]:          '#5cb85c',
+  [TileType.Cliff]:        '#887766',
+  [TileType.Path]:         '#c8b898',
+  [TileType.Building]:     '#996644',
+  [TileType.Tree]:         '#2d5a1e',
+  [TileType.Flower]:       '#cc4488',
+};
+
+function pal(t: TileType): string {
+  return PALETTE[t] ?? '#4a8f4a';
+}
 
 // ================================================================
-// Éclairage directionnel
+// Utilitaires
 // ================================================================
 
-/** Vecteur lumière directionnelle normalisé — simule un soleil
- *  venant du Nord-Ouest (haut-gauche en isométrique). */
-const LIGHT_DIR: readonly [number, number, number] = [
-  -0.409,  // X (Est-Ouest)
-  -0.613,  // Y (Nord-Sud)
-   0.707,  // Z (verticale)
-];
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
 
-/** Intensité minimale (ombre max) — les creux restent visibles */
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Assombrit une couleur hex */
+function darken(hex: string, f: number): string {
+  const r = clamp(Math.round(parseInt(hex.slice(1, 3), 16) * (1 - f)), 0, 255);
+  const g = clamp(Math.round(parseInt(hex.slice(3, 5), 16) * (1 - f)), 0, 255);
+  const b = clamp(Math.round(parseInt(hex.slice(5, 7), 16) * (1 - f)), 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
+
+/** Éclaircit une couleur hex */
+function lighten(hex: string, f: number): string {
+  const r = clamp(Math.round(parseInt(hex.slice(1, 3), 16) * (1 + f)), 0, 255);
+  const g = clamp(Math.round(parseInt(hex.slice(3, 5), 16) * (1 + f)), 0, 255);
+  const b = clamp(Math.round(parseInt(hex.slice(5, 7), 16) * (1 + f)), 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
+
+// ================================================================
+// Éclairage directionnel (soleil Nord-Ouest)
+// ================================================================
+
+const LIGHT_DIR: [number, number, number] = [-0.409, -0.613, 0.707];
 const MIN_BRIGHTNESS = 0.65;
-
-/** Pas spatial pour le calcul des normales */
-const STEP = 2;
-
-// ================================================================
-// Utilitaires vecteurs
-// ================================================================
+const STEP = 2; // pas pour le calcul des normales
 
 function normalize(v: [number, number, number]): [number, number, number] {
   const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -77,10 +81,7 @@ function normalize(v: [number, number, number]): [number, number, number] {
   return [v[0] / len, v[1] / len, v[2] / len];
 }
 
-function cross(
-  a: [number, number, number],
-  b: [number, number, number],
-): [number, number, number] {
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
   return [
     a[1] * b[2] - a[2] * b[1],
     a[2] * b[0] - a[0] * b[2],
@@ -88,604 +89,217 @@ function cross(
   ];
 }
 
-function dot(
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-): number {
+function dot(a: readonly [number, number, number], b: readonly [number, number, number]): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-/** Interpolation linéaire */
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-/** Mappe un TileType vers le préfixe de texture (ex: TREE → "Woods") */
-function typeToPrefix(type: TileType): string {
-  const map: Partial<Record<TileType, string>> = {
-    [TileType.TREE]:  "Woods",
-    [TileType.ROUGH]: "Rough",
-    [TileType.SAND]:  "Sand",
-    [TileType.WATER]: "Water",
-    [TileType.GREEN]: "Green",
-    [TileType.GRASS]: "Grass",
-    [TileType.FAIRWAY]: "Fairway",
-    [TileType.ROCK]:  "Rock",
+function vertexBrightness(tiles: Tile[], w: number, vx: number, vy: number): number {
+  const idx = (vy * w + vx);
+  const getH = (x: number, y: number): number => {
+    if (x < 0 || x >= w || y < 0 || y >= Math.ceil(tiles.length / w)) return 0;
+    return tiles[y * w + x].elevation[0]; // approximation : coin TL
   };
-  return map[type] ?? "";
+  const hL = getH(vx - 1, vy);
+  const hR = getH(vx + 1, vy);
+  const hU = getH(vx, vy - 1);
+  const hD = getH(vx, vy + 1);
+  const dx: [number, number, number] = [STEP, 0, hR - hL];
+  const dy: [number, number, number] = [0, STEP, hU - hD];
+  const n = normalize(cross(dx, dy));
+  const d = dot(n, LIGHT_DIR);
+  return MIN_BRIGHTNESS + (1 - MIN_BRIGHTNESS) * (d + 1) / 2;
 }
 
 // ================================================================
-// Types internes
+// TileRenderer
 // ================================================================
-
-interface QuadTile {
-  x: number; y: number;
-  verts: readonly [
-    { x: number; y: number },  // TL
-    { x: number; y: number },  // TR
-    { x: number; y: number },  // BR
-    { x: number; y: number },  // BL
-  ];
-  type: TileType;
-  variation: number;
-}
-
-/**
- * Brightness aux 4 coins d'une tuile, dans [MIN_BRIGHTNESS, 1.0].
- * Ordre : [TL, TR, BR, BL].
- */
-type TileBrightness = [number, number, number, number];
 
 export class TileRenderer {
   private scene: Phaser.Scene;
-  private terrain: TerrainEngine;
-  private mapImage: Phaser.GameObjects.Image | null = null;
+  private image: Phaser.GameObjects.Image | null = null;
   private canvasKey = 'terrain_canvas';
 
-  /** Position du canvas dans le monde Phaser */
-  canvasOffsetX = 0;
-  canvasOffsetY = 0;
-
-  constructor(scene: Phaser.Scene, terrain: TerrainEngine) {
+  constructor(scene: Phaser.Scene) {
     this.scene = scene;
-    this.terrain = terrain;
   }
 
-  renderAll(tiles: Array<{ x: number; y: number; data: TileData }>): void {
-    if (tiles.length === 0) return;
-    this.clearAll();
+  render(data: TerrainData): void {
+    this.clear();
 
-    // ── 1. Collecter les quads + brightness ──
-    const origin = mapToScreen(0, 0);
-    const quads: QuadTile[] = [];
-    const brightMap = new Map<string, TileBrightness>();
-    let minX = Infinity, minY = Infinity;
-    let maxX = -Infinity, maxY = -Infinity;
+    const { width: w, height: h, tiles } = data;
 
-    for (const { x, y, data } of tiles) {
-      const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
-
-      const verts = [
-        this.vert(x,     y,     hTL, origin), // TL
-        this.vert(x + 1, y,     hTR, origin), // TR
-        this.vert(x + 1, y + 1, hBR, origin), // BR
-        this.vert(x,     y + 1, hBL, origin), // BL
-      ] as const;
-
-      for (const v of verts) {
-        if (v.x < minX) minX = v.x;
-        if (v.y < minY) minY = v.y;
-        if (v.x > maxX) maxX = v.x;
-        if (v.y > maxY) maxY = v.y;
-      }
-
-      quads.push({ x, y, verts, type: data.type, variation: data.variation });
-
-      // Brightness – calculé une fois par tuile, stocké par clé
-      const key = `${x},${y}`;
-      brightMap.set(key, this.computeTileBrightness(x, y));
-    }
-
-    // ── 2. Tri painter's : arrière → avant ──
-    quads.sort((a, b) => {
-      const da = a.x + a.y;
-      const db = b.x + b.y;
-      if (da !== db) return da - db;
-      return a.x - b.x;
+    // ---- 1. Projeter tous les sommets ----
+    const origins = tiles.map(t => {
+      const [hTL, , , ] = t.elevation;
+      return mapToScreen(t.x, t.y, t.elevation[0]);
     });
 
-    // ── 3. Canvas unique ──
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    const quadVerts = tiles.map(t => {
+      const [hTL, hTR, hBR, hBL] = t.elevation;
+      const pTL = mapToScreen(t.x,     t.y,     hTL);
+      const pTR = mapToScreen(t.x + 1, t.y,     hTR);
+      const pBR = mapToScreen(t.x + 1, t.y + 1, hBR);
+      const pBL = mapToScreen(t.x,     t.y + 1, hBL);
+      for (const p of [pTL, pTR, pBR, pBL]) {
+        if (p.screenX < minX) minX = p.screenX;
+        if (p.screenY < minY) minY = p.screenY;
+        if (p.screenX > maxX) maxX = p.screenX;
+        if (p.screenY > maxY) maxY = p.screenY;
+      }
+      return { type: t.type, pTL, pTR, pBR, pBL, idx: t.y * w + t.x };
+    });
+
+    // ---- 2. Tri painter's ----
+    quadVerts.sort((a, b) => {
+      const da = (a.idx % w) + Math.floor(a.idx / w);
+      const db = (b.idx % w) + Math.floor(b.idx / w);
+      return da - db;
+    });
+
+    // ---- 3. Canvas ----
     const margin = 2;
     const cw = Math.ceil(maxX - minX) + margin * 2;
     const ch = Math.ceil(maxY - minY) + margin * 2;
-
     if (cw <= 0 || ch <= 0) return;
 
-    const offsetX = minX - margin;
-    const offsetY = minY - margin;
-    this.canvasOffsetX = offsetX;
-    this.canvasOffsetY = offsetY;
+    const ox = minX - margin;
+    const oy = minY - margin;
 
     const canvas = this.scene.textures.createCanvas(this.canvasKey, cw, ch);
     if (!canvas) return;
 
     const ctx = canvas.context;
     ctx.clearRect(0, 0, cw, ch);
-    ctx.translate(-offsetX, -offsetY);
+    ctx.translate(-ox, -oy);
 
-    // ── 4. Pattern herbe (tileable) ──
-    const grassPattern = this.createGrassPattern(ctx);
-    const fillStyle = grassPattern || '#4a8f4a';
+    // ---- 4. Dessiner les quads ----
+    for (const q of quadVerts) {
+      const { pTL, pTR, pBR, pBL } = q;
+      const baseColor = pal(q.type);
+      const vari = 1 + ((q.idx * 31 + Math.floor(q.idx / w) * 17) % 5);
 
-    // ── 5. Dessiner le terrain (pattern fill) ──
-    for (const q of quads) {
-      const [pTL, pTR, pBR, pBL] = q.verts;
+      // Dégradé diagonal pour le relief
+      const grad = ctx.createLinearGradient(pTL.screenX, pTL.screenY, pBR.screenX, pBR.screenY);
+      grad.addColorStop(0, lighten(baseColor, 0.12 + vari * 0.01));
+      grad.addColorStop(0.5, baseColor);
+      grad.addColorStop(1, darken(baseColor, 0.15));
 
-      if (q.type === TileType.ROCK) {
-        this.drawRockTile(ctx, q);
-      } else if (TerrainTransitionMaps[typeToPrefix(q.type)]) {
-        // Transition tile (Woods, Rough, Sand, Water, Green, Grass...)
-        this.drawTransitionTile(ctx, q);
-      } else {
-        // Fallback : tuiles sans LUT (PATH, TEE, BUILDING...)
-        ctx.fillStyle = '#4a8f4a';
-        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-        ctx.fillStyle = fillStyle;
-        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-      }
+      ctx.fillStyle = grad;
+      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
     }
 
-    // ── 6. Lightmap overlay (multiply blend) ──
-    this.renderLightmap(ctx, cw, ch, offsetX, offsetY, quads, brightMap);
+    // ---- 5. Lightmap (Gouraud) ----
+    this.renderLightmap(ctx, cw, ch, ox, oy, tiles, w, h);
 
     canvas.refresh();
 
-    // ── 8. Image Phaser unique ──
-    this.mapImage = this.scene.add.image(offsetX, offsetY, this.canvasKey);
-    this.mapImage.setOrigin(0, 0);
-    this.mapImage.setDepth(0);
+    // ---- 6. Image Phaser ----
+    this.image = this.scene.add.image(ox, oy, this.canvasKey);
+    this.image.setOrigin(0, 0);
+    this.image.setDepth(0);
   }
 
-  // ================================================================
-  // Lightmap par tessellation (Gouraud shading)
-  // ================================================================
-
-  /**
-   * Génère la lightmap par tessellation et la composite en mode multiply.
-   *
-   * Chaque tuile est divisée en LIGHT_SUBDIV × LIGHT_SUBDIV sous-quads.
-   * La luminosité de chaque sommet de sous-quad est interpolée
-   * bilinéairement depuis les 4 brightness des coins de la tuile.
-   *
-   * Chaque sous-quad est rempli d'un gris uniforme correspondant à la
-   * moyenne de ses 4 coins. L'ensemble est composité sur le ctx
-   * avec globalCompositeOperation = 'multiply'.
-   */
   private renderLightmap(
     ctx: CanvasRenderingContext2D,
-    cw: number,
-    ch: number,
-    offsetX: number,
-    offsetY: number,
-    quads: QuadTile[],
-    brightMap: Map<string, TileBrightness>,
+    cw: number, ch: number,
+    ox: number, oy: number,
+    tiles: Tile[], w: number, h: number,
   ): void {
-    // Canvas offscreen pour la lightmap
+    const subdiv = 4;
     const lmCanvas = document.createElement('canvas');
     lmCanvas.width = cw;
     lmCanvas.height = ch;
-    const lmCtx = lmCanvas.getContext('2d')!;
-    // Fond blanc = 100% lumineux (aucun effet de multiply)
-    lmCtx.fillStyle = '#ffffff';
-    lmCtx.fillRect(0, 0, cw, ch);
-    lmCtx.translate(-offsetX, -offsetY);
+    const lctx = lmCanvas.getContext('2d')!;
+    lctx.fillStyle = '#ffffff';
+    lctx.fillRect(0, 0, cw, ch);
+    lctx.translate(-ox, -oy);
 
-    const n = LIGHT_SUBDIV;
+    for (const tile of tiles) {
+      const [hTL, hTR, hBR, hBL] = tile.elevation;
+      const pTL = mapToScreen(tile.x,     tile.y,     hTL);
+      const pTR = mapToScreen(tile.x + 1, tile.y,     hTR);
+      const pBR = mapToScreen(tile.x + 1, tile.y + 1, hBR);
+      const pBL = mapToScreen(tile.x,     tile.y + 1, hBL);
 
-    for (const q of quads) {
-      const [pTL, pTR, pBR, pBL] = q.verts;
-      const b = brightMap.get(`${q.x},${q.y}`)!;
-      if (!b) continue;
+      // Brightness aux 4 coins
+      const bTL = vertexBrightness(tiles, w, tile.x,     tile.y);
+      const bTR = vertexBrightness(tiles, w, tile.x + 1, tile.y);
+      const bBR = vertexBrightness(tiles, w, tile.x + 1, tile.y + 1);
+      const bBL = vertexBrightness(tiles, w, tile.x,     tile.y + 1);
 
-      const [bTL, bTR, bBR, bBL] = b;
-
-      // Tessellation : parcourir chaque sous-cellule
+      const n = subdiv;
       for (let sy = 0; sy < n; sy++) {
         for (let sx = 0; sx < n; sx++) {
-          // UV des 4 coins de la sous-cellule
-          const u0 = sx / n;
-          const u1 = (sx + 1) / n;
-          const v0 = sy / n;
-          const v1 = (sy + 1) / n;
-
-          // Position écran des 4 coins de la sous-cellule
-          // Par interpolation linéaire sur le quad
+          const u0 = sx / n, u1 = (sx + 1) / n;
+          const v0 = sy / n, v1 = (sy + 1) / n;
           const subTL = this.lerp2D(pTL, pTR, pBL, pBR, u0, v0);
           const subTR = this.lerp2D(pTL, pTR, pBL, pBR, u1, v0);
           const subBR = this.lerp2D(pTL, pTR, pBL, pBR, u1, v1);
           const subBL = this.lerp2D(pTL, pTR, pBL, pBR, u0, v1);
 
-          // Brightness interpolé bilinéairement
-          const bTLsub = lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v0);
-          const bTRsub = lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v0);
-          const bBRsub = lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v1);
-          const bBLsub = lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v1);
-
-          // Luminosité moyenne de la sous-cellule
-          const avgB = (bTLsub + bTRsub + bBRsub + bBLsub) / 4;
-
-          // Valeur de gris = brightness
-          const gray = Math.round(avgB * 255);
-          const hex = `rgb(${gray},${gray},${gray})`;
-
-          lmCtx.fillStyle = hex;
-          lmCtx.beginPath();
-          lmCtx.moveTo(subTL.x, subTL.y);
-          lmCtx.lineTo(subTR.x, subTR.y);
-          lmCtx.lineTo(subBR.x, subBR.y);
-          lmCtx.lineTo(subBL.x, subBL.y);
-          lmCtx.closePath();
-          lmCtx.fill();
+          const bAvg = (
+            lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v0) +
+            lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v1) +
+            lerp(lerp(bTL, bTR, u0), lerp(bBL, bBR, u0), v0) +
+            lerp(lerp(bTL, bTR, u1), lerp(bBL, bBR, u1), v1)
+          ) / 4;
+          const gray = Math.round(bAvg * 255);
+          lctx.fillStyle = `rgb(${gray},${gray},${gray})`;
+          lctx.beginPath();
+          lctx.moveTo(subTL.screenX, subTL.screenY);
+          lctx.lineTo(subTR.screenX, subTR.screenY);
+          lctx.lineTo(subBR.screenX, subBR.screenY);
+          lctx.lineTo(subBL.screenX, subBL.screenY);
+          lctx.closePath();
+          lctx.fill();
         }
       }
     }
 
-    // Composition : multiply = terrain × lightmap
     ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // reset world transform
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'multiply';
     ctx.drawImage(lmCanvas, 0, 0);
     ctx.restore();
   }
 
-  /**
-   * Interpolation bilinéaire sur un quadrilatère isométrique.
-   * Calcule la position (x, y) correspondant aux coordonnées
-   * locales (u, v) ∈ [0, 1]² dans le quad.
-   *
-   * Utilise deux interpolations linéaires : d'abord entre les
-   * bords gauche et droit selon v, puis entre les résultats selon u.
-   */
   private lerp2D(
-    pTL: { x: number; y: number },
-    pTR: { x: number; y: number },
-    pBL: { x: number; y: number },
-    pBR: { x: number; y: number },
-    u: number,
-    v: number,
-  ): { x: number; y: number } {
-    // Interpolation verticale : bord gauche (TL→BL) et bord droit (TR→BR)
-    const leftX  = lerp(pTL.x, pBL.x, v);
-    const leftY  = lerp(pTL.y, pBL.y, v);
-    const rightX = lerp(pTR.x, pBR.x, v);
-    const rightY = lerp(pTR.y, pBR.y, v);
-
-    // Interpolation horizontale entre les bords gauche et droit
-    return {
-      x: lerp(leftX, rightX, u),
-      y: lerp(leftY, rightY, u),
-    };
+    pTL: { screenX: number; screenY: number },
+    pTR: { screenX: number; screenY: number },
+    pBL: { screenX: number; screenY: number },
+    pBR: { screenX: number; screenY: number },
+    u: number, v: number,
+  ): { screenX: number; screenY: number } {
+    const lx = lerp(pTL.screenX, pBL.screenX, v);
+    const ly = lerp(pTL.screenY, pBL.screenY, v);
+    const rx = lerp(pTR.screenX, pBR.screenX, v);
+    const ry = lerp(pTR.screenY, pBR.screenY, v);
+    return { screenX: lerp(lx, rx, u), screenY: lerp(ly, ry, u) };
   }
-
-  // ================================================================
-  // Calcul des normales et de l'éclairage
-  // ================================================================
-
-  /**
-   * Calcule les 4 intensités lumineuses des coins de la tuile (x, y).
-   * Retourne [bTL, bTR, bBR, bBL] dans [MIN_BRIGHTNESS, 1.0].
-   *
-   * Continuité garantie : le coin BR de la tuile (x, y) est STRICTEMENT
-   * IDENTIQUE au coin TL de la tuile (x+1, y+1) car les deux lisent
-   * le même vertex (x+1, y+1) de la heightmap.
-   */
-  private computeTileBrightness(tileX: number, tileY: number): TileBrightness {
-    const t = this.terrain;
-
-    return [
-      this.vertexBrightness(t, tileX,     tileY),      // TL
-      this.vertexBrightness(t, tileX + 1, tileY),      // TR
-      this.vertexBrightness(t, tileX + 1, tileY + 1),  // BR
-      this.vertexBrightness(t, tileX,     tileY + 1),  // BL
-    ];
-  }
-
-  /**
-   * Calcule la normale d'un sommet de la heightmap par différences finies
-   * centrées, puis retourne le brightness (dot product avec LIGHT_DIR).
-   *
-   * La normale = normalize(cross(dx, dy)) où :
-   *   dx = [STEP, 0, hR - hL]    (tangente horizontale)
-   *   dy = [0, STEP, hU - hD]    (tangente verticale)
-   */
-  private vertexBrightness(
-    terrain: TerrainEngine,
-    vx: number,
-    vy: number,
-  ): number {
-    const hL = terrain.getVertex(vx - 1, vy);
-    const hR = terrain.getVertex(vx + 1, vy);
-    const hU = terrain.getVertex(vx, vy - 1);
-    const hD = terrain.getVertex(vx, vy + 1);
-
-    const dx: [number, number, number] = [STEP, 0, hR - hL];
-    const dy: [number, number, number] = [0, STEP, hU - hD];
-    const normal = normalize(cross(dx, dy));
-
-    // Produit scalaire → remappé dans [MIN_BRIGHTNESS, 1.0]
-    const d = dot(normal, LIGHT_DIR);
-    return MIN_BRIGHTNESS + (1 - MIN_BRIGHTNESS) * (d + 1) / 2;
-  }
-
-  // ================================================================
-  // Rendu des tuiles ROCK
-  // ================================================================
-
-  /**
-   * Dessine une tuile ROCK avec sa texture pattern fill.
-   * La variation (1-45) détermine quelle texture rockA/E0001-0009 utiliser.
-   */
-  private drawRockTile(
-    ctx: CanvasRenderingContext2D,
-    quad: QuadTile,
-  ): void {
-    const [pTL, pTR, pBR, pBL] = quad.verts;
-    const idx = (quad.variation - 1) % ROCK_TEXTURES.length;
-    const textureKey = ROCK_TEXTURES[idx];
-
-    // Debug : vérifier si la texture est trouvée
-    const texCheck = this.scene.textures.get(textureKey);
-    if (!texCheck || !texCheck.key) {
-      console.warn(`[TileRenderer] Texture Rock introuvable: "${textureKey}"`);
-    }
-
-    // Fond opaque gris-brun (couleur de base de la roche)
-    ctx.fillStyle = '#6a5a4a';
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-
-    // Pattern rock
-    const pattern = this.getRockPattern(ctx, textureKey);
-    if (pattern) {
-      ctx.fillStyle = pattern;
-    } else {
-      // Fallback : utiliser la même texture herbe que le reste
-      const grassPattern = this.createGrassPattern(ctx);
-      ctx.fillStyle = grassPattern || '#4a8f4a';
-    }
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-  }
-
-  // ================================================================
-  // Rendu des tuiles WOODS (sol forestier)
-  // ================================================================
-
-  /**
-   * Dessine une tuile avec transition LUT.
-   *
-   * La texture sélectionnée dépend du bitmask 8-way (priority-aware),
-   * du type de terrain et de la variation cosmétique (1-36).
-   *
-   * Si la texture de transition n'existe pas dans Phaser, on tombe
-   * sur la texture de base (fallback cosmétique).
-   */
-  private drawTransitionTile(
-    ctx: CanvasRenderingContext2D,
-    quad: QuadTile,
-  ): void {
-    const [pTL, pTR, pBR, pBL] = quad.verts;
-    const group = (quad.variation - 1) % 4;  // A, B, C, D
-    const variation = (quad.variation - 1) % 9 + 1; // 1-9
-    const prefix = typeToPrefix(quad.type);
-
-    // Bitmask 8-way avec priorité des calques
-    const mask = calculateTransitionBitmask(
-      this.terrain, quad.x, quad.y, quad.type,
-    );
-
-    // Clé de texture via la LUT
-    const textureKey = getTransitionTextureKey(
-      prefix, group, variation, mask,
-      (key: string) => this.scene.textures.exists(key),
-    );
-
-    // Fond opaque (couleur de base du type)
-    ctx.fillStyle = this.baseColor(quad.type);
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-
-    // Pattern de la texture sélectionnée
-    const pattern = this.getAnyPattern(ctx, textureKey);
-    const fallbackGrass = this.createGrassPattern(ctx);
-    ctx.fillStyle = pattern || fallbackGrass || this.baseColor(quad.type);
-    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
-  }
-
-  /** Couleur de base pour un type de terrain */
-  private baseColor(type: TileType): string {
-    switch (type) {
-      case TileType.TREE:   return '#2d5a1e';
-      case TileType.ROUGH:  return '#3a7a3a';
-      case TileType.GRASS:  return '#4a8f4a';
-      case TileType.ROCK:   return '#6a5a4a';
-      case TileType.SAND:   return '#c4b878';
-      case TileType.WATER:  return '#3a7ab8';
-      case TileType.GREEN:  return '#3a9a3a';
-      case TileType.FAIRWAY: return '#5a9f4a';
-      default:              return '#4a8f4a';
-    }
-  }
-
-  /** Cache de patterns générique (par clé de texture) */
-  private patternCache = new Map<string, CanvasPattern | null>();
-
-  /**
-   * Retourne un CanvasPattern pour n'importe quelle clé de texture
-   * existant dans Phaser. Cache partagé par tous les types.
-   */
-  private getAnyPattern(
-    ctx: CanvasRenderingContext2D,
-    textureKey: string,
-  ): CanvasPattern | null {
-    if (this.patternCache.has(textureKey)) {
-      return this.patternCache.get(textureKey) ?? null;
-    }
-    const tex = this.scene.textures.get(textureKey);
-    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
-    if (srcImg) {
-      try {
-        const p = ctx.createPattern(srcImg, 'repeat');
-        this.patternCache.set(textureKey, p ?? null);
-        return p ?? null;
-      } catch {
-        // fallback
-      }
-    }
-    this.patternCache.set(textureKey, null);
-    return null;
-  }
-
-  /** Cache de patterns Woods (rétrocompatibilité) */
-  private woodsPatternCache = new Map<string, CanvasPattern | null>();
-
-  private getWoodsPattern(
-    ctx: CanvasRenderingContext2D,
-    textureKey: string,
-  ): CanvasPattern | null {
-    if (this.woodsPatternCache.has(textureKey)) {
-      return this.woodsPatternCache.get(textureKey) ?? null;
-    }
-
-    const tex = this.scene.textures.get(textureKey);
-    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
-
-    if (srcImg) {
-      try {
-        const p = ctx.createPattern(srcImg, 'repeat');
-        this.woodsPatternCache.set(textureKey, p ?? null);
-        return p ?? null;
-      } catch {
-        // fallback
-      }
-    }
-
-    this.woodsPatternCache.set(textureKey, null);
-    return null;
-  }
-
-  /** Cache de patterns Rock */
-  private rockPatternCache = new Map<string, CanvasPattern | null>();
-
-  private getRockPattern(
-    ctx: CanvasRenderingContext2D,
-    textureKey: string,
-  ): CanvasPattern | null {
-    if (this.rockPatternCache.has(textureKey)) {
-      return this.rockPatternCache.get(textureKey) ?? null;
-    }
-
-    const tex = this.scene.textures.get(textureKey);
-    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
-
-    if (srcImg) {
-      try {
-        const p = ctx.createPattern(srcImg, 'repeat');
-        this.rockPatternCache.set(textureKey, p ?? null);
-        return p ?? null;
-      } catch {
-        // fallback
-      }
-    }
-
-    this.rockPatternCache.set(textureKey, null);
-    return null;
-  }
-
-  // ================================================================
-  // Pattern herbe
-  // ================================================================
-
-  private createGrassPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
-    const srcKey = 'ROUGHA0001';
-    const tex = this.scene.textures.get(srcKey);
-    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
-
-    if (srcImg) {
-      try {
-        const p = ctx.createPattern(srcImg, 'repeat');
-        if (p) return p;
-      } catch {
-        // fallback
-      }
-    }
-
-    // Fallback procédural
-    console.warn('[TileRenderer] createGrassPattern fallback');
-    const patternCanvas = document.createElement('canvas');
-    patternCanvas.width = 64;
-    patternCanvas.height = 64;
-    const pctx = patternCanvas.getContext('2d')!;
-    this.drawFallbackGrass(pctx, 64, 64);
-    return ctx.createPattern(patternCanvas, 'repeat') || null;
-  }
-
-  // ================================================================
-  // Helpers
-  // ================================================================
 
   private fillQuad(
     ctx: CanvasRenderingContext2D,
-    pTL: { x: number; y: number },
-    pTR: { x: number; y: number },
-    pBR: { x: number; y: number },
-    pBL: { x: number; y: number },
+    pTL: { screenX: number; screenY: number },
+    pTR: { screenX: number; screenY: number },
+    pBR: { screenX: number; screenY: number },
+    pBL: { screenX: number; screenY: number },
   ): void {
     ctx.beginPath();
-    ctx.moveTo(pTL.x, pTL.y);
-    ctx.lineTo(pTR.x, pTR.y);
-    ctx.lineTo(pBR.x, pBR.y);
-    ctx.lineTo(pBL.x, pBL.y);
+    ctx.moveTo(pTL.screenX, pTL.screenY);
+    ctx.lineTo(pTR.screenX, pTR.screenY);
+    ctx.lineTo(pBR.screenX, pBR.screenY);
+    ctx.lineTo(pBL.screenX, pBL.screenY);
     ctx.closePath();
     ctx.fill();
   }
 
-  private vert(
-    vx: number, vy: number, h: number,
-    origin: { screenX: number; screenY: number },
-  ): { x: number; y: number } {
-    const p = mapToScreen(vx, vy, h);
-    return { x: p.screenX - origin.screenX, y: p.screenY - origin.screenY };
-  }
-
-  private drawFallbackGrass(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    ctx.fillStyle = '#4a8f4a';
-    ctx.fillRect(0, 0, w, h);
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(255,255,255,0.12)');
-    grad.addColorStop(0.5, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.12)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(0,0,0,0.04)';
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i < 30; i++) {
-      const gx = (i * 17 + 3) % w;
-      const gy = (i * 13 + 7) % h;
-      ctx.beginPath();
-      ctx.moveTo(gx, gy);
-      ctx.lineTo(gx + 2, gy - 5);
-      ctx.stroke();
+  clear(): void {
+    if (this.image) {
+      this.image.destroy();
+      this.image = null;
     }
-  }
-
-  clearAll(): void {
-    if (this.mapImage) {
-      this.mapImage.destroy();
-      this.mapImage = null;
-    }
-    this.woodsPatternCache.clear();
-    this.rockPatternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }

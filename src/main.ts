@@ -1,34 +1,16 @@
-/**
- * SimGolf Web — Entry Point (Phaser)
- *
- * Stack : Vite + TypeScript + Phaser
- * Scènes : BootScene → GameScene
- */
 import Phaser from 'phaser';
-import { BootScene } from './scenes/BootScene';
 import { GameScene } from './scenes/GameScene';
 
 const config: Phaser.Types.Core.GameConfig = {
-  type: Phaser.WEBGL,
-  width: window.innerWidth,
-  height: window.innerHeight,
+  type: Phaser.AUTO,
+  width: 1280,
+  height: 720,
   parent: document.body,
-  backgroundColor: '#000000',
+  backgroundColor: '#1a1a2e',
+  scene: [GameScene],
   scale: {
-    mode: Phaser.Scale.RESIZE,
+    mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
-  },
-  scene: [BootScene, GameScene],
-  fps: {
-    target: 30,
-    forceSetTimeOut: false,
-  },
-  render: {
-    pixelArt: false,
-    antialias: true,
-  },
-  input: {
-    activePointers: 2, // pinch zoom
   },
 };
 
