@@ -24,6 +24,21 @@ import { mapToScreen } from './CoordinateSystem';
 const LIGHT_SUBDIV = 8;
 
 // ================================================================
+// Textures Rock
+// ================================================================
+
+/** Noms des textures Rock (5 groupes × 9 variantes = 45) */
+const ROCK_TEXTURES = (() => {
+  const names: string[] = [];
+  for (const group of ['A', 'B', 'C', 'D', 'E']) {
+    for (let v = 1; v <= 9; v++) {
+      names.push(`rock${group}${v.toString().padStart(4, '0')}`);
+    }
+  }
+  return names;
+})();
+
+// ================================================================
 // Éclairage directionnel
 // ================================================================
 
@@ -86,6 +101,8 @@ interface QuadTile {
     { x: number; y: number },  // BR
     { x: number; y: number },  // BL
   ];
+  type: TileType;
+  variation: number;
 }
 
 /**
@@ -120,7 +137,7 @@ export class TileRenderer {
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
 
-    for (const { x, y } of tiles) {
+    for (const { x, y, data } of tiles) {
       const [hTL, hTR, hBR, hBL] = this.terrain.getTileCorners(x, y);
 
       const verts = [
@@ -137,7 +154,7 @@ export class TileRenderer {
         if (v.y > maxY) maxY = v.y;
       }
 
-      quads.push({ x, y, verts });
+      quads.push({ x, y, verts, type: data.type, variation: data.variation });
 
       // Brightness – calculé une fois par tuile, stocké par clé
       const key = `${x},${y}`;
@@ -175,17 +192,22 @@ export class TileRenderer {
     const grassPattern = this.createGrassPattern(ctx);
     const fillStyle = grassPattern || '#4a8f4a';
 
-    // ── 5. Dessiner le terrain (pattern fill seulement) ──
+    // ── 5. Dessiner le terrain (pattern fill) ──
     for (const q of quads) {
       const [pTL, pTR, pBR, pBL] = q.verts;
 
-      // Fond opaque vert (anti-gap de transparence)
-      ctx.fillStyle = '#4a8f4a';
-      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+      if (q.type === TileType.ROCK) {
+        // Texture rocheuse en pattern fill
+        this.drawRockTile(ctx, q);
+      } else {
+        // Fond opaque vert (anti-gap de transparence)
+        ctx.fillStyle = '#4a8f4a';
+        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
 
-      // Pattern herbe
-      ctx.fillStyle = fillStyle;
-      this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+        // Pattern herbe
+        ctx.fillStyle = fillStyle;
+        this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+      }
     }
 
     // ── 6. Lightmap overlay (multiply blend) ──
@@ -371,6 +393,65 @@ export class TileRenderer {
   }
 
   // ================================================================
+  // Rendu des tuiles ROCK
+  // ================================================================
+
+  /**
+   * Dessine une tuile ROCK avec sa texture pattern fill.
+   * La variation (1-45) détermine quelle texture rockA/E0001-0009 utiliser.
+   */
+  private drawRockTile(
+    ctx: CanvasRenderingContext2D,
+    quad: QuadTile,
+  ): void {
+    const [pTL, pTR, pBR, pBL] = quad.verts;
+    const idx = (quad.variation - 1) % ROCK_TEXTURES.length;
+    const textureKey = ROCK_TEXTURES[idx];
+
+    // Fond opaque gris-brun (couleur de base de la roche)
+    ctx.fillStyle = '#6a5a4a';
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+
+    // Pattern rock
+    const pattern = this.getRockPattern(ctx, textureKey);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+    } else {
+      // Fallback : gris uni
+      ctx.fillStyle = '#8a7a6a';
+    }
+    this.fillQuad(ctx, pTL, pTR, pBR, pBL);
+  }
+
+  /** Cache de patterns Rock */
+  private rockPatternCache = new Map<string, CanvasPattern | null>();
+
+  private getRockPattern(
+    ctx: CanvasRenderingContext2D,
+    textureKey: string,
+  ): CanvasPattern | null {
+    if (this.rockPatternCache.has(textureKey)) {
+      return this.rockPatternCache.get(textureKey) ?? null;
+    }
+
+    const tex = this.scene.textures.get(textureKey);
+    const srcImg = tex?.getSourceImage() as CanvasImageSource | null;
+
+    if (srcImg) {
+      try {
+        const p = ctx.createPattern(srcImg, 'repeat');
+        this.rockPatternCache.set(textureKey, p ?? null);
+        return p ?? null;
+      } catch {
+        // fallback
+      }
+    }
+
+    this.rockPatternCache.set(textureKey, null);
+    return null;
+  }
+
+  // ================================================================
   // Pattern herbe
   // ================================================================
 
@@ -452,6 +533,7 @@ export class TileRenderer {
       this.mapImage.destroy();
       this.mapImage = null;
     }
+    this.rockPatternCache.clear();
     if (this.scene.textures.exists(this.canvasKey)) {
       this.scene.textures.remove(this.canvasKey);
     }

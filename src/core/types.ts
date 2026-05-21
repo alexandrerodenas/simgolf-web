@@ -27,6 +27,7 @@ export enum TileType {
   HOLE        = 13,
   WATER_HAZARD = 14,
   EMPTY       = 15,
+  ROCK        = 16,
 }
 
 /** Coins d'une tuile (ordre isométrique) */

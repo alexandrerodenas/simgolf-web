@@ -30,6 +30,17 @@ const WOODS = (() => {
   return keys;
 })();
 
+/** Textures Rock (sol rocheux, 5 groupes × 9 variantes) */
+const ROCKS = (() => {
+  const keys: string[] = [];
+  for (const group of ['A', 'B', 'C', 'D', 'E']) {
+    for (let v = 1; v <= 9; v++) {
+      keys.push(`rock${group}${v.toString().padStart(4, '0')}`);
+    }
+  }
+  return keys;
+})();
+
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: 'BootScene' });
@@ -40,6 +51,9 @@ export class BootScene extends Phaser.Scene {
       this.load.image(key, `assets/textures/parkland/${key}.webp`);
     }
     for (const key of WOODS) {
+      this.load.image(key, `assets/textures/parkland/${key}.webp`);
+    }
+    for (const key of ROCKS) {
       this.load.image(key, `assets/textures/parkland/${key}.webp`);
     }
 

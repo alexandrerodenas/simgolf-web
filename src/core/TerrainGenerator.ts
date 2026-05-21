@@ -52,6 +52,17 @@ export class TerrainGenerator {
         terrain.setTileType(x, y, TileType.GRASS, variant);
       }
     }
+
+    // ── 6. Rochers : ~5% des tuiles deviennent ROCK ──
+    // Variantes 1..45 = rockA0001..rockE0009 (5 groupes × 9)
+    for (let y = 0; y < terrain.height; y++) {
+      for (let x = 0; x < terrain.width; x++) {
+        const hash = (x * 47 + y * 29 + 13) & 0x7fffffff;
+        if (hash % 20 === 0) {
+          terrain.setTileType(x, y, TileType.ROCK, (hash % 45) + 1);
+        }
+      }
+    }
   }
 
   // ================================================================
