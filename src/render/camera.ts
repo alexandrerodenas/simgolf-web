@@ -54,20 +54,23 @@ export function createDimetricCamera(
   const worldH = gridH * (TILE_H / 2);
   const maxDim = Math.max(worldW, worldH) * 1.2 / zoom;
 
-  // Frustum adapté au viewport
+  // Distance caméra → centre du terrain
+  const dist = maxDim * 2.2;
+
+  // Frustum adapté au viewport + near/far assez larges pour contenir le terrain
   const frustumH = maxDim;
   const frustumW = maxDim * aspect;
+  const farPlane = dist * 3;
 
   const camera = new THREE.OrthographicCamera(
     -frustumW / 2, frustumW / 2,
     frustumH / 2, -frustumH / 2,
-    0.1, 5000,
+    0.1, farPlane,
   );
 
   // ---- Position de la caméra en 3D ----
   // On place la caméra à l'azimuth 45° (diagonale) et à l'élévation qui
   // produit le rapport 2:1. On recule suffisamment pour voir toute la grille.
-  const dist = maxDim * 2.2;
   camera.position.set(
     cx + dist * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
     dist * Math.sin(ELEVATION),
