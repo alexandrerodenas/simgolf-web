@@ -129,21 +129,31 @@ export function computeEdgeMask(
 export function maxVariationForType(type: TileType): number {
   switch (type) {
     case TileType.Rough:
+      return 5;   // Rough A-E × 5
     case TileType.DeepRough:
+      return 9;   // DeepRough A-D × 9
     case TileType.Fairway:
+      return 5;   // Fairway A × 5
     case TileType.PuttingGreen:
+      return 5;   // PuttingGreen A × 5
     case TileType.SandBunker:
-      return 5;
-    case TileType.WaterShallow:
-    case TileType.WaterMiddle:
-    case TileType.WaterDeep:
-    case TileType.GrassySand:
-    case TileType.GrassBunker:
-    case TileType.Cliff:
-    case TileType.Tree:
-      return 9;
+      return 5;   // SandBunker{1-4}A × 5
     case TileType.Tee:
-      return 25;
+      return 25;  // Tee A × 25
+    case TileType.GrassySand:
+      return 9;   // GrassySand A × 9
+    case TileType.GrassBunker:
+      return 9;   // GrassBunker A-D × 9
+    case TileType.WaterShallow:
+      return 9;   // WaterShallow A-D × 9
+    case TileType.WaterMiddle:
+      return 9;   // WaterMiddle A-D × 9
+    case TileType.WaterDeep:
+      return 5;   // WaterDeep A-D × 5
+    case TileType.Cliff:
+      return 9;   // Cliff A-D × 9
+    case TileType.Tree:
+      return 9;   // Woods A-D × 9
     default:
       return 1;
   }
@@ -396,35 +406,42 @@ export function texturePathForTile(
   height?: number,
 ): string | null {
   const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
-
-  // Variation cosmétique (tile.variation) — setType() utilise rand() % maxVariation
-  // REFERENCE_GUIDE.md §5.11
   const var4 = String(tile.variation).padStart(4, '0');
 
   switch (tile.type) {
     case TileType.Rough:
-    case TileType.DeepRough:
       return `/assets/textures/parkland/rough/ROUGH${geom}${var4}.webp`;
+    case TileType.DeepRough:
+      return `/assets/textures/parkland/deeprough/DEEPROUGH${geom}${var4}.webp`;
     case TileType.Fairway:
+      return `/assets/textures/parkland/fairway/FAIRWAY${geom}${var4}.webp`;
     case TileType.Tee:
-      return `/assets/textures/parkland/fairway/FAIRWAYA0001.webp`;
+      return `/assets/textures/parkland/tee/TEE${geom}${var4}.webp`;
     case TileType.PuttingGreen:
-      return `/assets/textures/parkland/green/PUTTINGGREENA0001.webp`;
+      return `/assets/textures/parkland/puttinggreen/PUTTINGGREEN${geom}${var4}.webp`;
     case TileType.SandBunker:
+      // Format special: SandBunker{shape}A{var}.webp (shape 1-4 = forme du bunker)
+      return `/assets/textures/parkland/sandbunker/SANDBUNKER1A${var4}.webp`;
     case TileType.GrassySand:
+      return `/assets/textures/parkland/grassysand/GRASSYSAND${geom}${var4}.webp`;
     case TileType.GrassBunker:
-    case TileType.Path:
-      return `/assets/textures/parkland/sand/SANDBUNKER1A0001.webp`;
+      return `/assets/textures/parkland/grassbunker/GRASSBUNKER${geom}${var4}.webp`;
     case TileType.WaterShallow:
-      return `/assets/textures/parkland/water/WATERSHALLOWA0001.webp`;
+      return `/assets/textures/parkland/watershallow/WATERSHALLOW${geom}${var4}.webp`;
     case TileType.WaterMiddle:
-      return `/assets/textures/parkland/water/WATERMIDDLEA0001.webp`;
+      return `/assets/textures/parkland/watermiddle/WATERMIDDLE${geom}${var4}.webp`;
     case TileType.WaterDeep:
-      return `/assets/textures/parkland/water/WATERDEEPA0001.webp`;
+      return `/assets/textures/parkland/waterdeep/WATERDEEP${geom}${var4}.webp`;
     case TileType.Cliff:
-      return `/assets/textures/parkland/rock/ROCK${geom}${var4}.webp`;
+      return `/assets/textures/parkland/cliff/CLIFF${geom}${var4}.webp`;
     case TileType.Tree:
       return `/assets/textures/parkland/woods/WOODS${geom}${var4}.webp`;
+    case TileType.Path:
+      return `/assets/textures/parkland/ravine/RAVINE${geom}${var4}.webp`;
+    case TileType.Building:
+      return `/assets/textures/parkland/building/BUILDING${geom}${var4}.webp`;
+    case TileType.Flower:
+      return `/assets/textures/parkland/brush/BRUSH${geom}${var4}.webp`;
     default:
       return null;
   }
