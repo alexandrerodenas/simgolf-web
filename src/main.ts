@@ -267,6 +267,30 @@ function animate(): void {
 updateTileImages();
 animate();
 
+// ---- Bouton Debug tactile ----
+const debugBtn = document.createElement('button');
+debugBtn.textContent = 'D';
+debugBtn.style.cssText = `
+  position:fixed;bottom:70px;right:12px;z-index:1000;
+  width:48px;height:48px;border-radius:24px;
+  background:rgba(0,0,0,0.7);color:#ff0;
+  font:bold 20px monospace;border:2px solid rgba(255,255,0,0.3);
+  cursor:pointer;touch-action:manipulation;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 8px rgba(0,0,0,0.5);
+`;
+debugBtn.addEventListener('click', () => {
+  debugMode = !debugMode;
+  debugBtn.style.background = debugMode
+    ? 'rgba(255,255,0,0.3)'
+    : 'rgba(0,0,0,0.7)';
+  debugBtn.style.borderColor = debugMode
+    ? 'rgba(255,255,0,0.9)'
+    : 'rgba(255,255,0,0.3)';
+  console.log(`[SimGolf] Debug ${debugMode ? 'ON' : 'OFF'}`);
+});
+document.body.appendChild(debugBtn);
+
 // ---- Info DOM ----
 const el = document.createElement('div');
 el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
