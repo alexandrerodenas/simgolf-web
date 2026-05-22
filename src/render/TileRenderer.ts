@@ -1,37 +1,39 @@
 /**
- * render/TileRenderer.ts — Rendu 2D Canvas des tuiles SimGolf
+ * render/TileRenderer.ts — Rendu 2D Canvas Multi-Passes des tuiles SimGolf
  *
- * Chaque tuile est dessinée comme un losange 2:1 indivisible via
- * ctx.setTransform(). La matrice affine projette la texture 64×64
- * sur le losange écran.
+ * Chaque tuile est dessinée comme un losange 2:1 via ctx.setTransform().
+ * Le système Multi-Passes itère sur renderPasses[] (1 à 4 couches)
+ * pour superposer les textures : base + bordures d'auto-tiling.
  *
  * Projection dimétrique 2:1 (REFERENCE_GUIDE.md §4.2) :
  *   screenX = (mapX - mapY) × 64
  *   screenY = (mapX + mapY) × 32
  *
  * Ordre de rendu : painter's algorithm par (mapX + mapY) croissant.
- * Les tuiles "arrière" (petite somme) sont dessinées en premier.
  */
 
 import { IMapState } from '../core/types';
-import { Camera2D } from './camera';
 
 const TEX_SIZE = 64;
 
 /**
- * Rendu complet de la carte en une passe.
+ * Rendu complet de la carte en une passe, avec support multi-textures.
  *
- * @param ctx        Contexte 2D du canvas
- * @param mapState   État de la carte
- * @param cam        Caméra 2D (offset + zoom)
- * @param getImage   Fonction (tile) → HTMLImageElement | undefined
- * @param reverse    Si true, ordre inverse (vue de dessus)
+ * Chaque tuile peut avoir jusqu'à 4 textures superposées (renderPasses).
+ * Le rendu itère toutes les tuiles dans l'ordre painter (arrière → avant),
+ * et pour chaque tuile dessine toutes ses passes dans l'ordre (base → bordures).
+ *
+ * @param ctx         Contexte 2D du canvas
+ * @param mapState    État de la carte
+ * @param cam         Caméra 2D (offset + zoom)
+ * @param getImages   Fonction (tileIdx) → HTMLImageElement[] (1 image par passe)
+ * @param reverse     Si true, ordre inverse (vue de dessus)
  */
 export function renderMap(
   ctx: CanvasRenderingContext2D,
   mapState: IMapState,
-  cam: Camera2D,
-  getImage: (tileIdx: number) => HTMLImageElement | undefined,
+  cam: { offsetX: number; offsetY: number; zoom: number },
+  getImages: (tileIdx: number) => HTMLImageElement[],
   reverse: boolean = false,
 ): void {
   const { width, height, tiles } = mapState;
@@ -57,10 +59,12 @@ export function renderMap(
       // Matrice de projection dimétrique 2:1
       ctx.setTransform(z, z * 0.5, -z, z * 0.5, originX, originY);
 
-      // Dessiner la texture si disponible
-      const img = getImage(tileIdx);
-      if (img) {
-        ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
+      // Dessiner toutes les passes (multi-textures superposées)
+      const images = getImages(tileIdx);
+      for (const img of images) {
+        if (img) {
+          ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
+        }
       }
     }
   }

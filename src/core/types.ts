@@ -38,6 +38,30 @@ export enum CourseTheme {
 }
 
 // ================================================================
+// IRenderPass — Une couche de texture superposée sur une tuile
+//
+// Le système Multi-Passes permet jusqu'à 4 textures superposées
+// par cellule (Base + jusqu'à 3 bordures).
+//
+// Suffixe :
+//   - Grass family : 'A'|'B'|'C'|'D'|'E' = géométrie d'élévation
+//   - Non-grass    : 'A'|'B'|'C'|'D' = orientation de bordure
+//     (N→A, E→B, S→C, W→D)
+// ================================================================
+export interface IRenderPass {
+  /** Type de terrain pour cette passe */
+  type: TileType;
+  /** Variation cosmétique (1-based, spécifie un fichier texture) */
+  variation: number;
+  /**
+   * Suffixe géométrique ou d'orientation pour la texture :
+   *   - Grass : 'A'...'E' = élévation (plat → raide)
+   *   - Non-grass : 'A' = base, 'B'|'C'|'D' = bordure E/S/W
+   */
+  suffix: string;
+}
+
+// ================================================================
 // ITile — État d'une tuile nécessaire au rendu
 //
 // Extrait du Tile 584 bytes original (offset 0x000-0x248).
@@ -52,7 +76,8 @@ export interface ITile {
   y: number;
 
   /**
-   * Type de terrain (TileType enum 0-15).
+   * Type de terrain principal (TileType enum 0-15).
+   * Pour la logique de jeu ; le rendu utilise renderPasses[].
    * Offset original : +0x024 (int32)
    */
   type: TileType;
@@ -66,11 +91,21 @@ export interface ITile {
   elevation: [number, number, number, number];
 
   /**
-   * Variation cosmétique (0..N) utilisée pour la sélection de texture
-   * anti-répétition. Index dans la table de textures du thème.
-   * Stockée à offset +0x240 dans le jeu original.
+   * Variation cosmétique principale (0..N) utilisée pour la sélection de
+   * texture anti-répétition. Stockée à offset +0x240 dans le jeu original.
    */
   variation: number;
+
+  /**
+   * Passes de rendu (1 à 4 couches superposées).
+   *
+   * - Pass 0 : Texture de base du type de terrain.
+   * - Pass 1..3 : Textures de bordure (si le voisin est d'une famille
+   *   différente et que le type possède des textures de transition).
+   *
+   * Rempli par computeRenderPasses() après génération ou édition du terrain.
+   */
+  renderPasses: IRenderPass[];
 }
 
 // ================================================================

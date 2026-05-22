@@ -1,19 +1,25 @@
 /**
  * main.ts — Moteur de rendu Canvas 2D SimGolf
  *
- * Projection dimétrique 2:1, rendu par tuile (losange indivisible).
+ * Projection dimétrique 2:1, rendu multi-passes par tuile.
+ * Chaque tuile peut avoir jusqu'à 4 textures superposées (base + bordures).
+ *
+ * Utilise generateVegetationGrid() pour une carte simplifiée avec
+ * uniquement des types famille grass (Rough, DeepRough, Woods, Brush)
+ * — seamless, pas de bordures entre eux.
+ *
  * Contrôles : pan tactile (1 doigt) / souris, pincement (2 doigts) /
  * molette pour le zoom.
  *
  * Raccourcis :
  *   R  →  Reset vue
  *   T  →  Vue de dessus
- *   D  →  Debug overlay (lettre géo + chiffre variation)
+ *   D  →  Debug overlay (lettre passe + nombre de passes)
  */
 
-import { generateParklandGrid, texturePathForTile, getGeometryType,
-         maxVariationForType } from './world/terrain';
-import { createCamera2D, Camera2D, tileVertexPosition } from './render/camera';
+import { generateVegetationGrid, texturePathForPass,
+         getGeometryType, maxVariationForType } from './world/terrain';
+import { createCamera2D, Camera2D } from './render/camera';
 import { renderMap } from './render/TileRenderer';
 
 // ---- 1. Constantes ----
@@ -37,29 +43,45 @@ window.addEventListener('resize', resize);
 
 // ---- 3. Caméra 2D (pan + zoom uniquement, pas de rotation) ----
 const cam = createCamera2D();
+let showPassCount = false;
 
-// Centrer la vue initiale : le losange central (20,20) au centre écran
-const GRID_CENTER_Y = ((MAP_W / 2) + (MAP_H / 2)) * 32 + 32; // 1312 à zoom=1
+// Centrer la vue initiale
+const GRID_CENTER_Y = ((MAP_W / 2) + (MAP_H / 2)) * 32 + 32;
 cam.offsetX = canvas.width / 2;
 cam.offsetY = canvas.height / 2 - GRID_CENTER_Y;
 cam.zoom = 1;
 
-// ---- 4. Génération du terrain ----
-const mapState = generateParklandGrid(MAP_W, MAP_H);
+// ---- 4. Génération du terrain (végétation uniquement) ----
+const mapState = generateVegetationGrid(MAP_W, MAP_H);
 
-// ---- 5. Pré-chargement des textures ----
+console.log(`[SimGolf] Carte générée : ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
+
+// ---- 5. Pré-chargement des textures Multi-Passes ----
+// On collecte TOUS les chemins uniques depuis TOUS les renderPasses
 const neededPaths = new Set<string>();
 for (const tile of mapState.tiles) {
-  const path = texturePathForTile(tile, mapState.tiles, MAP_W, MAP_H);
-  if (path) neededPaths.add(path);
+  for (const pass of tile.renderPasses) {
+    const path = texturePathForPass(pass);
+    if (path) neededPaths.add(path);
+  }
 }
 
 const textureImages = new Map<string, HTMLImageElement>();
-const tileImages: (HTMLImageElement | undefined)[] = new Array(mapState.tiles.length);
+// tilePassImages[tileIdx] = tableau d'images pour chaque passe
+const tilePassImages: HTMLImageElement[][] = new Array(mapState.tiles.length);
 let texturesToLoad = neededPaths.size;
 let texturesLoaded = 0;
 
-console.log(`[SimGolf] ${texturesToLoad} textures à charger`);
+console.log(`[SimGolf] ${texturesToLoad} textures à charger (multi-passes)`);
+
+// Stats : répartition des passes
+let totalPasses = 0;
+let maxPasses = 0;
+for (const tile of mapState.tiles) {
+  totalPasses += tile.renderPasses.length;
+  if (tile.renderPasses.length > maxPasses) maxPasses = tile.renderPasses.length;
+}
+console.log(`[SimGolf] Stats passes : total=${totalPasses}, max/tile=${maxPasses}, moyenne=${(totalPasses / mapState.tiles.length).toFixed(2)}`);
 
 for (const path of neededPaths) {
   const img = new Image();
@@ -68,6 +90,7 @@ for (const path of neededPaths) {
     texturesLoaded++;
     if (texturesLoaded === texturesToLoad) {
       console.log('[SimGolf] Toutes les textures chargées');
+      updateTileImages();
     }
   };
   img.onerror = () => {
@@ -77,15 +100,20 @@ for (const path of neededPaths) {
   img.src = path;
 }
 
-// Pré-calcul des images par tuile (mise à jour quand les textures arrivent)
+// Pré-calcul des images par tuile pour chaque passe
 function updateTileImages(): void {
   for (let i = 0; i < mapState.tiles.length; i++) {
-    const path = texturePathForTile(mapState.tiles[i], mapState.tiles, MAP_W, MAP_H);
-    tileImages[i] = path ? textureImages.get(path) : undefined;
+    const tile = mapState.tiles[i];
+    const images: HTMLImageElement[] = [];
+    for (const pass of tile.renderPasses) {
+      const path = texturePathForPass(pass);
+      const img = path ? textureImages.get(path) : undefined;
+      if (img) images.push(img);
+    }
+    tilePassImages[i] = images;
   }
 }
 
-// Réessayer périodiquement le temps que les textures chargent
 let frameCount = 0;
 
 // ---- 6. Contrôles tactiles ----
@@ -126,7 +154,6 @@ canvas.addEventListener('touchmove', (e: TouchEvent) => {
       cam.zoom = Math.max(0.5, Math.min(20, cam.zoom * scale));
     }
     lastTouchDist = dist;
-    // Pan avec le centre du pinch
     const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
     const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
     if (lastTouchX !== 0) {
@@ -202,6 +229,11 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
     debugMode = !debugMode;
     console.log(`[SimGolf] Debug ${debugMode ? 'ON' : 'OFF'}`);
   }
+  else if (e.key === 'p' || e.key === 'P') {
+    e.preventDefault();
+    showPassCount = !showPassCount;
+    console.log(`[SimGolf] Multi-pass overlay ${showPassCount ? 'ON' : 'OFF'}`);
+  }
 });
 
 // ---- 9. Debug overlay ----
@@ -229,15 +261,30 @@ function drawDebug(): void {
     const sx = ox;
     const sy = oy + 32 * z; // centre du losange
     if (sx < -50 || sx > debugCanvas.width + 50 || sy < -50 || sy > debugCanvas.height + 50) continue;
-    const geom = getGeometryType(tile.elevation);
-    debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
-    debugCtx.fillText(`${geom}${tile.variation}`, sx, sy);
+
+    if (showPassCount) {
+      // Affiche le nombre de passes
+      debugCtx.fillStyle = 'rgba(0,255,255,0.85)';
+      debugCtx.fillText(`${tile.renderPasses.length}p`, sx, sy);
+    } else {
+      // Affiche le type et la géométrie
+      const geom = getGeometryType(tile.elevation);
+      const typeNames: Record<number, string> = {
+        0: 'R',  // Rough
+        7: 'DR', // DeepRough
+        14: 'W', // Woods
+        15: 'B', // Brush
+      };
+      const label = typeNames[tile.type] ?? String(tile.type);
+      debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
+      debugCtx.fillText(`${label}${geom}${tile.variation}`, sx, sy);
+    }
   }
 }
 
 // ---- 10. Boucle d'animation ----
 function animate(): void {
-  // Mettre à jour les images de texture périodiquement
+  // Mettre à jour les images périodiquement
   frameCount++;
   if (frameCount % 30 === 0 && texturesLoaded < texturesToLoad) {
     updateTileImages();
@@ -250,10 +297,12 @@ function animate(): void {
   ctx.fillStyle = '#1a3a1a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Rendu des tuiles
-  const getImage = (idx: number) => tileImages[idx];
-  const isTopDown = cam.offsetY > canvas.height / 2 + 100; // seuil vue dessus
-  renderMap(ctx, mapState, cam, getImage, isTopDown);
+  // Rendu des tuiles (multi-passes)
+  const getImages = (idx: number): HTMLImageElement[] => {
+    return tilePassImages[idx] ?? [];
+  };
+  const isTopDown = cam.offsetY > canvas.height / 2 + 100;
+  renderMap(ctx, mapState, cam, getImages, isTopDown);
 
   // Debug
   drawDebug();
@@ -261,7 +310,7 @@ function animate(): void {
   requestAnimationFrame(animate);
 }
 
-// Lancer l'animation après un premier update
+// Initial update
 updateTileImages();
 animate();
 
@@ -292,5 +341,5 @@ document.body.appendChild(debugBtn);
 // ---- Info DOM ----
 const el = document.createElement('div');
 el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
-el.textContent = `SimGolf — Parkland ${MAP_W}×${MAP_H}\nTouch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug`;
+el.textContent = `SimGolf — Végétation ${MAP_W}×${MAP_H}\nTouch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug  P=passes`;
 document.body.appendChild(el);
