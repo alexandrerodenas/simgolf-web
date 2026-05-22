@@ -2,63 +2,64 @@
  * main.ts — Point d'entrée Three.js du moteur spatial SimGolf
  *
  * Initialise la scène, la caméra dimétrique 2:1, et les maillages
- * Parkland texturés. Boucle d'animation avec rendu et redimensionnement.
+ * Parkland texturés. Fournit OrbitControls pour zoom, pan et rotation
+ * libre, ainsi que des raccourcis clavier.
  *
- * Les textures WebP (64×64) sont chargées depuis assets/textures/parkland/
+ * Raccourcis :
+ *   R  →  Reset vue dimétrique 2:1
+ *   T  →  Vue de dessus (horizontale)
+ *
+ * Textures WebP (64×64) chargées depuis assets/textures/parkland/
  * et appliquées aux tuiles via UV mapping.
  */
 
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { generateParklandGrid, buildParklandMesh, texturePathForTile } from './world/terrain';
-import { createDimetricCamera, resizeDimetricCamera } from './render/camera';
-import { TileType } from './core/types';
+import { createDimetricCamera, resizeDimetricCamera, gridCenter } from './render/camera';
 
-// ---- 1. Scène ----
+// ---- 1. Constantes ----
+const MAP_W = 40;
+const MAP_H = 40;
+const CX = gridCenter(MAP_W, MAP_H).x;
+const CZ = gridCenter(MAP_W, MAP_H).z;
+
+// ---- 2. Scène ----
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a3a1a);
 
-// ---- 2. Caméra dimétrique 2:1 ----
-const MAP_W = 40;
-const MAP_H = 40;
+// ---- 3. Caméra dimétrique 2:1 ----
+const { camera } = createDimetricCamera(MAP_W, MAP_H);
 
-const { camera } = createDimetricCamera(MAP_W, MAP_H, 1);
-
-// ---- 3. Lumière ----
+// ---- 4. Lumière ----
 const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
 scene.add(ambientLight);
 
 const dirLight = new THREE.DirectionalLight(0xffeedd, 1.2);
 dirLight.position.set(-50, 80, 50);
-dirLight.castShadow = false;
 scene.add(dirLight);
 
 const fillLight = new THREE.DirectionalLight(0x88bbff, 0.3);
 fillLight.position.set(30, 20, -40);
 scene.add(fillLight);
 
-// ---- 4. Terrain Parkland ----
+// ---- 5. Terrain Parkland ----
 const mapState = generateParklandGrid(MAP_W, MAP_H);
 
-// Collecter tous les chemins de texture nécessaires
+// Collecter les chemins de texture nécessaires
 const neededPaths = new Set<string>();
 for (const tile of mapState.tiles) {
   const path = texturePathForTile(tile);
   if (path) neededPaths.add(path);
 }
-console.log(`[SimGolf] ${neededPaths.size} textures à charger`);
 
 // Charger les textures
 const textureLoader = new THREE.TextureLoader();
 const textureCache = new Map<string, THREE.Texture>();
-let texturesLoaded = 0;
 
 for (const path of neededPaths) {
   textureLoader.load(path, (tex) => {
     textureCache.set(path, tex);
-    texturesLoaded++;
-    if (texturesLoaded === neededPaths.size) {
-      console.log(`[SimGolf] Toutes les textures chargées (${texturesLoaded})`);
-    }
   });
 }
 
@@ -68,17 +69,9 @@ const groups = buildParklandMesh(mapState);
 for (const group of groups) {
   let material: THREE.Material;
 
-  if (group.texturePath && textureCache.has(group.texturePath)) {
-    // Texture déjà chargée — utiliser
-    material = new THREE.MeshLambertMaterial({
-      map: textureCache.get(group.texturePath),
-      flatShading: true,
-      side: THREE.DoubleSide,
-    });
-  } else if (group.texturePath) {
-    // Texture pas encore chargée — utiliser la texture avec fallback,
-    // Three.js passera à l'image une fois chargée
-    const tex = textureLoader.load(group.texturePath);
+  if (group.texturePath) {
+    const tex = textureCache.get(group.texturePath)
+      ?? textureLoader.load(group.texturePath);
     textureCache.set(group.texturePath, tex);
     material = new THREE.MeshLambertMaterial({
       map: tex,
@@ -86,7 +79,6 @@ for (const group of groups) {
       side: THREE.DoubleSide,
     });
   } else {
-    // Pas de texture — vertex colors
     material = new THREE.MeshLambertMaterial({
       vertexColors: true,
       flatShading: true,
@@ -99,33 +91,76 @@ for (const group of groups) {
   scene.add(mesh);
 }
 
-// ---- 5. Renderer ----
+// ---- 6. Renderer ----
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.shadowMap.enabled = false;
 document.body.appendChild(renderer.domElement);
 
-// ---- 6. Redimensionnement ----
+// ---- 7. OrbitControls (zoom + pan + rotation) ----
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(CX, 0, CZ);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.zoomSpeed = 1.2;
+controls.update();
+
+// ---- 8. Redimensionnement ----
 window.addEventListener('resize', () => {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  resizeDimetricCamera(camera, MAP_W, MAP_H, 1);
-  renderer.setSize(w, h);
+  resizeDimetricCamera(camera, MAP_W, MAP_H);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---- 7. Boucle d'animation ----
+// ---- 9. Raccourcis clavier ----
+function resetView(): void {
+  // Re-créer la position dimétrique à partir de zéro
+  const { camera: fresh } = createDimetricCamera(MAP_W, MAP_H);
+  camera.position.copy(fresh.position);
+  camera.zoom = 1;
+  controls.target.set(CX, 0, CZ);
+  controls.update();
+  camera.updateProjectionMatrix();
+}
+
+function topDownView(): void {
+  // Vue de dessus : plan horizontal
+  const aspect = window.innerWidth / window.innerHeight;
+  const worldW = MAP_W * (128 / 2);
+  const worldH = MAP_H * (64 / 2);
+  const baseDim = Math.max(worldW, worldH) * 1.2;
+  const dist = baseDim * 2.2;
+
+  camera.position.set(CX, dist, CZ);
+  camera.zoom = 1;
+  controls.target.set(CX, 0, CZ);
+  controls.update();
+  camera.updateProjectionMatrix();
+}
+
+window.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault();
+    resetView();
+  } else if (e.key === 't' || e.key === 'T') {
+    e.preventDefault();
+    topDownView();
+  }
+});
+
+// ---- 10. Boucle d'animation ----
 function animate(): void {
   requestAnimationFrame(animate);
+  controls.update();
   renderer.render(scene, camera);
 }
 animate();
 
-// ---- 8. Info console ----
+// ---- 11. Info console ----
 console.log(`[SimGolf] Terrain Parkland ${MAP_W}×${MAP_H} — Three.js texturé`);
+console.log('[SimGolf] Raccourcis: R=réinitialiser vue | T=vue de dessus');
 
-// ---- 9. Info DOM ----
+// ---- 12. Info DOM ----
 const el = document.createElement('div');
 el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
-el.textContent = `SimGolf — Parkland ${MAP_W}×${MAP_H}\nThree.js — Textures WebP — Projection 2:1`;
+el.textContent = `SimGolf — Parkland ${MAP_W}×${MAP_H}\nR=vue dimétrique  T=dessus  Souris=zoom/pan/orbite`;
 document.body.appendChild(el);
