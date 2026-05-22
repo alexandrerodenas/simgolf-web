@@ -25,10 +25,88 @@ import {
 import { tileVertexPosition } from '../render/camera';
 
 // ================================================================
-// CONSTANTES
+// CONSTANTES — Réglages du terrain
 // ================================================================
 
 const COSMETIC_MAX = 5;
+
+// ================================================================
+// Groupes géométriques (A-E) : déterminés par les 4 hauteurs
+// ================================================================
+
+/**
+ * Détermine le groupe géométrique (A-E) selon les 4 hauteurs des coins.
+ * REFERENCE_GUIDE.md §5.2
+ *
+ * A = plat (tous égaux)
+ * B = pente simple (2 adjacents)
+ * C = coin (1 différent)
+ * D = diagonale (opposés égaux)
+ * E = raide (Δ ≥ 2 entre adjacents)
+ */
+export function getGeometryType(e: [number, number, number, number]): string {
+  // E : Raide — écart ≥ 2 entre 2 coins adjacents
+  if (Math.abs(e[0] - e[1]) >= 2 || Math.abs(e[1] - e[2]) >= 2 ||
+      Math.abs(e[2] - e[3]) >= 2 || Math.abs(e[3] - e[0]) >= 2)
+    return 'E';
+  // A : Plat — tous identiques
+  if (e[0] === e[1] && e[1] === e[2] && e[2] === e[3]) return 'A';
+  // D : Diagonale — coins opposés identiques, différents des autres
+  if (e[0] === e[2] && e[0] !== e[1]) return 'D';
+  if (e[1] === e[3] && e[1] !== e[0]) return 'D';
+  // B : Pente — 2 coins adjacents identiques
+  if (e[0] === e[1] || e[1] === e[2] || e[2] === e[3] || e[3] === e[0]) return 'B';
+  // C : Coin (1 seul différent)
+  return 'C';
+}
+
+/**
+ * Familles de terrain — 2 tuiles de même famille ne produisent PAS
+ * de bordure de transition (REFERENCE_GUIDE.md §3.6).
+ */
+const TERRAIN_FAMILIES: Record<number, string> = {
+  [TileType.Rough]: 'grass',
+  [TileType.Tree]: 'grass',
+  [TileType.Flower]: 'grass',
+  [TileType.DeepRough]: 'grass',
+  [TileType.Fairway]: 'play',
+  [TileType.Tee]: 'play',
+  [TileType.PuttingGreen]: 'play',
+  [TileType.SandBunker]: 'sand',
+  [TileType.GrassySand]: 'sand',
+  [TileType.GrassBunker]: 'sand',
+  [TileType.WaterShallow]: 'water',
+  [TileType.WaterMiddle]: 'water',
+  [TileType.WaterDeep]: 'water',
+  [TileType.Path]: 'path',
+  [TileType.Cliff]: 'cliff',
+  [TileType.Building]: 'building',
+};
+
+export function getTerrainFamily(type: TileType): string {
+  return TERRAIN_FAMILIES[type] ?? 'grass';
+}
+
+/**
+ * Calcule le masque de voisinage 4 bits (N=1, E=2, S=4, W=8).
+ * Un bit = 1 si le voisin cardinal est d'une famille différente.
+ * REFERENCE_GUIDE.md §5.3
+ */
+export function computeEdgeMask(
+  tiles: ITile[], w: number, h: number, x: number, y: number,
+): number {
+  const family = getTerrainFamily(tiles[y * w + x].type);
+  let mask = 0;
+  const checks: [number, number, number][] = [[0,-1,1],[1,0,2],[0,1,4],[-1,0,8]];
+  for (const [dx, dy, bit] of checks) {
+    const nx = x + dx, ny = y + dy;
+    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+      if (getTerrainFamily(tiles[ny * w + nx].type) !== family)
+        mask |= bit;
+    }
+  }
+  return mask;
+}
 
 // ================================================================
 // 1. Bruit de valeur (value noise avec interpolation cosinus)
@@ -184,9 +262,26 @@ function placeHoles(tiles: ITile[], w: number, h: number): void {
 // ================================================================
 
 function applyVariations(tiles: ITile[], w: number, h: number): void {
+  // 1. Hash de base déterministe
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++)
       tiles[y * w + x].variation = ((x * 31 + y * 17) % COSMETIC_MAX) + 1;
+
+  // 2. Anti-répétition : éviter que 2 tuiles de même type adjacentes
+  //    aient la même variation (lissage scanline, voisins N+W déjà finals)
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const tile = tiles[idx];
+      const used = new Set<number>();
+      if (y > 0) { const n = tiles[(y - 1) * w + x]; if (n.type === tile.type) used.add(n.variation); }
+      if (x > 0) { const n = tiles[y * w + (x - 1)]; if (n.type === tile.type) used.add(n.variation); }
+      if (used.has(tile.variation)) {
+        for (let v = 1; v <= COSMETIC_MAX; v++) {
+          if (!used.has(v)) { tile.variation = v; break; }
+        }
+      }
+    }
 }
 
 // ================================================================
@@ -233,17 +328,34 @@ export function generateParklandGrid(
 
 /**
  * Retourne le chemin de la texture WebP pour une tuile donnée,
- * ou null si cette tuile utilise des vertex colors (pas de texture).
+ * en tenant compte de :
+ *   1. Type de terrain → dossier + préfixe
+ *   2. Groupe géométrique A-E (selon les 4 hauteurs de coins)
+ *   3. Variation cosmétique (anti-répétition)
+ *   4. Masque de voisinage pour les bordures (futur : textures d'arête)
+ *
+ * ou null si la tuile n'a pas de texture (vertex colors).
  */
+const GEOM_TYPES: Set<TileType> = new Set([
+  TileType.Rough, TileType.DeepRough, TileType.Cliff, TileType.Tree,
+]);
+
 export function texturePathForTile(
   tile: ITile,
+  tiles?: ITile[],
+  width?: number,
+  height?: number,
 ): string | null {
-  const v = tile.variation; // 1-5
+  const v = tile.variation;
+  const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
+
+  // Padding variation sur 4 chiffres
+  const var4 = String(Math.min(v, 9)).padStart(4, '0');
 
   switch (tile.type) {
     case TileType.Rough:
     case TileType.DeepRough:
-      return `/assets/textures/parkland/rough/ROUGHA000${Math.min(v, 5)}.webp`;
+      return `/assets/textures/parkland/rough/ROUGH${geom}${var4}.webp`;
     case TileType.Fairway:
     case TileType.Tee:
       return `/assets/textures/parkland/fairway/FAIRWAYA0001.webp`;
@@ -261,11 +373,10 @@ export function texturePathForTile(
     case TileType.WaterDeep:
       return `/assets/textures/parkland/water/WATERDEEPA0001.webp`;
     case TileType.Cliff:
-      return `/assets/textures/parkland/rock/ROCKA000${Math.min(v, 9)}.webp`;
+      return `/assets/textures/parkland/rock/ROCK${geom}${var4}.webp`;
     case TileType.Tree:
-      return `/assets/textures/parkland/woods/WOODSA000${Math.min(v, 9)}.webp`;
+      return `/assets/textures/parkland/woods/WOODS${geom}${var4}.webp`;
     default:
-      // Building, Flower — pas de texture
       return null;
   }
 }
@@ -331,7 +442,7 @@ export function buildParklandMesh(
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
-    const path = texturePathForTile(tile);
+    const path = texturePathForTile(tile, tiles, width, height);
     const key = path ?? NO_TEXTURE;
     if (!groups.has(key)) {
       groups.set(key, { tileIdx: [], path, type: tile.type });

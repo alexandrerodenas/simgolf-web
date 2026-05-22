@@ -49,7 +49,7 @@ const mapState = generateParklandGrid(MAP_W, MAP_H);
 // Collecter les chemins de texture nécessaires
 const neededPaths = new Set<string>();
 for (const tile of mapState.tiles) {
-  const path = texturePathForTile(tile);
+  const path = texturePathForTile(tile, mapState.tiles, mapState.width, mapState.height);
   if (path) neededPaths.add(path);
 }
 
