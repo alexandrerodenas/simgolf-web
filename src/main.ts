@@ -113,9 +113,12 @@ window.addEventListener('resize', () => {
 
 // ---- 9. Raccourcis clavier ----
 function resetView(): void {
-  // Re-créer la position dimétrique à partir de zéro
+  // Restaurer le up par défaut
+  camera.up.set(0, 1, 0);
+  // Re-créer la position dimétrique
   const { camera: fresh } = createDimetricCamera(MAP_W, MAP_H);
   camera.position.copy(fresh.position);
+  camera.quaternion.copy(fresh.quaternion);
   camera.zoom = 1;
   controls.target.set(CX, 0, CZ);
   controls.update();
@@ -123,14 +126,15 @@ function resetView(): void {
 }
 
 function topDownView(): void {
-  // Vue de dessus : plan horizontal
-  const aspect = window.innerWidth / window.innerHeight;
-  const worldW = MAP_W * (128 / 2);
-  const worldH = MAP_H * (64 / 2);
-  const baseDim = Math.max(worldW, worldH) * 1.2;
+  // Vue de dessus : les tuiles apparaissent en losanges
+  const baseDim = Math.max(MAP_W * 64, MAP_H * 32) * 1.2;
   const dist = baseDim * 2.2;
 
+  // Orient -Z vers le haut de l'écran → les diagonales de la grille
+  // s'alignent sur les axes XZ, produisant des losanges propres
+  camera.up.set(0, 0, -1);
   camera.position.set(CX, dist, CZ);
+  camera.lookAt(CX, 0, CZ);
   camera.zoom = 1;
   controls.target.set(CX, 0, CZ);
   controls.update();
