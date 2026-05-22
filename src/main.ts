@@ -12,7 +12,7 @@
  */
 
 import { generateParklandGrid, texturePathForTile, getGeometryType,
-         computeEdgeMask, edgeMaskToVariation, maxVariationForType } from './world/terrain';
+         maxVariationForType } from './world/terrain';
 import { createCamera2D, Camera2D, tileVertexPosition } from './render/camera';
 import { renderMap } from './render/TileRenderer';
 
@@ -230,10 +230,8 @@ function drawDebug(): void {
     const sy = oy + 32 * z; // centre du losange
     if (sx < -50 || sx > debugCanvas.width + 50 || sy < -50 || sy > debugCanvas.height + 50) continue;
     const geom = getGeometryType(tile.elevation);
-    const mask = computeEdgeMask(mapState.tiles, MAP_W, MAP_H, tile.x, tile.y);
-    const edgeVar = edgeMaskToVariation(mask, maxVariationForType(tile.type));
     debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
-    debugCtx.fillText(`${geom}${edgeVar}`, sx, sy);
+    debugCtx.fillText(`${geom}${tile.variation}`, sx, sy);
   }
 }
 

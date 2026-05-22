@@ -114,50 +114,38 @@ export function computeEdgeMask(
 }
 
 /**
- * Convertit un masque de voisinage 4 bits en numéro de variation (1-9).
- *
- * Convention de nommage des assets SimGolf (REFERENCE_GUIDE.md §5.5) :
- *   0001 = central (aucun voisin de famille différente)
- *   0002 = isolé (4 voisins de familles différentes)
- *   0003 = 1 bord exposé
- *   0004 = 2 bords adjacents exposés
- *   0005 = 2 bords opposés ou 3 bords exposés
- *   0006+ = directions spécifiques (pour les types avec 9 variations)
- *
- * @param mask   Masque 4 bits (N=1, E=2, S=4, W=8)
- * @param maxVar Nombre max de variations pour ce type (5 ou 9)
+ * Supprimé : la variation 0001-0025 est cosmétique (rand() % maxVariation).
+ * Voir applyVariations() et maxVariationForType().
+ * REFERENCE_GUIDE.md §5.11
  */
-export function edgeMaskToVariation(mask: number, maxVar: number): number {
-  if (mask === 0) return 1;                 // central
-  if (mask === 15) return 2;                // isolé
-
-  const bits = [1, 2, 4, 8];
-  const count = bits.filter(b => (b & mask) !== 0).length;
-
-  if (maxVar >= 9 && count === 1) {
-    // 1 bord exposé → variation 3-6 selon la direction (N/E/S/W)
-    const dirIdx = bits.indexOf(mask); // 0=N, 1=E, 2=S, 3=W
-    return 3 + (dirIdx >= 0 ? dirIdx : 0);
-  }
-
-  if (count === 1) return 3;                // 1 bord (5 var)
-  if (count === 2) return maxVar >= 9 ? 7 : 4;  // 2 bords
-  return maxVar >= 9 ? 9 : 5;               // 3 bords
-}
 
 /**
- * Nombre max de variations disponibles pour un type de tuile (par géométrie).
+ * Nombre max de variations cosmétiques disponibles pour chaque type de tuile.
+ * REFERENCE_GUIDE.md §5.4 + §5.10
+ *
+ * Ces valeurs sont utilisées par setType() avec rand() % maxVariation.
+ * Les types sans * n'ont qu'une seule texture.
  */
 export function maxVariationForType(type: TileType): number {
   switch (type) {
     case TileType.Rough:
     case TileType.DeepRough:
+    case TileType.Fairway:
+    case TileType.PuttingGreen:
+    case TileType.SandBunker:
       return 5;
+    case TileType.WaterShallow:
+    case TileType.WaterMiddle:
+    case TileType.WaterDeep:
+    case TileType.GrassySand:
+    case TileType.GrassBunker:
     case TileType.Cliff:
     case TileType.Tree:
       return 9;
+    case TileType.Tee:
+      return 25;
     default:
-      return 1; // Fairway, Green, Sand, Water — un seul fichier
+      return 1;
   }
 }
 
@@ -315,10 +303,16 @@ function placeHoles(tiles: ITile[], w: number, h: number): void {
 // ================================================================
 
 function applyVariations(tiles: ITile[], w: number, h: number): void {
-  // 1. Hash de base déterministe
+  // 1. Hash de base déterministe avec le bon maxVariation par type
+  //    (simule rand() % maxVariation comme dans setType @ 0x100032f0)
   for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++)
-      tiles[y * w + x].variation = ((x * 31 + y * 17) % COSMETIC_MAX) + 1;
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const maxVar = maxVariationForType(tiles[idx].type);
+      tiles[idx].variation = maxVar > 1
+        ? ((x * 31 + y * 17) % maxVar) + 1
+        : 1;
+    }
 
   // 2. Anti-répétition : éviter que 2 tuiles de même type adjacentes
   //    aient la même variation (lissage scanline, voisins N+W déjà finals)
@@ -326,11 +320,14 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
       const tile = tiles[idx];
+      const maxVar = maxVariationForType(tile.type);
+      if (maxVar <= 1) continue;
+
       const used = new Set<number>();
       if (y > 0) { const n = tiles[(y - 1) * w + x]; if (n.type === tile.type) used.add(n.variation); }
       if (x > 0) { const n = tiles[y * w + (x - 1)]; if (n.type === tile.type) used.add(n.variation); }
       if (used.has(tile.variation)) {
-        for (let v = 1; v <= COSMETIC_MAX; v++) {
+        for (let v = 1; v <= maxVar; v++) {
           if (!used.has(v)) { tile.variation = v; break; }
         }
       }
@@ -384,8 +381,7 @@ export function generateParklandGrid(
  * en tenant compte de :
  *   1. Type de terrain → dossier + préfixe
  *   2. Groupe géométrique A-E (selon les 4 hauteurs de coins)
- *   3. Variation cosmétique (anti-répétition)
- *   4. Masque de voisinage pour les bordures (futur : textures d'arête)
+ *   3. Variation cosmétique (tile.variation)
  *
  * ou null si la tuile n'a pas de texture (vertex colors).
  */
@@ -401,16 +397,9 @@ export function texturePathForTile(
 ): string | null {
   const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
 
-  // Variation basée sur le masque de voisinage (auto-tiling)
-  let edgeVar = 1;
-  if (tiles && width && height) {
-    const mask = computeEdgeMask(tiles, width, height, tile.x, tile.y);
-    const maxVar = maxVariationForType(tile.type);
-    edgeVar = edgeMaskToVariation(mask, maxVar);
-  }
-
-  // Padding variation sur 4 chiffres
-  const var4 = String(edgeVar).padStart(4, '0');
+  // Variation cosmétique (tile.variation) — setType() utilise rand() % maxVariation
+  // REFERENCE_GUIDE.md §5.11
+  const var4 = String(tile.variation).padStart(4, '0');
 
   switch (tile.type) {
     case TileType.Rough:
