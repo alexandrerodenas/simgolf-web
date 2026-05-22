@@ -45,18 +45,23 @@ const COSMETIC_MAX = 5;
  * E = raide (Δ ≥ 2 entre adjacents)
  */
 export function getGeometryType(e: [number, number, number, number]): string {
+  const [a, b, c, d] = e;
+
   // E : Raide — écart ≥ 2 entre 2 coins adjacents
-  if (Math.abs(e[0] - e[1]) >= 2 || Math.abs(e[1] - e[2]) >= 2 ||
-      Math.abs(e[2] - e[3]) >= 2 || Math.abs(e[3] - e[0]) >= 2)
+  if (Math.abs(a - b) >= 2 || Math.abs(b - c) >= 2 ||
+      Math.abs(c - d) >= 2 || Math.abs(d - a) >= 2)
     return 'E';
   // A : Plat — tous identiques
-  if (e[0] === e[1] && e[1] === e[2] && e[2] === e[3]) return 'A';
-  // D : Diagonale — coins opposés identiques, différents des autres
-  if (e[0] === e[2] && e[0] !== e[1]) return 'D';
-  if (e[1] === e[3] && e[1] !== e[0]) return 'D';
-  // B : Pente — 2 coins adjacents identiques
-  if (e[0] === e[1] || e[1] === e[2] || e[2] === e[3] || e[3] === e[0]) return 'B';
-  // C : Coin (1 seul différent)
+  if (a === b && b === c && c === d) return 'A';
+  // D : Diagonale — les DEUX paires opposées sont égales ET différentes
+  //     Ex: [1,0,1,0] → TL=BR=1, TR=BL=0
+  if (a === c && b === d && a !== b) return 'D';
+  // B : Pente simple — 2 coins adjacents égaux, les 2 autres aussi
+  //     Ex: [1,1,0,0] → TL=TR, BR=BL
+  if ((a === b && c === d && a !== c) ||
+      (b === c && d === a && b !== d))
+    return 'B';
+  // C : Coin — tout le reste (1 seul coin différent des 3 autres)
   return 'C';
 }
 
