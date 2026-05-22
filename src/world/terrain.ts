@@ -2,19 +2,14 @@
  * world/terrain.ts — Génération du maillage Parkland
  *
  * Produit une IMapState complète (grille de tuiles avec élévation et types)
- * puis construit un BufferGeometry Three.js maillé pour le rendu.
+ * puis construit des BufferGeometry Three.js groupés par texture.
  *
  * L'algorithme de génération Parkland suit les règles documentées dans
  * REFERENCE_GUIDE.md §3 (Système de Terrain) :
  *   1. resetTerrain() — toutes les tuiles en WaterShallow, élévation plate
  *   2. applyParklandDistribution() — bruit de valeur + zones fairway
  *   3. placeHoles() — Tees + Greens sur les fairways
- *   4. buildMesh() — construction du maillage Three.js
- *
- * Le maillage est conçu pour permettre :
- *   - Modification ultérieure de la hauteur des vertices (déclivité)
- *   - Application des textures UV pour l'auto-tiling
- *   - Ajout de triangles de bordure de transition
+ *   4. buildMesh() — construction des maillages Three.js
  */
 
 import * as THREE from 'three';
@@ -233,147 +228,245 @@ export function generateParklandGrid(
 }
 
 // ================================================================
-// 7. Construction du maillage Three.js
+// 7. Mapping type de tuile → chemin de texture
 // ================================================================
 
 /**
- * Construit un BufferGeometry Three.js à partir de l'état de la carte.
+ * Retourne le chemin de la texture WebP pour une tuile donnée,
+ * ou null si cette tuile utilise des vertex colors (pas de texture).
+ */
+export function texturePathForTile(
+  tile: ITile,
+): string | null {
+  const v = tile.variation; // 1-5
+
+  switch (tile.type) {
+    case TileType.Rough:
+    case TileType.DeepRough:
+      return `/assets/textures/parkland/rough/ROUGHA000${Math.min(v, 5)}.webp`;
+    case TileType.Fairway:
+    case TileType.Tee:
+      return `/assets/textures/parkland/fairway/FAIRWAYA0001.webp`;
+    case TileType.PuttingGreen:
+      return `/assets/textures/parkland/green/PUTTINGGREENA0001.webp`;
+    case TileType.SandBunker:
+    case TileType.GrassySand:
+    case TileType.GrassBunker:
+    case TileType.Path:
+      return `/assets/textures/parkland/sand/SANDBUNKER1A0001.webp`;
+    case TileType.WaterShallow:
+      return `/assets/textures/parkland/water/WATERSHALLOWA0001.webp`;
+    case TileType.WaterMiddle:
+      return `/assets/textures/parkland/water/WATERMIDDLEA0001.webp`;
+    case TileType.WaterDeep:
+      return `/assets/textures/parkland/water/WATERDEEPA0001.webp`;
+    case TileType.Cliff:
+      return `/assets/textures/parkland/rock/ROCKA000${Math.min(v, 9)}.webp`;
+    case TileType.Tree:
+      return `/assets/textures/parkland/woods/WOODSA000${Math.min(v, 9)}.webp`;
+    default:
+      // Building, Flower — pas de texture
+      return null;
+  }
+}
+
+// ================================================================
+// 8. Construction des maillages Three.js (groupés par texture)
+// ================================================================
+
+/**
+ * Résultat d'une construction de maillage : un BufferGeometry prêt
+ * à être utilisé avec un material, et le chemin texture associé.
+ */
+export interface MeshGroup {
+  geometry: THREE.BufferGeometry;
+  texturePath: string | null;
+  /** Couleur dominante du groupe (pour chute texture non chargée) */
+  fallbackColor: [number, number, number];
+}
+
+/**
+ * Palette de couleurs par type (utilisée comme fallback).
+ */
+const palette: Record<number, [number, number, number]> = {
+  [TileType.Rough]:        [0.227, 0.490, 0.227],
+  [TileType.Fairway]:      [0.306, 0.651, 0.306],
+  [TileType.PuttingGreen]: [0.180, 0.800, 0.251],
+  [TileType.SandBunker]:   [0.910, 0.835, 0.627],
+  [TileType.WaterShallow]: [0.200, 0.533, 0.800],
+  [TileType.WaterMiddle]:  [0.133, 0.467, 0.733],
+  [TileType.WaterDeep]:    [0.067, 0.400, 0.667],
+  [TileType.DeepRough]:    [0.176, 0.353, 0.118],
+  [TileType.GrassySand]:   [0.784, 0.722, 0.471],
+  [TileType.GrassBunker]:  [0.863, 0.784, 0.565],
+  [TileType.Tee]:          [0.361, 0.722, 0.361],
+  [TileType.Cliff]:        [0.533, 0.467, 0.400],
+  [TileType.Path]:         [0.784, 0.722, 0.596],
+  [TileType.Building]:     [0.600, 0.400, 0.267],
+  [TileType.Tree]:         [0.176, 0.353, 0.118],
+  [TileType.Flower]:       [0.800, 0.267, 0.533],
+};
+
+/**
+ * Construit un ou plusieurs BufferGeometry à partir de l'état de la carte.
  *
- * Chaque tuile est représentée par 2 triangles (quad) avec :
+ * Les tuiles sont groupées par texture (même TileType + variation).
+ * Chaque groupe produit un BufferGeometry séparé avec :
  *   - Positions 3D calculées par tileVertexPosition()
- *   - Couleurs par vertex basées sur le TileType (palette Parkland)
+ *   - Coordonnées UV (si texture) ou vertex colors (si pas de texture)
  *   - Normales pour l'éclairage
  *
- * Le maillage est conçu pour permettre des modifications ultérieures
- * de la hauteur des vertices (les positions sont indexées et on peut
- * update les attributs en place).
- *
  * @param mapState   L'état de la carte à mailler
- * @param material   Le matériau Three.js à utiliser (MeshBasic, MeshStandard, etc.)
- * @returns          { mesh, geometry } — le maillage + sa géométrie
+ * @returns          Un tableau de MeshGroup (geometry + texturePath)
  */
 export function buildParklandMesh(
   mapState: IMapState,
-  material?: THREE.Material,
-): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry } {
+): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // Palette Parkland par type de terrain (RGB 0-1)
-  const palette: Record<number, [number, number, number]> = {
-    [TileType.Rough]:        [0.227, 0.490, 0.227],
-    [TileType.Fairway]:      [0.306, 0.651, 0.306],
-    [TileType.PuttingGreen]: [0.180, 0.800, 0.251],
-    [TileType.SandBunker]:   [0.910, 0.835, 0.627],
-    [TileType.WaterShallow]: [0.200, 0.533, 0.800],
-    [TileType.WaterMiddle]:  [0.133, 0.467, 0.733],
-    [TileType.WaterDeep]:    [0.067, 0.400, 0.667],
-    [TileType.DeepRough]:    [0.176, 0.353, 0.118],
-    [TileType.GrassySand]:   [0.784, 0.722, 0.471],
-    [TileType.GrassBunker]:  [0.863, 0.784, 0.565],
-    [TileType.Tee]:          [0.361, 0.722, 0.361],
-    [TileType.Cliff]:        [0.533, 0.467, 0.400],
-    [TileType.Path]:         [0.784, 0.722, 0.596],
-    [TileType.Building]:     [0.600, 0.400, 0.267],
-    [TileType.Tree]:         [0.176, 0.353, 0.118],
-    [TileType.Flower]:       [0.800, 0.267, 0.533],
-  };
+  // ---- Grouper les tuiles par chemin de texture ----
+  // La clé '' représente les tuiles sans texture (vertex colors)
+  const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType }>();
+  const NO_TEXTURE = '';
 
-  // Chaque attribut contient exactement 6 vertices par tuile = 2 triangles
-  // Chaque vertex est OWNED par une seule tuile — PAS de partage entre tuiles
-  // adjacentes. Les 3 vertex d'un même triangle reçoivent TOUS la même couleur,
-  // garantissant des transitions nettes aux frontières.
-  const vertsPerTile = 6;
-  const totalVerts = width * height * vertsPerTile;
-
-  const positions = new Float32Array(totalVerts * 3);
-  const colors = new Float32Array(totalVerts * 3);
-  const normals = new Float32Array(totalVerts * 3);
-
-  // Construire chaque tuile individuellement avec ses 6 vertex dédiés
-  for (let ty = 0; ty < height; ty++) {
-    for (let tx = 0; tx < width; tx++) {
-      const tile = tiles[ty * width + tx];
-      const [hTL, hTR, hBR, hBL] = tile.elevation;
-
-      // Positions des 4 coins dans l'espace Three.js
-      const pTL = tileVertexPosition(tx,     ty,     hTL);
-      const pTR = tileVertexPosition(tx + 1, ty,     hTR);
-      const pBL = tileVertexPosition(tx,     ty + 1, hBL);
-      const pBR = tileVertexPosition(tx + 1, ty + 1, hBR);
-
-      // Couleur de cette tuile avec variation cosmétique (±6%)
-      const baseColor = palette[tile.type] ?? [0.227, 0.490, 0.227];
-      const v = tile.variation;
-      const bright = 1 + (v - 3) * 0.03;
-      const color: [number, number, number] = [
-        Math.min(1, baseColor[0] * bright),
-        Math.min(1, baseColor[1] * bright),
-        Math.min(1, baseColor[2] * bright),
-      ];
-
-      // Règle de la diagonale : choisir la diagonale minimisant
-      // la différence de hauteur entre les coins opposés.
-      const d1 = Math.abs(hTL - hBR); // TL↔BR
-      const d2 = Math.abs(hTR - hBL); // TR↔BL
-      const diagTLBR = d1 < d2;
-
-      // 6 vertex par tuile : 3 par triangle
-      let vi: number;
-      const setVertex = (x: number, y: number, z: number) => {
-        positions[vi * 3]     = x;
-        positions[vi * 3 + 1] = y;
-        positions[vi * 3 + 2] = z;
-        colors[vi * 3]     = color[0];
-        colors[vi * 3 + 1] = color[1];
-        colors[vi * 3 + 2] = color[2];
-        normals[vi * 3]     = 0;
-        normals[vi * 3 + 1] = 1;
-        normals[vi * 3 + 2] = 0;
-        vi++;
-      };
-
-      vi = (ty * width + tx) * vertsPerTile;
-
-      if (diagTLBR) {
-        // Diagonale TL↔BR
-        // Triangle 1 : TL → TR → BL
-        setVertex(pTL.x, pTL.y, pTL.z);
-        setVertex(pTR.x, pTR.y, pTR.z);
-        setVertex(pBL.x, pBL.y, pBL.z);
-        // Triangle 2 : TR → BR → BL
-        setVertex(pTR.x, pTR.y, pTR.z);
-        setVertex(pBR.x, pBR.y, pBR.z);
-        setVertex(pBL.x, pBL.y, pBL.z);
-      } else {
-        // Diagonale TR↔BL
-        // Triangle 1 : TL → TR → BR
-        setVertex(pTL.x, pTL.y, pTL.z);
-        setVertex(pTR.x, pTR.y, pTR.z);
-        setVertex(pBR.x, pBR.y, pBR.z);
-        // Triangle 2 : TL → BR → BL
-        setVertex(pTL.x, pTL.y, pTL.z);
-        setVertex(pBR.x, pBR.y, pBR.z);
-        setVertex(pBL.x, pBL.y, pBL.z);
-      }
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    const path = texturePathForTile(tile);
+    const key = path ?? NO_TEXTURE;
+    if (!groups.has(key)) {
+      groups.set(key, { tileIdx: [], path, type: tile.type });
     }
+    groups.get(key)!.tileIdx.push(i);
   }
 
-  // ---- Assemblage de la géométrie ----
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  geometry.computeVertexNormals();
+  // ---- Pour chaque groupe, construire un BufferGeometry ----
+  const results: MeshGroup[] = [];
 
-  // ---- Matériau par défaut ----
-  const mat = material ?? new THREE.MeshLambertMaterial({
-    vertexColors: true,
-    flatShading: true,
-    side: THREE.DoubleSide,
-  });
+  for (const [, group] of groups) {
+    const nTiles = group.tileIdx.length;
+    const vertsPerTile = 6;
+    const totalVerts = nTiles * vertsPerTile;
+    const hasTexture = group.path !== null;
 
-  const mesh = new THREE.Mesh(geometry, mat);
-  mesh.frustumCulled = true;
+    const positions = new Float32Array(totalVerts * 3);
+    const uvs = hasTexture ? new Float32Array(totalVerts * 2) : null;
+    const colors = hasTexture ? null : new Float32Array(totalVerts * 3);
+    const normals = new Float32Array(totalVerts * 3);
 
-  return { mesh, geometry };
+    let vi = 0; // vertex index global pour ce groupe
+    const setVertex = (x: number, y: number, z: number, u: number, vtx: number) => {
+      positions[vi * 3]     = x;
+      positions[vi * 3 + 1] = y;
+      positions[vi * 3 + 2] = z;
+      if (uvs) {
+        uvs[vi * 2]     = u;
+        uvs[vi * 2 + 1] = vtx;
+      }
+      normals[vi * 3]     = 0;
+      normals[vi * 3 + 1] = 1;
+      normals[vi * 3 + 2] = 0;
+      vi++;
+    };
+
+    // Couleur de fallback pour ce groupe (utilisée dans main.ts)
+    const firstTile = tiles[group.tileIdx[0]];
+    const baseColor = palette[firstTile.type] ?? [0.227, 0.490, 0.227];
+
+    for (const tileIdx of group.tileIdx) {
+      const tile = tiles[tileIdx];
+      const [hTL, hTR, hBR, hBL] = tile.elevation;
+
+      const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
+      const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
+      const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
+      const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
+
+      // Écriture de la couleur (vertex colors) si pas de texture
+      let cTL: [number, number, number] = baseColor;
+      let cTR: [number, number, number] = baseColor;
+      let cBR: [number, number, number] = baseColor;
+      let cBL: [number, number, number] = baseColor;
+      if (colors) {
+        const bright = 1 + (tile.variation - 3) * 0.03;
+        cTL = cTR = cBR = cBL = [
+          Math.min(1, baseColor[0] * bright),
+          Math.min(1, baseColor[1] * bright),
+          Math.min(1, baseColor[2] * bright),
+        ] as [number, number, number];
+      }
+
+      // Règle de la diagonale
+      const d1 = Math.abs(hTL - hBR);
+      const d2 = Math.abs(hTR - hBL);
+      const diagTLBR = d1 < d2;
+
+      // Fonction pour écrire un vertex avec UV + couleur
+      const pushVertex = (px: number, py: number, pz: number, u: number, v: number, c: [number, number, number]) => {
+        setVertex(px, py, pz, u, v);
+        if (colors) {
+          colors[(vi - 1) * 3]     = c[0];
+          colors[(vi - 1) * 3 + 1] = c[1];
+          colors[(vi - 1) * 3 + 2] = c[2];
+        }
+      };
+
+      // Sauvegarder vi avant de bosser les offsets
+      const baseVi = vi;
+
+      if (diagTLBR) {
+        // Tri 1: TL→TR→BL
+        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+        // Tri 2: TR→BR→BL
+        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      } else {
+        // Tri 1: TL→TR→BR
+        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        // Tri 2: TL→BR→BL
+        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      }
+
+      // Appliquer les couleurs aux vertex écrits si mode vertex-color
+      if (colors) {
+        const dst = [cTL, cTR, cBR, cBL];
+        // Les UV map TL→0,0, TR→1,0, BR→1,1, BL→0,1
+        // Les 6 vertex dans l'ordre : TL, TR, BL, TR, BR, BL ou TL, TR, BR, TL, BR, BL
+        // On applique la bonne couleur selon le coin
+        for (let k = 0; k < 6; k++) {
+          const idx = (baseVi + k) * 3;
+          // Déterminer quel coin ce vertex représente
+          // On peut le déduire de l'UV
+          const uk = k < 3 
+            ? (diagTLBR ? ([0,1,0][k]) : ([0,1,1][k]))
+            : (diagTLBR ? ([1,1,0][k-3]) : ([0,1,0][k-3]));
+          // This is getting complicated. Simpler: just pick cTL for all vertices
+          colors[idx]     = cTL[0];
+          colors[idx + 1] = cTL[1];
+          colors[idx + 2] = cTL[2];
+        }
+      }
+    }
+
+    // ---- Assemblage de la géométrie ----
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    if (uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+
+    results.push({
+      geometry,
+      texturePath: group.path,
+      fallbackColor: baseColor,
+    });
+  }
+
+  return results;
 }
