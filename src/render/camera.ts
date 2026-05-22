@@ -16,6 +16,24 @@
 import * as THREE from 'three';
 import { TILE_W, TILE_H, ELEVATION_SCALE } from '../core/types';
 
+// ================================================================
+// Camera2D — État de la caméra pour le rendu Canvas 2D
+// ================================================================
+
+export interface Camera2D {
+  offsetX: number;
+  offsetY: number;
+  zoom: number;
+}
+
+export function createCamera2D(): Camera2D {
+  return { offsetX: 0, offsetY: 0, zoom: 1 };
+}
+
+// ================================================================
+// Projection Dimétrique 2:1 (conservé pour les calculs de position)
+// ================================================================
+
 const AZIMUTH = Math.PI / 4;                   // 45° — axes diagonaux
 const ELEVATION = Math.atan(1 / Math.sqrt(2)); // ≈ 35.264° — dimétrique 2:1
 
