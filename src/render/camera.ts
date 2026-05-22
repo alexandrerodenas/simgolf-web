@@ -2,7 +2,7 @@
  * render/camera.ts — Caméra orthographique pour projection dimétrique 2:1
  *
  * SimGolf utilise une projection dimétrique (pas isométrique) :
- * rapport 2:1 (tuile 128×64 pixels), angle d'élévation = arctan(0.5) ≈ 26.565°.
+ * rapport 2:1 (tuile 128×64 pixels), angle d'élévation = arctan(1/√2) ≈ 35.264°.
  *
  * Transformation grille → écran du jeu original :
  *   screenX = (mapX - mapY) × 64
@@ -16,8 +16,8 @@
 import * as THREE from 'three';
 import { TILE_W, TILE_H, ELEVATION_SCALE } from '../core/types';
 
-const AZIMUTH = Math.PI / 4;         // 45° — axes diagonaux
-const ELEVATION = Math.atan(0.5);    // ≈ 26.565° — rapport 2:1
+const AZIMUTH = Math.PI / 4;                // 45° — axes diagonaux
+const ELEVATION = Math.atan(1 / Math.sqrt(2)); // ≈ 35.264° — projection dimétrique 2:1
 
 /**
  * Calcule le centre de la grille dans l'espace Three.js.

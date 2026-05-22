@@ -258,16 +258,7 @@ export function buildParklandMesh(
 ): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry } {
   const { width, height, tiles } = mapState;
 
-  // Chaque tuile = 2 triangles = 6 indices
-  const vertexCount = (width + 1) * (height + 1);
-  const indexCount = width * height * 6;
-
-  const positions = new Float32Array(vertexCount * 3);
-  const colors = new Float32Array(vertexCount * 3);
-  const normals = new Float32Array(vertexCount * 3);
-  const indices: number[] = [];
-
-  // Palette Parkland par type de terrain
+  // Palette Parkland par type de terrain (RGB 0-1)
   const palette: Record<number, [number, number, number]> = {
     [TileType.Rough]:        [0.227, 0.490, 0.227],
     [TileType.Fairway]:      [0.306, 0.651, 0.306],
@@ -287,134 +278,94 @@ export function buildParklandMesh(
     [TileType.Flower]:       [0.800, 0.267, 0.533],
   };
 
-  // ---- 1. Positions et couleurs des vertices ----
-  // On génère les vertices pour TOUS les points de la grille (width+1)×(height+1).
-  // Pour chaque tuile (x, y), les 4 coins sont aux indices :
-  //   TL = y * (w+1) + x
-  //   TR = y * (w+1) + (x+1)
-  //   BL = (y+1) * (w+1) + x
-  //   BR = (y+1) * (w+1) + (x+1)
+  // Chaque attribut contient exactement 6 vertices par tuile = 2 triangles
+  // Chaque vertex est OWNED par une seule tuile — PAS de partage entre tuiles
+  // adjacentes. Les 3 vertex d'un même triangle reçoivent TOUS la même couleur,
+  // garantissant des transitions nettes aux frontières.
+  const vertsPerTile = 6;
+  const totalVerts = width * height * vertsPerTile;
 
-  const sw = width + 1; // stride en X (nb vertices par ligne)
+  const positions = new Float32Array(totalVerts * 3);
+  const colors = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
 
-  // Initialiser les positions : pour chaque vertex de la grille,
-  // on prend l'élévation du coin correspondant de la tuile en haut/gauche.
-  // Les bords droit et bas sont extrapolés depuis les tuiles adjacentes.
-  for (let vy = 0; vy <= height; vy++) {
-    for (let vx = 0; vx <= width; vx++) {
-      const vi = vy * sw + vx;
-
-      // Trouver l'élévation pour ce vertex :
-      // Chaque vertex (vx, vy) est le coin TL de la tuile (vx, vy),
-      // mais aussi le coin d'autres tuiles. On prend l'elevation[0] (TL)
-      // de la tuile (vx, vy) si elle existe, sinon on utilise
-      // l'elevation de la tuile adjacente (vx-1, vy) pour le bord droit,
-      // ou (vx, vy-1) pour le bord bas, ou (vx-1, vy-1) pour le coin BR.
-      let h = 0;
-
-      if (vx < width && vy < height) {
-        // Coin TL de la tuile (vx, vy)
-        const tile = tiles[vy * width + vx];
-        h = tile.elevation[0];
-      } else if (vx >= width && vy < height) {
-        // Bord droit : on prend le coin TR de la dernière tuile sur cette ligne
-        const tile = tiles[vy * width + (width - 1)];
-        h = tile.elevation[1]; // TR
-      } else if (vx < width && vy >= height) {
-        // Bord bas : on prend le coin BL de la dernière tuile sur cette colonne
-        const tile = tiles[(height - 1) * width + vx];
-        h = tile.elevation[3]; // BL
-      } else {
-        // Coin BR global
-        const tile = tiles[(height - 1) * width + (width - 1)];
-        h = tile.elevation[2]; // BR
-      }
-
-      const pos = tileVertexPosition(vx, vy, h);
-      positions[vi * 3]     = pos.x;
-      positions[vi * 3 + 1] = pos.y;
-      positions[vi * 3 + 2] = pos.z;
-
-      // Couleur : on prend la couleur de la tuile dominante pour ce vertex
-      // (la tuile en haut/gauche de ce vertex)
-      let color: [number, number, number] = [0.227, 0.490, 0.227];
-      if (vx < width && vy < height) {
-        const tile = tiles[vy * width + vx];
-        color = palette[tile.type] ?? color;
-
-        // Variation : éclaircir/assombrir légèrement selon la variation
-        const v = tile.variation;
-        const bright = 1 + (v - 3) * 0.03; // ±6%
-        color = [
-          Math.min(1, color[0] * bright),
-          Math.min(1, color[1] * bright),
-          Math.min(1, color[2] * bright),
-        ] as [number, number, number];
-      } else {
-        // Bords : prendre la couleur de la tuile adjacente la plus proche
-        const adjX = Math.min(vx, width - 1);
-        const adjY = Math.min(vy, height - 1);
-        const tile = tiles[adjY * width + adjX];
-        color = palette[tile.type] ?? color;
-      }
-
-      colors[vi * 3]     = color[0];
-      colors[vi * 3 + 1] = color[1];
-      colors[vi * 3 + 2] = color[2];
-    }
-  }
-
-  // ---- 2. Indices des triangles ----
-  // Chaque tuile (tx, ty) produit 2 triangles :
-  //   Triangle 1 : TL → TR → BL (haut-gauche)
-  //   Triangle 2 : TR → BR → BL (bas-droite)
-  //
-  // Choix de la diagonale : on suit la règle du jeu original
-  // (REFERENCE_GUIDE.md §4.3) qui choisit la diagonale minimisant
-  // la différence de hauteur entre les coins.
+  // Construire chaque tuile individuellement avec ses 6 vertex dédiés
   for (let ty = 0; ty < height; ty++) {
     for (let tx = 0; tx < width; tx++) {
-      const tlIdx = ty * sw + tx;
-      const trIdx = ty * sw + (tx + 1);
-      const blIdx = (ty + 1) * sw + tx;
-      const brIdx = (ty + 1) * sw + (tx + 1);
-
       const tile = tiles[ty * width + tx];
       const [hTL, hTR, hBR, hBL] = tile.elevation;
 
-      // Règle de la diagonale : relier les 2 coins de plus petite différence
-      const d1 = Math.abs(hTL - hBR); // diagonale TL↔BR
-      const d2 = Math.abs(hTR - hBL); // diagonale TR↔BL
+      // Positions des 4 coins dans l'espace Three.js
+      const pTL = tileVertexPosition(tx,     ty,     hTL);
+      const pTR = tileVertexPosition(tx + 1, ty,     hTR);
+      const pBL = tileVertexPosition(tx,     ty + 1, hBL);
+      const pBR = tileVertexPosition(tx + 1, ty + 1, hBR);
 
-      if (d1 < d2) {
+      // Couleur de cette tuile avec variation cosmétique (±6%)
+      const baseColor = palette[tile.type] ?? [0.227, 0.490, 0.227];
+      const v = tile.variation;
+      const bright = 1 + (v - 3) * 0.03;
+      const color: [number, number, number] = [
+        Math.min(1, baseColor[0] * bright),
+        Math.min(1, baseColor[1] * bright),
+        Math.min(1, baseColor[2] * bright),
+      ];
+
+      // Règle de la diagonale : choisir la diagonale minimisant
+      // la différence de hauteur entre les coins opposés.
+      const d1 = Math.abs(hTL - hBR); // TL↔BR
+      const d2 = Math.abs(hTR - hBL); // TR↔BL
+      const diagTLBR = d1 < d2;
+
+      // 6 vertex par tuile : 3 par triangle
+      let vi: number;
+      const setVertex = (x: number, y: number, z: number) => {
+        positions[vi * 3]     = x;
+        positions[vi * 3 + 1] = y;
+        positions[vi * 3 + 2] = z;
+        colors[vi * 3]     = color[0];
+        colors[vi * 3 + 1] = color[1];
+        colors[vi * 3 + 2] = color[2];
+        normals[vi * 3]     = 0;
+        normals[vi * 3 + 1] = 1;
+        normals[vi * 3 + 2] = 0;
+        vi++;
+      };
+
+      vi = (ty * width + tx) * vertsPerTile;
+
+      if (diagTLBR) {
         // Diagonale TL↔BR
-        indices.push(tlIdx, trIdx, blIdx); // tri 1
-        indices.push(trIdx, brIdx, blIdx); // tri 2
+        // Triangle 1 : TL → TR → BL
+        setVertex(pTL.x, pTL.y, pTL.z);
+        setVertex(pTR.x, pTR.y, pTR.z);
+        setVertex(pBL.x, pBL.y, pBL.z);
+        // Triangle 2 : TR → BR → BL
+        setVertex(pTR.x, pTR.y, pTR.z);
+        setVertex(pBR.x, pBR.y, pBR.z);
+        setVertex(pBL.x, pBL.y, pBL.z);
       } else {
         // Diagonale TR↔BL
-        indices.push(tlIdx, trIdx, brIdx); // tri 1
-        indices.push(tlIdx, brIdx, blIdx); // tri 2
+        // Triangle 1 : TL → TR → BR
+        setVertex(pTL.x, pTL.y, pTL.z);
+        setVertex(pTR.x, pTR.y, pTR.z);
+        setVertex(pBR.x, pBR.y, pBR.z);
+        // Triangle 2 : TL → BR → BL
+        setVertex(pTL.x, pTL.y, pTL.z);
+        setVertex(pBR.x, pBR.y, pBR.z);
+        setVertex(pBL.x, pBL.y, pBL.z);
       }
     }
   }
 
-  // ---- 3. Normales ----
-  // Initialiser toutes les normales pointant vers le haut
-  for (let i = 0; i < vertexCount; i++) {
-    normals[i * 3]     = 0;
-    normals[i * 3 + 1] = 1;
-    normals[i * 3 + 2] = 0;
-  }
-
-  // ---- 4. Construction de la géométrie ----
+  // ---- Assemblage de la géométrie ----
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  geometry.setIndex(indices);
   geometry.computeVertexNormals();
 
-  // ---- 5. Matériau par défaut ----
+  // ---- Matériau par défaut ----
   const mat = material ?? new THREE.MeshLambertMaterial({
     vertexColors: true,
     flatShading: true,
