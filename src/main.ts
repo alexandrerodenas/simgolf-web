@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { generateParklandGrid, buildParklandMesh } from './world/terrain';
-import { createDimetricCamera, resizeCamera } from './render/camera';
+import { createDimetricCamera, resizeDimetricCamera } from './render/camera';
 
 // ---- 1. Scène ----
 const scene = new THREE.Scene();
@@ -49,7 +49,7 @@ document.body.appendChild(renderer.domElement);
 window.addEventListener('resize', () => {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  resizeCamera(camera, MAP_W, MAP_H, 1);
+  resizeDimetricCamera(camera, MAP_W, MAP_H, 1);
   renderer.setSize(w, h);
 });
 
