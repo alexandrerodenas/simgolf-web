@@ -25,6 +25,21 @@ export enum TileType {
   Building     = 13,
   Tree         = 14,
   Flower       = 15,
+  // Types supplémentaires (présents dans le jeu original, certains thèmes seulement)
+  Rock         = 16,
+  Marsh        = 17,
+  Overgrowth   = 18,
+  FirmFairway  = 19,
+  PotSandBunker= 20,
+  ZenSand      = 21,
+  TrickyGreen  = 22,
+  Bridge       = 23,
+  Ravine       = 24,
+  RetainingWall= 25,
+  Flowerbed    = 26,
+  Natural      = 27,
+  Vegetation   = 28,
+  Brush        = 29,
 }
 
 // ================================================================

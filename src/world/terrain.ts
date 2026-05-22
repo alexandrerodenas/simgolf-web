@@ -75,29 +75,45 @@ export function getGeometryType(e: [number, number, number, number]): string {
 
 /**
  * Familles de terrain — 2 tuiles de même famille ne produisent PAS
- * de bordure de transition (REFERENCE_GUIDE.md §3.6).
+ * de bordure de transition. Basé sur le typeInfo dans le jeu original
+ * (champ family à offset +0x04 dans chaque entrée typeInfo à 24 bytes).
  *
- * Layout d'auto-tiling :
- *   Les familles grass (Rough, DeepRough, Woods, Brush) sont de ID 0
- *   pour l'auto-tiling. Seamless entre elles.
+ * ID de famille (correspond au jeu original) :
+ *   0 = grass   — Rough, DeepRough, Woods, Brush, Rock, Marsh, etc.
+ *   1 = play    — Fairway, Tee, PuttingGreen, FirmFairway, TrickyGreen
+ *   2 = sand    — SandBunker, GrassySand, GrassBunker, PotSandBunker
+ *   3 = water   — WaterShallow, WaterMiddle, WaterDeep
+ *   4 = path    — Path, Bridge, Ravine
+ *   5 = building — Building, RetainingWall
+ *   6 = cliff   — Cliff
  */
 const TERRAIN_FAMILY_ID: Record<number, number> = {
   [TileType.Rough]:        0,  // grass
   [TileType.Tree]:         0,  // grass (Woods)
   [TileType.Flower]:       0,  // grass (Brush)
   [TileType.DeepRough]:    0,  // grass
+  [TileType.Rock]:         0,  // grass (ou famille roche dédiée)
+  [TileType.Marsh]:        0,  // grass
+  [TileType.Overgrowth]:   0,  // grass (UNIQUE : A-D border malgré famille grass)
   [TileType.Fairway]:      1,  // play
   [TileType.Tee]:          1,  // play
   [TileType.PuttingGreen]: 1,  // play
+  [TileType.FirmFairway]:  1,  // play
+  [TileType.TrickyGreen]:  1,  // play
   [TileType.SandBunker]:   2,  // sand
-  [TileType.GrassySand]:   2,  // sand
-  [TileType.GrassBunker]:  2,  // sand
+  [TileType.GrassySand]:   2,  // sand (transition sable→herbe)
+  [TileType.GrassBunker]:  2,  // sand (transition herbe→sable)
+  [TileType.PotSandBunker]:2,  // sand
+  [TileType.ZenSand]:      2,  // sand
   [TileType.WaterShallow]: 3,  // water
   [TileType.WaterMiddle]:  3,  // water
   [TileType.WaterDeep]:    3,  // water
   [TileType.Path]:         4,  // path
-  [TileType.Cliff]:        5,  // cliff
-  [TileType.Building]:     6,  // building
+  [TileType.Bridge]:       4,  // path
+  [TileType.Ravine]:       4,  // path
+  [TileType.Building]:     5,  // building
+  [TileType.RetainingWall]:5,  // building
+  [TileType.Cliff]:        6,  // cliff
 };
 
 /**
@@ -163,14 +179,68 @@ export function computeNeighborMask(
 
 /**
  * Types de terrain qui possèdent des textures de bordure (A-D).
- * Les grass types n'ont que A-E pour la géométrie, pas pour les bordures.
+ * Ces types génèrent des passes de rendu supplémentaires quand un voisin
+ * est de famille différente.
+ *
+ * Dans le jeu original, ce sont les types où renderMode=1 (bordure)
+ * dans la table typeInfo (offset +0x08 dans chaque entrée de 24 bytes).
+ *
+ * Remarque : GrassySand n'a A-D que dans certains thèmes (Links complet,
+ * Desert A-D, Tropical A-C, Parkland A seulement).
+ *
+ * Remarque : Overgrowth est le SEUL type grass avec des textures A-D
+ * directionnelles. Les autres types grass (Rough, Woods, etc.) utilisent
+ * les lettres A-E pour la géométrie d'élévation, PAS pour les bordures.
+ *
+ * Remarque : Ravine a ses propres textures A-D alors que Path et Bridge
+ * n'ont que A plat. Ravine dans le jeu original est un type de bordure
+ * autonome (renderMode=1).
  */
 const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
-  TileType.GrassBunker,
+  // Auto-borders : leurs A-D = textures de bordure
   TileType.WaterShallow,
   TileType.WaterMiddle,
   TileType.WaterDeep,
   TileType.Cliff,
+  TileType.GrassBunker,
+  TileType.GrassySand,      // ⚠️ A-D seulement dans Links/Desert/Tropical
+  TileType.Overgrowth,       // grass type MAIS avec A-D border
+  TileType.Ravine,           // path type avec A-D border
+  TileType.Flower,           // Brush (quand présent en A-D, ex: Links)
+]);
+
+/**
+ * borderOverride — Types qui utilisent les TEXTURES D'UN AUTRE TYPE
+ * comme bordures. Correspond au champ borderOverride (offset +0x0c)
+ * dans la table typeInfo du jeu original.
+ *
+ * Quand un type a un borderOverride, toutes ses passes de bordure
+ * utiliseront les textures du type spécifié (variation incluse).
+ *
+ * Exemple : SandBunker → GrassySand. Une tuile SandBunker adjacente
+ * à du Rough générera des passes avec les textures GrassySand A-D.
+ */
+const BORDER_OVERRIDE: Partial<Record<TileType, TileType>> = {
+  [TileType.SandBunker]:   TileType.GrassySand,    // borderOverride=8
+  [TileType.PotSandBunker]:TileType.GrassySand,    // borderOverride=8
+  [TileType.Fairway]:      TileType.GrassBunker,   // borderOverride=9
+  [TileType.FirmFairway]:  TileType.GrassBunker,   // borderOverride=9
+};
+
+/**
+ * Types qui ne sont PAS dans une famille grass MAIS n'ont pas de
+ * textures de bordure ni de borderOverride → ils font du seam.
+ * Utile pour les vérifications.
+ */
+const TYPES_SEAM_ONLY: Set<TileType> = new Set([
+  TileType.PuttingGreen,
+  TileType.Tee,
+  TileType.TrickyGreen,
+  TileType.Path,
+  TileType.Bridge,
+  TileType.Building,
+  TileType.RetainingWall,
+  TileType.ZenSand,
 ]);
 
 /**
@@ -208,39 +278,65 @@ export function computeRenderPasses(
   const geomSuffix = getGeometryType(tile.elevation);
 
   // ---- Pass 0 : Texture de base ----
-  // Pour grass : suffixe = géométrie d'élévation (A-E)
-  // Pour non-grass : suffixe = 'A' (texture de base standard)
-  const baseSuffix = (family === 0 /* grass */) ? geomSuffix : 'A';
+  // Pour grass family : suffixe = géométrie d'élévation (A-E)
+  // Pour borderOverride types : 'A' (la texture de base du type original)
+  // Pour border types : 'A' (la texture de base standard)
+  const baseSuffix = (family === 0 && !BORDER_OVERRIDE[tile.type]) ? geomSuffix : 'A';
   passes.push({
     type: tile.type,
     variation: tile.variation,
     suffix: baseSuffix,
   });
 
-  // ---- Pass 1..3 : Bordures ----
-  // Uniquement si la tuile n'est pas de famille grass ET a des textures
-  // de bordure disponibles (A-D dans sa palette).
-  if (family !== 0 && TYPES_WITH_BORDER_TEXTURES.has(tile.type)) {
+  // ---- Détection des bordures ----
+  // Check borderOverride d'abord : certains types utilisent les textures
+  // d'un autre type pour leurs bordures (ex: SandBunker → GrassySand)
+  if (BORDER_OVERRIDE[tile.type] !== undefined) {
+    // Types avec borderOverride (SandBunker, Fairway, etc.)
+    // Génèrent des bordures si un voisin est de famille différente
+    const overrideType = BORDER_OVERRIDE[tile.type]!;
     const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
 
-    // Directions dans l'ordre N > E > S > W
     const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },  // N
-      { bit: 2, suffix: 'B' },  // E
-      { bit: 4, suffix: 'C' },  // S
-      { bit: 8, suffix: 'D' },  // W
+      { bit: 1, suffix: 'A' },
+      { bit: 2, suffix: 'B' },
+      { bit: 4, suffix: 'C' },
+      { bit: 8, suffix: 'D' },
     ];
 
     for (const dir of directions) {
       if (mask & dir.bit) {
         passes.push({
-          type: tile.type,
+          type: overrideType,    // ← utilise le type override pour la texture
+          variation: tile.variation,
+          suffix: dir.suffix,
+        });
+      }
+    }
+  } else if (TYPES_WITH_BORDER_TEXTURES.has(tile.type)) {
+    // Types auto-bordure : leurs propres A-D = bordures
+    // Exceptions : Overgrowth (grass family) a ses propres A-D border
+    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+
+    const directions: { bit: number; suffix: string }[] = [
+      { bit: 1, suffix: 'A' },
+      { bit: 2, suffix: 'B' },
+      { bit: 4, suffix: 'C' },
+      { bit: 8, suffix: 'D' },
+    ];
+
+    for (const dir of directions) {
+      if (mask & dir.bit) {
+        passes.push({
+          type: tile.type,       // ← utilise SA PROPRE texture
           variation: tile.variation,
           suffix: dir.suffix,
         });
       }
     }
   }
+  // Note : les types restants (grass family, play sans bordure, etc.)
+  // n'ont qu'une seule passe (la texture de base) — ils font du seam.
 
   return passes;
 }
