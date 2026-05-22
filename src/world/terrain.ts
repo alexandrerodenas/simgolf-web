@@ -113,6 +113,54 @@ export function computeEdgeMask(
   return mask;
 }
 
+/**
+ * Convertit un masque de voisinage 4 bits en numéro de variation (1-9).
+ *
+ * Convention de nommage des assets SimGolf (REFERENCE_GUIDE.md §5.5) :
+ *   0001 = central (aucun voisin de famille différente)
+ *   0002 = isolé (4 voisins de familles différentes)
+ *   0003 = 1 bord exposé
+ *   0004 = 2 bords adjacents exposés
+ *   0005 = 2 bords opposés ou 3 bords exposés
+ *   0006+ = directions spécifiques (pour les types avec 9 variations)
+ *
+ * @param mask   Masque 4 bits (N=1, E=2, S=4, W=8)
+ * @param maxVar Nombre max de variations pour ce type (5 ou 9)
+ */
+export function edgeMaskToVariation(mask: number, maxVar: number): number {
+  if (mask === 0) return 1;                 // central
+  if (mask === 15) return 2;                // isolé
+
+  const bits = [1, 2, 4, 8];
+  const count = bits.filter(b => (b & mask) !== 0).length;
+
+  if (maxVar >= 9 && count === 1) {
+    // 1 bord exposé → variation 3-6 selon la direction (N/E/S/W)
+    const dirIdx = bits.indexOf(mask); // 0=N, 1=E, 2=S, 3=W
+    return 3 + (dirIdx >= 0 ? dirIdx : 0);
+  }
+
+  if (count === 1) return 3;                // 1 bord (5 var)
+  if (count === 2) return maxVar >= 9 ? 7 : 4;  // 2 bords
+  return maxVar >= 9 ? 9 : 5;               // 3 bords
+}
+
+/**
+ * Nombre max de variations disponibles pour un type de tuile (par géométrie).
+ */
+export function maxVariationForType(type: TileType): number {
+  switch (type) {
+    case TileType.Rough:
+    case TileType.DeepRough:
+      return 5;
+    case TileType.Cliff:
+    case TileType.Tree:
+      return 9;
+    default:
+      return 1; // Fairway, Green, Sand, Water — un seul fichier
+  }
+}
+
 // ================================================================
 // 1. Bruit de valeur (value noise avec interpolation cosinus)
 // ================================================================
@@ -351,11 +399,18 @@ export function texturePathForTile(
   width?: number,
   height?: number,
 ): string | null {
-  const v = tile.variation;
   const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
 
+  // Variation basée sur le masque de voisinage (auto-tiling)
+  let edgeVar = 1;
+  if (tiles && width && height) {
+    const mask = computeEdgeMask(tiles, width, height, tile.x, tile.y);
+    const maxVar = maxVariationForType(tile.type);
+    edgeVar = edgeMaskToVariation(mask, maxVar);
+  }
+
   // Padding variation sur 4 chiffres
-  const var4 = String(Math.min(v, 9)).padStart(4, '0');
+  const var4 = String(edgeVar).padStart(4, '0');
 
   switch (tile.type) {
     case TileType.Rough:
