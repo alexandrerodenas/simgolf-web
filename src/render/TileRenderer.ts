@@ -166,12 +166,17 @@ export function renderMap(
               let dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
               let dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
 
-              // Les corners (texture 0004 et 0003, 1 quadrant) : offset de 6 unités
-              // pour NE, SE et SW. NW (nord) est exclu.
-              if ((pass.variation === 3 || pass.variation === 2) && quads.length === 1) {
+              // Arrondis (texture 0004, 1 quadrant) : offset latéraux
+              if (pass.variation === 3 && quads.length === 1) {
                 if (q === 1) { dy -= BORDER_STRIP; }  // NE → haut
                 if (q === 2) { dx -= BORDER_STRIP; }  // SW → gauche
-                if (q === 3) { dy += BORDER_STRIP; }  // SE → bas
+              }
+              // Diagonales isolées (texture 0003, 1 quadrant) : inverse des arrondis
+              if (pass.variation === 2 && quads.length === 1) {
+                if (q === 1) { dy += BORDER_STRIP; }  // NE → bas (inverse)
+                if (q === 2) { dx += BORDER_STRIP; }  // SW → droite (inverse)
+                if (q === 3) { dy -= BORDER_STRIP; }  // SE → haut (inverse)
+                // q === 0 (NW) exclu
               }
 
               ctx.setTransform(
