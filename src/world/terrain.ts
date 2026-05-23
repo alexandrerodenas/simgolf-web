@@ -127,31 +127,12 @@ export function getTerrainFamily(type: TileType): number {
 /**
  * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
  *
- * Logique asymétrique (discrimination des types) :
- *   - Grass family (Rough, DeepRough, Woods, Brush) :
- *     ne réagit QUE face à du Play (Fairway, Green).
- *     Les grass entre eux → Seam (pas de bordure).
- *   - Play family (Fairway, Green) :
- *     réagit dès qu'elle rencontre du Grass.
- *   - Autres familles (Sand, Water, Cliff, Path, Building) :
- *     règle générale : familles différentes → bordure.
+ * 👉 Deux types différents → bordure, quelque soit la famille.
+ *    Overgrowth est le seul type grass qui a ses propres textures A-D,
+ *    mais le déclenchement est le même : type différent = bordure.
  */
 function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
-  const curFamily = getTerrainFamily(currentType);
-  const neiFamily = getTerrainFamily(neighborType);
-
-  // Grass family : ne réagit QUE face au Play (Fairway/Green)
-  if (curFamily === 0) {
-    return neiFamily === 1;
-  }
-
-  // Play family : réagit dès qu'elle rencontre du Grass
-  if (curFamily === 1) {
-    return neiFamily === 0;
-  }
-
-  // Autres familles : règle générale
-  return curFamily !== neiFamily;
+  return currentType !== neighborType;
 }
 
 /**
