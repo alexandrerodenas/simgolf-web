@@ -211,20 +211,19 @@ const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
 
 /**
  * borderOverride — Types qui utilisent les TEXTURES D'UN AUTRE TYPE
- * comme bordures. Correspond au champ borderOverride (offset +0x0c)
- * dans la table typeInfo du jeu original.
+ * comme textures de quadrant pour leurs bordures.
+ * Correspond au champ borderOverride (offset +0x0c) dans la table
+ * typeInfo du jeu original.
  *
- * Quand un type a un borderOverride, toutes ses passes de bordure
- * utiliseront les textures du type spécifié (variation incluse).
- *
- * Exemple : SandBunker → GrassySand. Une tuile SandBunker adjacente
- * à du Rough générera des passes avec les textures GrassySand A-D.
+ * CORRIGÉ d'après l'analyse Ghidra (REFERENCE_GUIDE.md §5.8) :
+ *   Fairway & FirmFairway → GrassySand (transition VERTE fairway→rough)
+ *   SandBunker & PotSandBunker → GrassBunker (transition BRUNE sable→herbe)
  */
 const BORDER_OVERRIDE: Partial<Record<TileType, TileType>> = {
-  [TileType.SandBunker]:   TileType.GrassySand,    // borderOverride=8
-  [TileType.PotSandBunker]:TileType.GrassySand,    // borderOverride=8
-  [TileType.Fairway]:      TileType.GrassBunker,   // borderOverride=9
-  [TileType.FirmFairway]:  TileType.GrassBunker,   // borderOverride=9
+  [TileType.SandBunker]:   TileType.GrassBunker,   // brun : sable → herbe
+  [TileType.PotSandBunker]:TileType.GrassBunker,   // brun : sable → herbe
+  [TileType.Fairway]:      TileType.GrassySand,    // vert  : fairway → rough
+  [TileType.FirmFairway]:  TileType.GrassySand,    // vert  : fairway → rough
 };
 
 /**
@@ -257,15 +256,73 @@ function maskBitToBorderSuffix(bit: number): string {
   }
 }
 
+// ================================================================
+// Sub-Tiling par Quadrants — Subdivision du diamant en 4 régions
+//
+// Chaque tuile (64×64 texels) est divisée en 4 quadrants 32×32 :
+//   0 = NW = Top-Left corner du diamant (nord-ouest)
+//   1 = NE = Top-Right corner (nord-est)
+//   2 = SW = Bottom-Left (sud-ouest)
+//   3 = SE = Bottom-Right (sud-est)
+//
+// Chaque quadrant est rendu comme un sous-diamant de 2 triangles
+// dans le maillage 3D, pour un total de 8 triangles par tuile.
+//
+// La sélection du type de texture par quadrant dépend du neighborMask :
+//   N(1) → NW, NE   |   E(2) → NE, SE
+//   S(4) → SW, SE   |   W(8) → NW, SW
+//
+// REFERENCE_GUIDE.md §5.9 (Sub-Tiling)
+// ================================================================
+
 /**
- * Calcule les renderPasses pour une tuile donnée en fonction de
- * ses voisins et de son type de terrain.
+ * Retourne les 4 types de terrain pour chaque quadrant d'une tuile
+ * en fonction de son masque de voisinage.
+ *
+ * @param mask    Masque de voisinage (bits N=1, E=2, S=4, W=8)
+ * @param tileType Type de base de la tuile
+ * @returns        [NW, NE, SW, SE] — type par quadrant
+ */
+export function computeQuadrants(
+  mask: number,
+  tileType: TileType,
+): [TileType, TileType, TileType, TileType] {
+  // Types sans borderOverride : les 4 quadrants conservent le type de base
+  const borderType = BORDER_OVERRIDE[tileType];
+  if (borderType === undefined) {
+    return [tileType, tileType, tileType, tileType];
+  }
+
+  // Types avec borderOverride : les quadrants affectés par le mask
+  // utilisent le type override (ex: Fairway → GrassySand)
+  const q: [TileType, TileType, TileType, TileType] =
+    [tileType, tileType, tileType, tileType];
+
+  // N(1) → NW(0), NE(1)
+  if (mask & 1) { q[0] = borderType; q[1] = borderType; }
+  // E(2) → NE(1), SE(3)
+  if (mask & 2) { q[1] = borderType; q[3] = borderType; }
+  // S(4) → SW(2), SE(3)
+  if (mask & 4) { q[2] = borderType; q[3] = borderType; }
+  // W(8) → NW(0), SW(2)
+  if (mask & 8) { q[0] = borderType; q[2] = borderType; }
+
+  return q;
+}
+
+/**
+ * Genère les 4 passes de rendu (une par quadrant) pour une tuile.
+ *
+ * Chaque quadrant reçoit son propre type de texture (base ou border override),
+ * une variation cosmétique, et un suffixe géométrique.
+ *
+ * Le rendu 3D convertira chaque passe en 2 triangles = 8 triangles par tuile.
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
  * @param w      Largeur de la grille
  * @param h      Hauteur de la grille
- * @returns      Tableau de renderPasses (1 à 4 passes)
+ * @returns      Tableau de 4 renderPasses (une par quadrant)
  */
 export function computeRenderPasses(
   tile: ITile,
@@ -273,70 +330,26 @@ export function computeRenderPasses(
   w: number,
   h: number,
 ): IRenderPass[] {
-  const passes: IRenderPass[] = [];
-  const family = getTerrainFamily(tile.type);
+  const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+  const quadrants = computeQuadrants(mask, tile.type);
   const geomSuffix = getGeometryType(tile.elevation);
 
-  // ---- Pass 0 : Texture de base ----
-  // Pour grass family : suffixe = géométrie d'élévation (A-E)
-  // Pour borderOverride types : 'A' (la texture de base du type original)
-  // Pour border types : 'A' (la texture de base standard)
-  const baseSuffix = (family === 0 && !BORDER_OVERRIDE[tile.type]) ? geomSuffix : 'A';
-  passes.push({
-    type: tile.type,
-    variation: tile.variation,
-    suffix: baseSuffix,
-  });
+  const passes: IRenderPass[] = [];
 
-  // ---- Détection des bordures ----
-  // Check borderOverride d'abord : certains types utilisent les textures
-  // d'un autre type pour leurs bordures (ex: SandBunker → GrassySand)
-  if (BORDER_OVERRIDE[tile.type] !== undefined) {
-    // Types avec borderOverride (SandBunker, Fairway, etc.)
-    // Génèrent des bordures si un voisin est de famille différente
-    const overrideType = BORDER_OVERRIDE[tile.type]!;
-    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+  for (let q = 0; q < 4; q++) {
+    const qType = quadrants[q];
+    const qFamily = getTerrainFamily(qType);
 
-    const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },
-      { bit: 2, suffix: 'B' },
-      { bit: 4, suffix: 'C' },
-      { bit: 8, suffix: 'D' },
-    ];
+    // Suffixe : A-E pour grass family, 'A' pour les autres
+    const suffix = qFamily === 0 ? geomSuffix : 'A';
 
-    for (const dir of directions) {
-      if (mask & dir.bit) {
-        passes.push({
-          type: overrideType,    // ← utilise le type override pour la texture
-          variation: tile.variation,
-          suffix: dir.suffix,
-        });
-      }
-    }
-  } else if (TYPES_WITH_BORDER_TEXTURES.has(tile.type)) {
-    // Types auto-bordure : leurs propres A-D = bordures
-    // Exceptions : Overgrowth (grass family) a ses propres A-D border
-    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-
-    const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },
-      { bit: 2, suffix: 'B' },
-      { bit: 4, suffix: 'C' },
-      { bit: 8, suffix: 'D' },
-    ];
-
-    for (const dir of directions) {
-      if (mask & dir.bit) {
-        passes.push({
-          type: tile.type,       // ← utilise SA PROPRE texture
-          variation: tile.variation,
-          suffix: dir.suffix,
-        });
-      }
-    }
+    passes.push({
+      type: qType,
+      variation: tile.variation,
+      suffix,
+      quadrant: q as 0 | 1 | 2 | 3,
+    });
   }
-  // Note : les types restants (grass family, play sans bordure, etc.)
-  // n'ont qu'une seule passe (la texture de base) — ils font du seam.
 
   return passes;
 }
@@ -904,13 +917,32 @@ const palette: Record<number, [number, number, number]> = {
 };
 
 /**
+ * Entrée de groupe de maillage : une paire (tuile, quadrant).
+ */
+interface GroupEntry {
+  tileIdx: number;
+  quadrant: number; // 0=NW, 1=NE, 2=SW, 3=SE
+  /** Type de terrain pour la couleur de fallback */
+  type: TileType;
+}
+
+/**
  * Construit un ou plusieurs BufferGeometry à partir de l'état de la carte.
  *
  * Les tuiles sont groupées par texture (même TileType + variation + suffix).
  * Chaque groupe produit un BufferGeometry séparé avec :
  *   - Positions 3D calculées par tileVertexPosition()
- *   - Coordonnées UV (si texture) ou vertex colors (si pas de texture)
+ *   - Coordonnées UV mappées par quadrant (chaque quadrant = 32×32 sous-région
+ *     de la texture 64×64, produisant 2 triangles = 6 vertices)
  *   - Normales pour l'éclairage
+ *
+ * Sub-Tiling : chaque tuile est découpée en 4 quadrants (NW, NE, SW, SE).
+ * Chaque quadrant = 2 triangles → 6 verts → 24 verts par tuile.
+ *
+ * 9 positions 3D sont calculées par tuile :
+ *   TL, TR, BR, BL (4 coins du diamant)
+ *   TC, RC, BC, LC (4 milieux d'arêtes)
+ *   CC (centre)
  *
  * @param mapState   L'état de la carte à mailler
  * @returns          Un tableau de MeshGroup (geometry + texturePath)
@@ -920,22 +952,28 @@ export function buildParklandMesh(
 ): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ---- Grouper les tuiles par texture (multi-pass) ----
-  // Chaque renderPass génère un groupe de maillage séparé
-  const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType }>();
+  // ---- Grouper (tuile, quadrant) par texture ----
+  // Chaque renderPass génère un groupe avec (tileIdx, quadrant)
+  const groups = new Map<string, { entries: GroupEntry[]; path: string | null }>();
   const NO_TEXTURE = '';
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
-    const passes = tile.renderPasses.length > 0 ? tile.renderPasses : [{ type: tile.type, variation: tile.variation, suffix: 'A' }];
+    const passes = tile.renderPasses.length > 0
+      ? tile.renderPasses
+      : [{ type: tile.type, variation: tile.variation, suffix: 'A' } as IRenderPass];
 
     for (const pass of passes) {
       const path = texturePathForPass(pass);
       const key = path ?? NO_TEXTURE;
       if (!groups.has(key)) {
-        groups.set(key, { tileIdx: [], path, type: pass.type });
+        groups.set(key, { entries: [], path });
       }
-      groups.get(key)!.tileIdx.push(i);
+      groups.get(key)!.entries.push({
+        tileIdx: i,
+        quadrant: pass.quadrant ?? 0,
+        type: pass.type,
+      });
     }
   }
 
@@ -943,9 +981,10 @@ export function buildParklandMesh(
   const results: MeshGroup[] = [];
 
   for (const [, group] of groups) {
-    const nTiles = group.tileIdx.length;
-    const vertsPerTile = 6;
-    const totalVerts = nTiles * vertsPerTile;
+    const nEntries = group.entries.length;
+    // Chaque entrée = 1 quadrant × 2 triangles × 3 verts = 6 verts
+    const vertsPerEntry = 6;
+    const totalVerts = nEntries * vertsPerEntry;
     const hasTexture = group.path !== null;
 
     const positions = new Float32Array(totalVerts * 3);
@@ -954,13 +993,13 @@ export function buildParklandMesh(
     const normals = new Float32Array(totalVerts * 3);
 
     let vi = 0; // vertex index global pour ce groupe
-    const setVertex = (x: number, y: number, z: number, u: number, vtx: number) => {
+    const setVertex = (x: number, y: number, z: number, u: number, v: number) => {
       positions[vi * 3]     = x;
       positions[vi * 3 + 1] = y;
       positions[vi * 3 + 2] = z;
       if (uvs) {
         uvs[vi * 2]     = u;
-        uvs[vi * 2 + 1] = vtx;
+        uvs[vi * 2 + 1] = v;
       }
       normals[vi * 3]     = 0;
       normals[vi * 3 + 1] = 1;
@@ -969,48 +1008,107 @@ export function buildParklandMesh(
     };
 
     // Couleur de fallback pour ce groupe
-    const firstTile = tiles[group.tileIdx[0]];
-    const baseColor = palette[firstTile.type] ?? [0.227, 0.490, 0.227];
+    const firstEntry = group.entries[0];
+    const baseColor = palette[firstEntry.type] ?? [0.227, 0.490, 0.227];
+    const c: [number, number, number] = baseColor;
 
-    for (const tileIdx of group.tileIdx) {
-      const tile = tiles[tileIdx];
+    // Tableau des UV des sommets de sous-diamant, par quadrant
+    // Chaque quadrant a 4 sommets : [corner1_edge, midpoint, corner2_edge, center]
+    // qui produisent 2 triangles : T1(c1, mid, center), T2(mid, c2, center)
+    type UV4 = [number, number]; // [u, v]
+    const QUAD_UV: Record<number, { c1: UV4; mid: UV4; c2: UV4; cc: UV4 }> = {
+      0: { // NW
+        c1:  [0.5,   0.0  ],  // TL
+        mid: [0.25,  0.25 ],  // LC
+        c2:  [0.0,   0.5  ],  // BL
+        cc:  [0.5,   0.5  ],  // CC
+      },
+      1: { // NE
+        c1:  [0.5,   0.0  ],  // TL
+        mid: [0.75,  0.25 ],  // TC
+        c2:  [1.0,   0.5  ],  // TR
+        cc:  [0.5,   0.5  ],  // CC
+      },
+      2: { // SW
+        c1:  [0.0,   0.5  ],  // BL
+        mid: [0.25,  0.75 ],  // BC
+        c2:  [0.5,   1.0  ],  // BR
+        cc:  [0.5,   0.5  ],  // CC
+      },
+      3: { // SE
+        c1:  [1.0,   0.5  ],  // TR
+        mid: [0.75,  0.75 ],  // RC
+        c2:  [0.5,   1.0  ],  // BR
+        cc:  [0.5,   0.5  ],  // CC
+      },
+    };
+
+    for (const entry of group.entries) {
+      const tile = tiles[entry.tileIdx];
       const [hTL, hTR, hBR, hBL] = tile.elevation;
+      const q = entry.quadrant;
 
-      const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
-      const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
-      const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
-      const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
+      // 5 positions 3D uniques pour ce sous-diamant
+      const pTL  = tileVertexPosition(tile.x,     tile.y,     hTL);
+      const pTR  = tileVertexPosition(tile.x + 1, tile.y,     hTR);
+      const pBL  = tileVertexPosition(tile.x,     tile.y + 1, hBL);
+      const pBR  = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
 
-      // Couleur de fallback
-      const c: [number, number, number] = baseColor;
+      // Edge midpoints & center
+      const TC  = tileVertexPosition(tile.x + 0.5, tile.y,     (hTL + hTR) / 2);
+      const RC  = tileVertexPosition(tile.x + 1,   tile.y + 0.5, (hTR + hBR) / 2);
+      const BC  = tileVertexPosition(tile.x + 0.5, tile.y + 1,   (hBL + hBR) / 2);
+      const LC  = tileVertexPosition(tile.x,       tile.y + 0.5, (hTL + hBL) / 2);
+      const CC  = tileVertexPosition(tile.x + 0.5, tile.y + 0.5,
+        (hTL + hTR + hBR + hBL) / 4);
 
-      // Règle de la diagonale
-      const d1 = Math.abs(hTL - hBR);
-      const d2 = Math.abs(hTR - hBL);
-      const diagTLBR = d1 < d2;
+      // 3D positions pour ce quadrant : {c1, mid, c2, cc}
+      const POS: Record<string, { x: number; y: number; z: number }> = {
+        TL: pTL, TR: pTR, BR: pBR, BL: pBL, TC, RC, BC, LC, CC,
+      };
 
-      const baseVi = vi;
+      const qIdx = q < 0 || q > 3 ? 0 : q;
+      const uv = QUAD_UV[qIdx];
+      const p = (name: string) => POS[name as keyof typeof POS];
 
-      if (diagTLBR) {
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-      } else {
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-      }
+      // Mapper chaque sommet du sous-diamant vers sa position 3D
+      // selon le quadrant
+      interface QVertex { pos: string; uv: [number, number] }
+
+      // Quadrant → [c1, mid, c2, center] → les 4 sommets du sous-diamant
+      const Q_NAMES: Record<number, { c1: string; mid: string; c2: string; cc: string }> = {
+        0: { c1: 'TL', mid: 'LC', c2: 'BL', cc: 'CC' },
+        1: { c1: 'TL', mid: 'TC', c2: 'TR', cc: 'CC' },
+        2: { c1: 'BL', mid: 'BC', c2: 'BR', cc: 'CC' },
+        3: { c1: 'TR', mid: 'RC', c2: 'BR', cc: 'CC' },
+      };
+
+      const names = Q_NAMES[qIdx];
+
+      // Triangle 1 : c1 → mid → cc
+      const c1  = p(names.c1);
+      const mid = p(names.mid);
+      const cc  = p(names.cc);
+      const c2  = p(names.c2);
+
+      const uv1 = QUAD_UV[qIdx].c1;
+      const uvMid = QUAD_UV[qIdx].mid;
+      const uvCC = QUAD_UV[qIdx].cc;
+      const uv2 = QUAD_UV[qIdx].c2;
+
+      setVertex(c1.x, c1.y, c1.z, uv1[0], uv1[1]);
+      setVertex(mid.x, mid.y, mid.z, uvMid[0], uvMid[1]);
+      setVertex(cc.x, cc.y, cc.z, uvCC[0], uvCC[1]);
+
+      // Triangle 2 : mid → c2 → cc
+      setVertex(mid.x, mid.y, mid.z, uvMid[0], uvMid[1]);
+      setVertex(c2.x, c2.y, c2.z, uv2[0], uv2[1]);
+      setVertex(cc.x, cc.y, cc.z, uvCC[0], uvCC[1]);
 
       // Couleurs vertex si mode vertex-color
       if (colors) {
         for (let k = 0; k < 6; k++) {
-          const idx = (baseVi + k) * 3;
+          const idx = (vi - 6 + k) * 3;
           colors[idx]     = c[0];
           colors[idx + 1] = c[1];
           colors[idx + 2] = c[2];

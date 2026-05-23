@@ -74,6 +74,15 @@ export interface IRenderPass {
    *   - Non-grass : 'A' = base, 'B'|'C'|'D' = bordure E/S/W
    */
   suffix: string;
+  /**
+   * Sub-tiling quadrant pour le rendu 8-triangles :
+   *   0 = NW (Top-Left du diamant, coin nord)
+   *   1 = NE (Top-Right, coin est)
+   *   2 = SW (Bottom-Left, coin ouest)
+   *   3 = SE (Bottom-Right, coin sud)
+   *   undefined = tuile entière (backward compat)
+   */
+  quadrant?: number;
 }
 
 // ================================================================
