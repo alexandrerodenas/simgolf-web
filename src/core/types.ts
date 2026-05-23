@@ -87,6 +87,14 @@ export interface IRenderPass {
    * Ex: [0,1] = les 2 quadrants du haut (bordure Nord)
    */
   quadrants?: number[];
+
+  /**
+   * Pour les bordures fines (texture 0002) : direction de la bande
+   * de pixels à extraire sur l'arête correspondante, au lieu du
+   * quadrant entier. Épaisseur définie par BORDER_STRIP dans
+   * TileRenderer.
+   */
+  stripEdge?: 'N' | 'E' | 'S' | 'W';
 }
 
 // ================================================================
