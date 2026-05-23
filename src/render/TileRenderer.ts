@@ -168,6 +168,7 @@ export function renderMap(
 
               // Angles arrondis (texture 0004, 1 quadrant) : offset latéraux
               if (pass.variation === 3 && quads.length === 1) {
+                if (q === 0) { dy -= BORDER_STRIP; }  // NW → haut
                 if (q === 1) { dy -= BORDER_STRIP; }  // NE → haut
                 if (q === 2) { dx -= BORDER_STRIP; }  // SW → gauche
               }
