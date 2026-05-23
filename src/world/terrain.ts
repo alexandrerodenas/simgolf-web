@@ -319,7 +319,7 @@ export function computeRenderPasses(
   // ---- Pass 0 : Fond uni 0001 (texture entière) ----
   passes.push({
     type: tile.type,
-    variation: 1,        // TOUJOURS 0001
+    variation: 0,        // fichier 0001 (0-indexed → +1 dans texturePathForPass)
     suffix: baseSuffix,
     subType: tile.subType,
     // quadrants omis = texture entière
@@ -333,7 +333,7 @@ export function computeRenderPasses(
   if (mask === 0b1111) {
     passes.push({
       type: tile.type,
-      variation: 5,        // 0005 = îlot
+      variation: 4,        // fichier 0005 = îlot (0-indexed)
       suffix: baseSuffix,
       subType: tile.subType,
     });
@@ -346,18 +346,18 @@ export function computeRenderPasses(
 
   // Overlays de bordure droite (texture 0002, 2 quadrants par direction)
   const edgeOverlays: OverlayDef[] = [
-    { bits: 1, texVar: 2, quads: [0, 1] },  // N → haut
-    { bits: 2, texVar: 2, quads: [1, 3] },  // E → droite
-    { bits: 4, texVar: 2, quads: [2, 3] },  // S → bas
-    { bits: 8, texVar: 2, quads: [0, 2] },  // W → gauche
+    { bits: 1, texVar: 1, quads: [0, 1] },  // fichier 0002, N → haut
+    { bits: 2, texVar: 1, quads: [1, 3] },  // fichier 0002, E → droite
+    { bits: 4, texVar: 1, quads: [2, 3] },  // fichier 0002, S → bas
+    { bits: 8, texVar: 1, quads: [0, 2] },  // fichier 0002, W → gauche
   ];
 
   // Overlays d'angle arrondi (texture 0004, 1 quadrant par coin)
   const cornerOverlays: OverlayDef[] = [
-    { bits: 1 | 2, texVar: 4, quads: [1] },  // N+E → NE
-    { bits: 2 | 4, texVar: 4, quads: [3] },  // E+S → SE
-    { bits: 4 | 8, texVar: 4, quads: [2] },  // S+W → SW
-    { bits: 8 | 1, texVar: 4, quads: [0] },  // W+N → NW
+    { bits: 1 | 2, texVar: 3, quads: [1] },  // fichier 0004, N+E → NE
+    { bits: 2 | 4, texVar: 3, quads: [3] },  // fichier 0004, E+S → SE
+    { bits: 4 | 8, texVar: 3, quads: [2] },  // fichier 0004, S+W → SW
+    { bits: 8 | 1, texVar: 3, quads: [0] },  // fichier 0004, W+N → NW
   ];
 
   // Ajoute les overlays de bordure droite
