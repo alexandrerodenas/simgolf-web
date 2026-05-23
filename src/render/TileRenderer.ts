@@ -46,32 +46,36 @@ function stripRects(
 
   switch (edge) {
     case 'N':
-      // Bande haute : garde les s premiers pixels en hauteur, à partir du haut
+      // Bande haute : extraite du haut de la texture, placée AU-DESSUS de la tuile (dy = -s)
+      // → la bande dépasse vers l'extérieur (côté voisin Nord)
       return {
         sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: 0, dw: QUAD_SIZE, dh: s,
+        dy: -s, dw: QUAD_SIZE, dh: s,
       };
     case 'E':
-      // Bande droite : prend les s derniers pixels en largeur
+      // Bande droite : extraite du bord droit de la texture, placée À DROITE de la tuile
+      // → la bande dépasse vers l'extérieur (côté voisin Est)
       return {
         sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: QUAD_SIZE - s,
+        dx: QUAD_SIZE,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
       };
     case 'S':
-      // Bande basse : prend les s derniers pixels en hauteur
+      // Bande basse : extraite du bas de la texture, placée EN-DESSOUS de la tuile
+      // → la bande dépasse vers l'extérieur (côté voisin Sud)
       return {
         sx: sxBase, sy: syBase + QUAD_SIZE - s, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: QUAD_SIZE - s, dw: QUAD_SIZE, dh: s,
+        dy: QUAD_SIZE, dw: QUAD_SIZE, dh: s,
       };
     case 'W':
-      // Bande gauche : garde les s premiers pixels en largeur
+      // Bande gauche : extraite du bord gauche de la texture, placée À GAUCHE de la tuile
+      // → la bande dépasse vers l'extérieur (côté voisin Ouest)
       return {
         sx: sxBase, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: 0,
+        dx: -s,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
       };
