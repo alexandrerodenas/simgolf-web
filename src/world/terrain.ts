@@ -178,57 +178,52 @@ export function computeNeighborMask(
 // ================================================================
 
 /**
- * Types de terrain qui possèdent des textures de bordure (A-D).
- * Ces types génèrent des passes de rendu supplémentaires quand un voisin
- * est de famille différente.
+ * Types de terrain qui possèdent leurs propres textures de bordure (A-D).
+ * renderMode=1 dans typeInfo du jeu original.
  *
- * Dans le jeu original, ce sont les types où renderMode=1 (bordure)
- * dans la table typeInfo (offset +0x08 dans chaque entrée de 24 bytes).
+ * Seuls les types suivants ont des textures A-D directionnelles pour
+ * les bordures. Les autres types (grass, play, path, building) ont
+ * soit A-E pour la géométrie d'élévation, soit A seulement pour le plat.
  *
- * Remarque : GrassySand n'a A-D que dans certains thèmes (Links complet,
- * Desert A-D, Tropical A-C, Parkland A seulement).
- *
- * Remarque : Overgrowth est le SEUL type grass avec des textures A-D
- * directionnelles. Les autres types grass (Rough, Woods, etc.) utilisent
- * les lettres A-E pour la géométrie d'élévation, PAS pour les bordures.
- *
- * Remarque : Ravine a ses propres textures A-D alors que Path et Bridge
- * n'ont que A plat. Ravine dans le jeu original est un type de bordure
- * autonome (renderMode=1).
+ * ⚠️ Overgrowth est le SEUL type grass avec A-D border.
+ * ⚠️ Ravine a ses propres A-D (contrairement à Path et Bridge qui sont A-only).
+ * ⚠️ Brush/Flower en Parkland = A-E géométrie, PAS border.
  */
 const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
-  // Auto-borders : leurs A-D = textures de bordure
+  // Auto-borders : leurs A-D = textures de bordure directionnelles
   TileType.WaterShallow,
   TileType.WaterMiddle,
   TileType.WaterDeep,
   TileType.Cliff,
   TileType.GrassBunker,
-  TileType.GrassySand,      // ⚠️ A-D seulement dans Links/Desert/Tropical
-  TileType.Overgrowth,       // grass type MAIS avec A-D border
-  TileType.Ravine,           // path type avec A-D border
-  TileType.Flower,           // Brush (quand présent en A-D, ex: Links)
+  TileType.GrassySand,
+  TileType.Overgrowth,    // grass mais A-D border (fourré qui déborde)
+  TileType.Ravine,         // path mais A-D border (ravin qui borde)
 ]);
 
 /**
  * borderOverride — Types qui utilisent les TEXTURES D'UN AUTRE TYPE
  * comme textures de bordure alpha-transparente.
  * Correspond au champ borderOverride (offset +0x0c dans typeInfo,
- * stride 24 bytes, table à this+0x40 dans Terrain.dll).
+ * stride 24 bytes, table à this+0x40 dans la structure Terrain).
  *
- * Confirmé Ghidra (ASM @ 0x10003310 : imul eax, eax, 0x18) :
- *   Fairway(1)       → borderOverride=8  → GrassySand  (vert, transition fairway→rough)
- *   FirmFairway(19)  → borderOverride=8  → GrassySand
- *   SandBunker(3)    → borderOverride=9  → GrassBunker (brun/olive, transition sable→herbe)
- *   PotSandBunker(20)→ borderOverride=9  → GrassBunker
+ * Vérifié Ghidra @ populateRenderPasses (0x10012ec0) :
+ *   Le jeu regarde d'abord si borderOverride ≠ -1. Si oui, les passes
+ *   de bordure utilisent le type override, PAS le type original.
  *
- * CORRIGÉ : l'ancien code avait Fairway→GrassBunker (marron) et SandBunker→GrassySand (vert),
- * ce qui inversait les couleurs et produisait l'effet "gaufrier".
+ * Mapping du jeu original (REFERENCE_GUIDE.md §5.8.3) :
+ *   SandBunker(3)    → GrassySand(8)   : le sable emprunte les bordures
+ *     herbe→sable de GrassySand (montre la végétation qui reprend sur le sable)
+ *   PotSandBunker(20)→ GrassySand(8)   : idem
+ *   Fairway(1)       → GrassBunker(9)  : le fairway emprunte les bordures
+ *     sable→herbe de GrassBunker (montre le sol qui affleure sous l'herbe rase)
+ *   FirmFairway(19)  → GrassBunker(9)  : idem
  */
 const BORDER_OVERRIDE: Partial<Record<TileType, TileType>> = {
-  [TileType.SandBunker]:   TileType.GrassBunker,   // brun  : sable → herbe
-  [TileType.PotSandBunker]:TileType.GrassBunker,   // brun  : sable → herbe
-  [TileType.Fairway]:      TileType.GrassySand,    // vert  : fairway → rough
-  [TileType.FirmFairway]:  TileType.GrassySand,    // vert  : fairway → rough
+  [TileType.SandBunker]:   TileType.GrassySand,
+  [TileType.PotSandBunker]:TileType.GrassySand,
+  [TileType.Fairway]:      TileType.GrassBunker,
+  [TileType.FirmFairway]:  TileType.GrassBunker,
 };
 
 /**
@@ -290,52 +285,47 @@ export function computeRenderPasses(
     type: tile.type,
     variation: tile.variation,
     suffix: baseSuffix,
+    subType: tile.subType,
   });
 
-  // ---- Détection des bordures ----
-  // Check borderOverride d'abord : certains types utilisent les textures
-  // d'un autre type pour leurs bordures (ex: SandBunker → GrassySand)
-  if (BORDER_OVERRIDE[tile.type] !== undefined) {
-    // Types avec borderOverride (SandBunker, Fairway, etc.)
-    // Génèrent des bordures si un voisin est de famille différente
-    const overrideType = BORDER_OVERRIDE[tile.type]!;
+  // ---- Détection des bordures (max 3 passes supplémentaires) ----
+  // Le jeu original limite à 4 passes total (0x05c = renderPassCount, int32).
+  // Si 4 voisins sont différents, le 4e (W→D) est abandonné selon la
+  // priorité N > E > S > W. Dans le cas extrême, W partage la passe 3
+  // avec S (deux textures dans la même passe), non implémenté ici.
+
+  // Détermine le type à utiliser pour les bordures
+  const borderType = BORDER_OVERRIDE[tile.type] !== undefined
+    ? BORDER_OVERRIDE[tile.type]!
+    : TYPES_WITH_BORDER_TEXTURES.has(tile.type)
+      ? tile.type
+      : null;
+
+  if (borderType !== null) {
     const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
 
+    // Directions dans l'ordre de priorité N > E > S > W
     const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },
-      { bit: 2, suffix: 'B' },
-      { bit: 4, suffix: 'C' },
-      { bit: 8, suffix: 'D' },
+      { bit: 1, suffix: 'A' },  // N
+      { bit: 2, suffix: 'B' },  // E
+      { bit: 4, suffix: 'C' },  // S
+      { bit: 8, suffix: 'D' },  // W
     ];
 
+    // Max 3 bordures (passe 1, 2, 3) pour rester ≤ 4 passes total
+    let borderCount = 0;
     for (const dir of directions) {
       if (mask & dir.bit) {
-        passes.push({
-          type: overrideType,    // ← utilise le type override pour la texture
-          variation: tile.variation,
-          suffix: dir.suffix,
-        });
-      }
-    }
-  } else if (TYPES_WITH_BORDER_TEXTURES.has(tile.type)) {
-    // Types auto-bordure : leurs propres A-D = bordures
-    // Exceptions : Overgrowth (grass family) a ses propres A-D border
-    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-
-    const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },
-      { bit: 2, suffix: 'B' },
-      { bit: 4, suffix: 'C' },
-      { bit: 8, suffix: 'D' },
-    ];
-
-    for (const dir of directions) {
-      if (mask & dir.bit) {
-        passes.push({
-          type: tile.type,       // ← utilise SA PROPRE texture
-          variation: tile.variation,
-          suffix: dir.suffix,
-        });
+        if (borderCount < 3) {
+          passes.push({
+            type: borderType,
+            variation: tile.variation,
+            suffix: dir.suffix,
+          });
+          borderCount++;
+        }
+        // Si borderCount >= 3, on ignore les directions restantes
+        // (priorité N > E > S > W, donc W est abandonné en dernier)
       }
     }
   }
@@ -489,6 +479,7 @@ export function generateVegetationGrid(
         type: TileType.Rough,
         elevation: [0, 0, 0, 0],
         variation: 1,
+        tileFlags: 0,
         renderPasses: [],
       });
     }
@@ -523,17 +514,15 @@ export function generateVegetationGrid(
   // 4. Élévation plate (paramétrable)
   // Par défaut [0,0,0,0] comme initialisé ci-dessus.
 
-  // 5. Variations cosmétiques via rand() % maxVariation
-  // On utilise un seed simple pour la reproductibilité
+  // 5. Variations cosmétiques 0-indexed via rand() % maxVariation
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       const tile = tiles[idx];
       const maxVar = maxVariationForType(tile.type);
-      // "vrai rand()" : Math.random() seedé par position pour
-      // reproductibilité
-      const r = ((x * 31 + y * 17) % maxVar) + 1;
-      tile.variation = Math.max(1, Math.min(maxVar, r));
+      // Déterministe par position
+      const r = ((x * 31 + y * 17) % maxVar);
+      tile.variation = Math.max(0, Math.min(maxVar - 1, r));
     }
   }
 
@@ -555,7 +544,7 @@ export function generateVegetationGrid(
         if (n.type === tile.type) used.add(n.variation);
       }
       if (used.has(tile.variation)) {
-        for (let v = 1; v <= maxVar; v++) {
+        for (let v = 0; v < maxVar; v++) {
           if (!used.has(v)) { tile.variation = v; break; }
         }
       }
@@ -697,8 +686,8 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
       const idx = y * w + x;
       const maxVar = maxVariationForType(tiles[idx].type);
       tiles[idx].variation = maxVar > 1
-        ? ((x * 31 + y * 17) % maxVar) + 1
-        : 1;
+        ? ((x * 31 + y * 17) % maxVar)
+        : 0;
     }
 
   for (let y = 0; y < h; y++)
@@ -712,7 +701,7 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
       if (y > 0) { const n = tiles[(y - 1) * w + x]; if (n.type === tile.type) used.add(n.variation); }
       if (x > 0) { const n = tiles[y * w + (x - 1)]; if (n.type === tile.type) used.add(n.variation); }
       if (used.has(tile.variation)) {
-        for (let v = 1; v <= maxVar; v++) {
+        for (let v = 0; v < maxVar; v++) {
           if (!used.has(v)) { tile.variation = v; break; }
         }
       }
@@ -741,8 +730,9 @@ export function generateParklandGrid(
         type: TileType.WaterShallow,
         elevation: [0, 0, 0, 0],
         variation: 0,
+        tileFlags: 0,
         renderPasses: [],
-      } as ITile);
+      });
 
   // 2. Distribution Parkland
   const noise = generateNoise(width, height, 8);
@@ -802,13 +792,18 @@ function textureFolderForType(type: TileType): string {
 /**
  * Convertit le type en préfixe de nom de fichier texture.
  */
-function texturePrefixForType(type: TileType): string {
+/**
+ * Convertit le type en préfixe de nom de fichier texture.
+ * @param subType Sous-type optionnel (ex: SandBunker 1A-4A → 1..4)
+ */
+function texturePrefixForType(type: TileType, subType?: number): string {
   switch (type) {
     case TileType.Rough:        return 'ROUGH';
     case TileType.DeepRough:    return 'DEEPROUGH';
     case TileType.Fairway:      return 'FAIRWAY';
     case TileType.PuttingGreen: return 'PUTTINGGREEN';
-    case TileType.SandBunker:   return 'SANDBUNKER';
+    case TileType.SandBunker:
+      return subType ? `SANDBUNKER${subType}` : 'SANDBUNKER';
     case TileType.Tee:          return 'TEE';
     case TileType.GrassySand:   return 'GRASSYSAND';
     case TileType.GrassBunker:  return 'GRASSBUNKER';
@@ -837,8 +832,9 @@ function texturePrefixForType(type: TileType): string {
  */
 export function texturePathForPass(pass: IRenderPass): string {
   const folder = textureFolderForType(pass.type);
-  const prefix = texturePrefixForType(pass.type);
-  const var4 = String(pass.variation).padStart(4, '0');
+  const prefix = texturePrefixForType(pass.type, pass.subType);
+  // La variation est stockée 0-indexed dans le code mais 1-indexed dans les fichiers
+  const var4 = String(pass.variation + 1).padStart(4, '0');
   return `/assets/textures/parkland/${folder}/${prefix}${pass.suffix}${var4}.webp`;
 }
 
@@ -863,8 +859,8 @@ export function texturePathForTile(
 
   // Fallback legacy
   const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
-  const var4 = String(tile.variation).padStart(4, '0');
-  const prefix = texturePrefixForType(tile.type);
+  const var4 = String(tile.variation + 1).padStart(4, '0');
+  const prefix = texturePrefixForType(tile.type, tile.subType);
   const folder = textureFolderForType(tile.type);
 
   return `/assets/textures/parkland/${folder}/${prefix}${geom}${var4}.webp`;

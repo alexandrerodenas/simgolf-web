@@ -66,7 +66,7 @@ export enum CourseTheme {
 export interface IRenderPass {
   /** Type de terrain pour cette passe */
   type: TileType;
-  /** Variation cosmétique (1-based, spécifie un fichier texture) */
+  /** Variation cosmétique (0-indexed, spécifie un fichier texture) */
   variation: number;
   /**
    * Suffixe géométrique ou d'orientation pour la texture :
@@ -74,6 +74,11 @@ export interface IRenderPass {
    *   - Non-grass : 'A' = base, 'B'|'C'|'D' = bordure E/S/W
    */
   suffix: string;
+  /**
+   * Sous-type pour les types qui en ont plusieurs (ex: SandBunker 1A-4A).
+   *   - SandBunker : 0=A, 1=1A, 2=2A, 3=3A, 4=4A
+   */
+  subType?: number;
 }
 
 // ================================================================
@@ -110,6 +115,19 @@ export interface ITile {
    * texture anti-répétition. Stockée à offset +0x240 dans le jeu original.
    */
   variation: number;
+
+  /**
+   * Flags de la tuile. Bits 0-1 = orientation de bordure (N→0, E→1, S→2, O→3).
+   * Offset original : +0x028 (int32)
+   */
+  tileFlags: number;
+
+  /**
+   * Sous-type pour les types qui en ont plusieurs (ex: SandBunker 1A-4A).
+   * Correspond au typeEffect du setType() original.
+   *   - SandBunker : 0=A, 1=1A, 2=2A, 3=3A, 4=4A
+   */
+  subType?: number;
 
   /**
    * Passes de rendu (1 à 4 couches superposées).
