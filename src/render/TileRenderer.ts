@@ -23,6 +23,9 @@ const QUAD_SIZE = 32;
 /** Épaisseur de la bande de bordure fine (6 pixels les plus proches de l'arête) */
 const BORDER_STRIP = 6;
 
+/** Décalage des angles arrondis (texture 0004) vers l'extérieur */
+const CORNER_OFFSET = 12;
+
 /**
  * Coordonnées source (dans la texture 64×64) pour chaque quadrant.
  */
@@ -169,11 +172,10 @@ export function renderMap(
               // Les corners (texture 0004, 1 quadrant) doivent être décalés
               // vers l'extérieur pour remplir le creux entre les bandes d'arête.
               if (pass.variation === 3 && quads.length === 1) {
-                // NW (quad 0) : offset (-s, -s) → au-dessus du sommet haut
-                if (q === 0) { dx -= BORDER_STRIP; dy -= BORDER_STRIP; }
-                if (q === 1) { /* NE → à voir */ }
-                if (q === 2) { /* SW → à voir */ }
-                if (q === 3) { /* SE → à voir */ }
+                if (q === 0) { dx -= CORNER_OFFSET; dy -= CORNER_OFFSET; }  // NW
+                if (q === 1) { dy -= CORNER_OFFSET; }                       // NE
+                if (q === 2) { dx -= CORNER_OFFSET; dy += CORNER_OFFSET; }  // SW
+                if (q === 3) { dx += CORNER_OFFSET; dy += CORNER_OFFSET; }  // SE
               }
 
               ctx.setTransform(
