@@ -93,7 +93,7 @@ const TERRAIN_FAMILY_ID: Record<number, number> = {
   [TileType.Flower]:       0,  // grass (Brush)
   [TileType.DeepRough]:    0,  // grass
   [TileType.Rock]:         0,  // grass (ou famille roche dédiée)
-  [TileType.Marsh]:        0,  // grass
+  [TileType.Marsh]:        3,  // water — marécage, bordure avec grass
   [TileType.Overgrowth]:   0,  // grass (UNIQUE : A-D border malgré famille grass)
   [TileType.Fairway]:      1,  // play
   [TileType.Tee]:          1,  // play
@@ -199,6 +199,7 @@ const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
   TileType.GrassySand,
   TileType.Overgrowth,    // grass mais A-D border (fourré qui déborde)
   TileType.Ravine,         // path mais A-D border (ravin qui borde)
+  TileType.Marsh,          // water mais A-C border (marécage)
 ]);
 
 /**
@@ -243,22 +244,83 @@ const TYPES_SEAM_ONLY: Set<TileType> = new Set([
 ]);
 
 /**
- * Mappe un bit de masque de voisinage vers le suffixe de bordure.
- * N=1→A, E=2→B, S=4→C, W=8→D
+ * Compte le nombre de bits à 1 dans un masque 4-bit.
  */
-function maskBitToBorderSuffix(bit: number): string {
-  switch (bit) {
-    case 1: return 'A';   // Nord → A
-    case 2: return 'B';   // Est  → B
-    case 4: return 'C';   // Sud  → C
-    case 8: return 'D';   // Ouest → D
-    default: return 'A';
-  }
+function popcount4(mask: number): number {
+  // https://en.wikipedia.org/wiki/Hamming_weight
+  let n = mask;
+  n = n - ((n >>> 1) & 0x55555555);
+  n = (n & 0x33333333) + ((n >>> 2) & 0x33333333);
+  return (n + (n >>> 4)) & 0x0F;
+}
+
+/**
+ * Vérifie si deux bits sont adjacents (forment un coin dans le masque 4-bit).
+ * Ordre des bits : N=1, E=2, S=4, W=8
+ * Adjacences valides : N+E (1+2=3), E+S (2+4=6), S+W (4+8=12), W+N (8+1=9)
+ */
+function isAdjacentPair(mask: number): boolean {
+  return mask === 3 || mask === 6 || mask === 12 || mask === 9;
+}
+
+/**
+ * Mappe un masque de voisinage 4 bits vers l'index de variation
+ * (Bitmask Tileset) pour les familles Grass et Play.
+ *
+ * Les textures 0001-0005 ne sont pas du bruit cosmétique mais les
+ * pièces structurelles d'un tileset bitmask :
+ *
+ *   0001 = Plein / Centre  — aucun voisin différent (Inner Tile)
+ *   0002 = Bord droit      — 1 voisin différent (Edge Tile)
+ *   0004 = Angle arrondi   — 2 voisins adjacents différents (Corner Tile)
+ *   0005 = Îlot isolé      — 4 voisins différents (Isolated Tile)
+ *
+ * Cas spéciaux :
+ *   - 2 bits opposés (N+S=5, E+W=10) : "tunnel" → 0003
+ *   - 3 bits : cul-de-sac → 0004
+ *
+ * REFERENCE: Spec § "Mappage du neighborMask vers l'index de Variation"
+ */
+export function maskToVariation(mask: number): number {
+  const bits = popcount4(mask);
+
+  // 0 bits : intérieur (Inner)
+  if (bits === 0) return 1;
+
+  // 4 bits : îlot isolé (Isolated)
+  if (bits === 4) return 5;
+
+  // 1 bit : bord droit (Edge)
+  if (bits === 1) return 2;
+
+  // 2 bits adjacents : angle arrondi (Corner)
+  if (bits === 2 && isAdjacentPair(mask)) return 4;
+
+  // 2 bits opposés : "tunnel" (N+S ou E+W)
+  if (bits === 2) return 3;
+
+  // 3 bits : cul-de-sac → angle arrondi
+  return 4;
 }
 
 /**
  * Calcule les renderPasses pour une tuile donnée en fonction de
  * ses voisins et de son type de terrain.
+ *
+ * SYSTÈME BITMASK (familles Grass et Play) :
+ *   La variation est déterminée par le neighborMask via maskToVariation().
+ *   Les textures 0001-0005 encodent directement la configuration des
+ *   bordures. Pas de passes d'overlay supplémentaires — la texture
+ *   contient déjà l'information de bordure.
+ *
+ *   Pass 0 unique : {TYPE}{suffix}{variation}.webp
+ *     - variation = maskToVariation(neighborMask)
+ *     - suffix = 'A'-'E' pour grass (géométrie), 'A' pour play
+ *
+ * SYSTÈME DIRECTIONNEL A-D (autres familles) :
+ *   Les passes de bordure supplémentaires (A-D) sont ajoutées pour
+ *   les types avec renderMode=1 (TYPES_WITH_BORDER_TEXTURES) ou
+ *   borderOverride.
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
@@ -276,25 +338,45 @@ export function computeRenderPasses(
   const family = getTerrainFamily(tile.type);
   const geomSuffix = getGeometryType(tile.elevation);
 
-  // ---- Pass 0 : Texture de base ----
-  // Pour grass family : suffixe = géométrie d'élévation (A-E)
-  // Pour borderOverride types : 'A' (la texture de base du type original)
-  // Pour border types : 'A' (la texture de base standard)
-  const baseSuffix = (family === 0 && !BORDER_OVERRIDE[tile.type]) ? geomSuffix : 'A';
+  // ================================================================
+  // SYSTÈME BITMASK — familles Grass (0) et Play (1)
+  // ================================================================
+  // Ces types utilisent un tileset bitmask : la variation encode
+  // directement la configuration des bordures via le neighborMask.
+  // Pas de passes supplémentaires — une seule texture par tuile.
+  if (family === 0 || family === 1) {
+    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+    const bitmaskVar = maskToVariation(mask);
+
+    // Grass family : suffixe = géométrie d'élévation (A-E)
+    // Play family  : suffixe = 'A' (plat)
+    const suffix = (family === 0) ? geomSuffix : 'A';
+
+    passes.push({
+      type: tile.type,
+      variation: bitmaskVar,
+      suffix,
+      subType: tile.subType,
+    });
+
+    return passes;
+  }
+
+  // ================================================================
+  // SYSTÈME DIRECTIONNEL A-D — Sand, Water, Cliff, Path, Building
+  // ================================================================
+  // Ces types utilisent des passes d'overlay directionnelles (A-D)
+  // pour les bordures, avec ou sans borderOverride.
+
+  // Pass 0 : Texture de base (toujours suffixe 'A')
   passes.push({
     type: tile.type,
     variation: tile.variation,
-    suffix: baseSuffix,
+    suffix: 'A',
     subType: tile.subType,
   });
 
-  // ---- Détection des bordures (max 3 passes supplémentaires) ----
-  // Le jeu original limite à 4 passes total (0x05c = renderPassCount, int32).
-  // Si 4 voisins sont différents, le 4e (W→D) est abandonné selon la
-  // priorité N > E > S > W. Dans le cas extrême, W partage la passe 3
-  // avec S (deux textures dans la même passe), non implémenté ici.
-
-  // Détermine le type à utiliser pour les bordures
+  // Détermine le type à utiliser pour les bordures A-D
   const borderType = BORDER_OVERRIDE[tile.type] !== undefined
     ? BORDER_OVERRIDE[tile.type]!
     : TYPES_WITH_BORDER_TEXTURES.has(tile.type)
@@ -329,8 +411,6 @@ export function computeRenderPasses(
       }
     }
   }
-  // Note : les types restants (grass family, play sans bordure, etc.)
-  // n'ont qu'une seule passe (la texture de base) — ils font du seam.
 
   return passes;
 }
@@ -393,6 +473,20 @@ export function maxVariationForType(type: TileType): number {
       return 9;   // Woods A-D × 9
     case TileType.Flower:
       return 9;   // Brush A-D × 9
+    case TileType.Rock:
+      return 9;   // Rock A-E × 9
+    case TileType.Marsh:
+      return 9;   // Marsh A-C × 9
+    case TileType.Overgrowth:
+      return 9;   // Overgrowth A-D × 9
+    case TileType.FirmFairway:
+      return 9;   // FirmFairway A × 9
+    case TileType.ZenSand:
+      return 9;   // ZenSand A × 9
+    case TileType.TrickyGreen:
+      return 5;   // TrickyGreen A-C × 5
+    case TileType.PotSandBunker:
+      return 5;   // PotSandBunker A × 5
     default:
       return 1;
   }
@@ -460,9 +554,11 @@ function generateSecondaryNoise(w: number, h: number, scale: number): Float32Arr
  *   Woods     : 15% (bruit moyen-haut, patches)
  *   Brush     : 10% (bruit haut, lisières)
  *
- * Tous sont famille grass → seamless, pas de bordures.
+ * Tous sont famille grass → système bitmask seamless.
+ * La variation est déterminée par le neighborMask dans
+ * computeRenderPasses(), PAS par rand().
+ *
  * Élévation plate [0,0,0,0].
- * Variations via rand() % maxVariation.
  */
 export function generateVegetationGrid(
   width: number = 40,
@@ -478,7 +574,7 @@ export function generateVegetationGrid(
         y,
         type: TileType.Rough,
         elevation: [0, 0, 0, 0],
-        variation: 1,
+        variation: 0,
         tileFlags: 0,
         renderPasses: [],
       });
@@ -514,44 +610,12 @@ export function generateVegetationGrid(
   // 4. Élévation plate (paramétrable)
   // Par défaut [0,0,0,0] comme initialisé ci-dessus.
 
-  // 5. Variations cosmétiques 0-indexed via rand() % maxVariation
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const tile = tiles[idx];
-      const maxVar = maxVariationForType(tile.type);
-      // Déterministe par position
-      const r = ((x * 31 + y * 17) % maxVar);
-      tile.variation = Math.max(0, Math.min(maxVar - 1, r));
-    }
-  }
+  // 5. La variation est ignorée pour les familles Grass/Play
+  //    (le neighborMask détermine la variation dans computeRenderPasses).
+  //    On met 0 par défaut — seule la passe de rendu compte.
+  //    Voir maskToVariation() pour le mapping.
 
-  // 6. Anti-répétition : éviter variations identiques adjacentes
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const tile = tiles[idx];
-      const maxVar = maxVariationForType(tile.type);
-      if (maxVar <= 1) continue;
-
-      const used = new Set<number>();
-      if (y > 0) {
-        const n = tiles[(y - 1) * width + x];
-        if (n.type === tile.type) used.add(n.variation);
-      }
-      if (x > 0) {
-        const n = tiles[y * width + (x - 1)];
-        if (n.type === tile.type) used.add(n.variation);
-      }
-      if (used.has(tile.variation)) {
-        for (let v = 0; v < maxVar; v++) {
-          if (!used.has(v)) { tile.variation = v; break; }
-        }
-      }
-    }
-  }
-
-  // 7. Calcul des renderPasses (auto-tiling)
+  // 6. Calcul des renderPasses (auto-tiling bitmask)
   computeAllRenderPasses(tiles, width, height);
 
   return { width, height, theme: CourseTheme.Parkland, tiles };
@@ -636,6 +700,10 @@ function applyDistribution(
         t.type = TileType.Tree;
       } else {
         t.type = TileType.Flower;
+      }
+      // Attribuer un sous-type aléatoire aux SandBunker (0=A, 1=1A..4=4A)
+      if (t.type === TileType.SandBunker) {
+        t.subType = ((t.x * 7 + t.y * 13) % 5);
       }
     }
 }
@@ -761,7 +829,7 @@ export function generateParklandGrid(
  */
 const GEOM_TYPES: Set<TileType> = new Set([
   TileType.Rough, TileType.DeepRough, TileType.Cliff, TileType.Tree,
-  TileType.Flower,
+  TileType.Flower, TileType.Rock,
 ]);
 
 /**
@@ -785,6 +853,13 @@ function textureFolderForType(type: TileType): string {
     case TileType.Flower:       return 'brush';
     case TileType.Path:         return 'ravine';
     case TileType.Building:     return 'building';
+    case TileType.Rock:         return 'rock';
+    case TileType.Marsh:        return 'marsh';
+    case TileType.Overgrowth:   return 'overgrowth';
+    case TileType.FirmFairway:  return 'firmfairway';
+    case TileType.ZenSand:      return 'zensand';
+    case TileType.TrickyGreen:  return 'trickygreen';
+    case TileType.PotSandBunker:return 'sandbunker';  // même dossier que SandBunker
     default:                    return 'rough';
   }
 }
@@ -815,6 +890,13 @@ function texturePrefixForType(type: TileType, subType?: number): string {
     case TileType.Flower:       return 'BRUSH';
     case TileType.Path:         return 'RAVINE';
     case TileType.Building:     return 'BUILDING';
+    case TileType.Rock:         return 'ROCK';
+    case TileType.Marsh:        return 'MARSH';
+    case TileType.Overgrowth:   return 'OVERGROWTH';
+    case TileType.FirmFairway:  return 'FIRMFAIRWAY';
+    case TileType.ZenSand:      return 'ZENSAND';
+    case TileType.TrickyGreen:  return 'TRICKYGREEN';
+    case TileType.PotSandBunker:return 'POTSANDBUNKER';
     default:                    return 'ROUGH';
   }
 }
@@ -901,6 +983,13 @@ const palette: Record<number, [number, number, number]> = {
   [TileType.Building]:     [0.600, 0.400, 0.267],
   [TileType.Tree]:         [0.176, 0.353, 0.118],
   [TileType.Flower]:       [0.800, 0.267, 0.533],
+  [TileType.Rock]:         [0.533, 0.467, 0.400],
+  [TileType.Marsh]:        [0.267, 0.400, 0.333],
+  [TileType.Overgrowth]:   [0.157, 0.314, 0.078],
+  [TileType.FirmFairway]:  [0.357, 0.702, 0.357],
+  [TileType.ZenSand]:      [0.953, 0.918, 0.761],
+  [TileType.TrickyGreen]:  [0.210, 0.620, 0.271],
+  [TileType.PotSandBunker]:[0.953, 0.878, 0.729],
 };
 
 /**
