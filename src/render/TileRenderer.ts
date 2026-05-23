@@ -48,11 +48,11 @@ function stripRects(
   switch (edge) {
     case 'N':
       // Bande haute : extrait les s premiers pixels du haut de la texture,
-      // placée AU-DESSUS de la tuile, côté voisin Nord (dy = -s)
+      // placée AU-DESSUS de la tuile, côté voisin Nord (dy = -s réduit)
       return {
         sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: -s, dw: QUAD_SIZE, dh: s,
+        dy: -4, dw: QUAD_SIZE, dh: s,
       };
     case 'E':
       // Bande droite : extrait les s derniers pixels du bord droit,
