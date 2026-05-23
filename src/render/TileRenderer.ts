@@ -52,7 +52,7 @@ function stripRects(
       return {
         sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: -4, dw: QUAD_SIZE, dh: s,
+        dy: -8, dw: QUAD_SIZE, dh: s,
       };
     case 'E':
       // Bande droite : extrait les s derniers pixels du bord droit,
