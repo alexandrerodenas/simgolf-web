@@ -1,138 +1,355 @@
 /**
- * render/TileRenderer.ts — Rendu 2D Canvas Multi-Passes avec Sub-Tiling
+ * render/TileRenderer.ts — Pipeline de rendu WebGL/Three.js pour SimGolf
  *
- * Chaque tuile est dessinée comme un losange 2:1 via ctx.setTransform().
- * Le système Multi-Passes avec Sub-Tiling divise chaque tuile en 4 quadrants
- * (NW, NE, SW, SE), chacun utilisant sa propre texture.
+ * Remplace complètement l'ancien rendu Canvas 2D par un rendu GPU natif.
+ * Utilise les BufferGeometry produites par buildParklandMesh() avec leurs
+ * 24 sommets par tuile (4 quadrants × 2 triangles × 3 verts) et leurs UV
+ * correctement mappés par quadrant.
  *
- * Chaque quadrant est rendu comme un triangle (le 4e coin du sous-carré 32×32
- * est en dehors du diamant). Les triangles sont dessinés via ctx.clip() pour
- * ne montrer que la partie visible de chaque quadrant.
+ * Architecture :
+ *   TileRenderer.create(container, mapState) → instance prête à render()
  *
- * Projection dimétrique 2:1 (REFERENCE_GUIDE.md §4.2) :
+ * Le renderer est un Three.js WebGLRenderer en mode orthographique dimétrique.
+ * Les interactions (pan, zoom) sont gérées par OrbitControls (rotation désactivée).
+ * Les textures sont chargées de manière asynchrone via THREE.TextureLoader
+ * avec un fallback colorimétrique en attendant.
+ *
+ * Projection dimétrique 2:1 confirmée par l'analyse Ghidra :
  *   screenX = (mapX - mapY) × 64
  *   screenY = (mapX + mapY) × 32
- *
- * Ordre de rendu : painter's algorithm par (mapX + mapY) croissant.
+ * Les positions 3D sont pré-calculées dans tileVertexPosition().
  */
 
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { IMapState } from '../core/types';
-
-const TEX_SIZE = 64;
-
-/**
- * Coordonnées des 4 triangles de quadrant dans l'espace local de la tuile.
- * Chaque quadrant est un triangle défini par 3 sommets [x,y] dans le repère
- * local où le diamant complet va de (0,0) à (64,64) avec le centre à (32,32).
- *
- * Les 3 sommets de chaque triangle forment un sous-diamant dont le 4e coin
- * est en dehors du diamant (transparent).
- */
-const QUAD_TRIANGLES: [number, number][][] = [
-  // Q0 (NW) : (32,0) top - (0,32) left - (32,32) center
-  [[32, 0], [0, 32], [32, 32]],
-  // Q1 (NE) : (32,0) top - (64,32) right - (32,32) center
-  [[32, 0], [64, 32], [32, 32]],
-  // Q2 (SW) : (0,32) left - (32,64) bottom - (32,32) center
-  [[0, 32], [32, 64], [32, 32]],
-  // Q3 (SE) : (32,32) center - (64,32) right - (32,64) bottom
-  [[32, 32], [64, 32], [32, 64]],
-];
+import { buildParklandMesh, MeshGroup } from '../world/terrain';
+import { createDimetricCamera, resizeDimetricCamera } from './camera';
 
 /**
- * Coordonnées source dans la texture 64×64 pour chaque quadrant.
- * Chaque quadrant = sous-région 32×32 de la texture.
- */
-const QUAD_SRC = [
-  { sx: 0, sy: 0, sw: 32, sh: 32 },   // NW
-  { sx: 32, sy: 0, sw: 32, sh: 32 },  // NE
-  { sx: 0, sy: 32, sw: 32, sh: 32 },  // SW
-  { sx: 32, sy: 32, sw: 32, sh: 32 }, // SE
-];
-
-/**
- * Rendu complet de la carte avec support Sub-Tiling (4 quadrants par tuile).
+ * Gestionnaire de rendu WebGL/Three.js pour une carte SimGolf.
  *
- * Chaque tuile a 4 renderPasses (une par quadrant). Pour chaque passe :
- *   1. Clip le contexte 2D au triangle du quadrant
- *   2. Dessine la sous-région 32×32 de la texture
- *   3. Restaure le clip
- *
- * @param ctx         Contexte 2D du canvas
- * @param mapState    État de la carte
- * @param cam         Caméra 2D (offset + zoom)
- * @param getImages   Fonction (tileIdx) → HTMLImageElement[] (1+ images par tuile)
- * @param reverse     Si true, ordre inverse (vue de dessus)
+ * Usage :
+ *   const renderer = TileRenderer.create(document.body, mapState);
+ *   function animate() {
+ *     renderer.render();
+ *     requestAnimationFrame(animate);
+ *   }
+ *   animate();
  */
-export function renderMap(
-  ctx: CanvasRenderingContext2D,
-  mapState: IMapState,
-  cam: { offsetX: number; offsetY: number; zoom: number },
-  getImages: (tileIdx: number) => HTMLImageElement[],
-  reverse: boolean = false,
-): void {
-  const { width, height, tiles } = mapState;
-  const z = cam.zoom;
+export class TileRenderer {
+  /** Renderer WebGL */
+  public readonly renderer: THREE.WebGLRenderer;
+  /** Scène Three.js */
+  public readonly scene: THREE.Scene;
+  /** Caméra orthographique dimétrique */
+  public readonly camera: THREE.OrthographicCamera;
+  /** Contrôles (pan + zoom, pas de rotation) */
+  public controls: OrbitControls;
+  /** Groupe contenant tous les meshs de terrain */
+  public readonly meshGroup: THREE.Group;
+  /** Dimensions de la grille (pour le resize) */
+  public gridWidth: number = 40;
+  public gridHeight: number = 40;
 
-  // Painter's algorithm : tri croissant ou décroissant selon reverse
-  const range = Array.from({ length: width + height }, (_, i) =>
-    reverse ? width + height - 1 - i : i,
-  );
+  /** Cache de textures chargées (chemin → Texture) */
+  private textureCache: Map<string, THREE.Texture>;
+  /** Loader de textures Three.js */
+  private loader: THREE.TextureLoader;
+  /** Nombre de textures en cours de chargement */
+  private pendingTextures: number = 0;
+  /** Position initiale de la caméra (pour resetView) */
+  private initialCameraPosition: THREE.Vector3 = new THREE.Vector3();
+  /** Cible initiale des contrôles (pour resetView) */
+  private initialTarget: THREE.Vector3 = new THREE.Vector3();
 
-  // Préserver la matrice de transformation
-  ctx.save();
+  // ================================================================
+  // Construction
+  // ================================================================
 
-  for (const sum of range) {
-    for (let y = 0; y < height; y++) {
-      const x = sum - y;
-      if (x < 0 || x >= width) continue;
+  private constructor(
+    container: HTMLElement,
+    scene: THREE.Scene,
+    camera: THREE.OrthographicCamera,
+    renderer: THREE.WebGLRenderer,
+    controls: OrbitControls,
+  ) {
+    this.scene = scene;
+    this.camera = camera;
+    this.renderer = renderer;
+    this.controls = controls;
+    this.meshGroup = new THREE.Group();
+    this.scene.add(this.meshGroup);
+    this.textureCache = new Map();
+    this.loader = new THREE.TextureLoader();
 
-      const tileIdx = y * width + x;
-      const tile = tiles[tileIdx];
+    container.appendChild(renderer.domElement);
+    window.addEventListener('resize', () => this.resize());
+  }
 
-      // Origine du losange à l'écran (sommet haut)
-      const originX = (tile.x - tile.y) * 64 * z + cam.offsetX;
-      const originY = (tile.x + tile.y) * 32 * z + cam.offsetY;
+  /**
+   * Crée une instance complète de TileRenderer avec caméra dimétrique.
+   *
+   * @param container Élément DOM hôte du canvas WebGL
+   * @param mapState  État initial de la carte
+   * @returns         Instance prête à render()
+   */
+  static create(container: HTMLElement, mapState: IMapState): TileRenderer {
+    // Renderer WebGL
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x1a3a1a); // vert foncé SimGolf
+    renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-      // Matrice de projection dimétrique 2:1 (commune à tous les quadrants)
-      ctx.setTransform(z, z * 0.5, -z, z * 0.5, originX, originY);
+    // Scène
+    const scene = new THREE.Scene();
 
-      const images = getImages(tileIdx);
+    // Caméra dimétrique
+    const { width, height } = mapState;
+    const { camera } = createDimetricCamera(width, height);
+    const instance = new TileRenderer(container, scene, camera, renderer, null!);
 
-      if (images.length <= 1) {
-        // Mode legacy : 1 seule texture pour toute la tuile
-        if (images[0]) {
-          ctx.drawImage(images[0], 0, 0, TEX_SIZE, TEX_SIZE);
-        }
-      } else {
-        // Mode Sub-Tiling : chaque quadrant dessine sa sous-région
-        for (let q = 0; q < Math.min(images.length, 4); q++) {
-          if (!images[q]) continue;
+    // OrbitControls — rotation désactivée (projection dimétrique fixe)
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableRotate = false;
+    controls.enablePan = true;
+    controls.enableZoom = true;
+    controls.zoomSpeed = 1.0;
+    controls.panSpeed = 0.8;
+    controls.minZoom = 0.25;
+    controls.maxZoom = 20;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: null as unknown as THREE.MOUSE,
+    };
+    controls.touches = {
+      ONE: THREE.TOUCH.PAN,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
+    controls.update();
 
-          const tri = QUAD_TRIANGLES[q];
-          const src = QUAD_SRC[q];
+    instance.controls = controls;
+    instance.gridWidth = width;
+    instance.gridHeight = height;
 
-          // Clip au triangle de ce quadrant
-          ctx.save();
-          ctx.beginPath();
-          ctx.moveTo(tri[0][0], tri[0][1]);
-          ctx.lineTo(tri[1][0], tri[1][1]);
-          ctx.lineTo(tri[2][0], tri[2][1]);
-          ctx.closePath();
-          ctx.clip();
+    // Sauvegarder l'état initial pour resetView
+    instance.initialCameraPosition = camera.position.clone();
+    instance.initialTarget = controls.target.clone();
 
-          // Dessiner la sous-région 32×32 de la texture
-          ctx.drawImage(
-            images[q],
-            src.sx, src.sy, src.sw, src.sh,  // source rect
-            0, 0, TEX_SIZE, TEX_SIZE,         // dest rect (full diamond)
-          );
+    // Charger la carte
+    instance.loadMap(mapState);
 
-          ctx.restore(); // restore clip
-        }
+    return instance;
+  }
+
+  // ================================================================
+  // Chargement de carte
+  // ================================================================
+
+  /**
+   * (Re)charge une carte dans le moteur de rendu.
+   * Détruit les anciens meshes, construit les nouveaux via buildParklandMesh(),
+   * et lance le chargement asynchrone des textures.
+   *
+   * @param mapState État de la carte à afficher
+   */
+  loadMap(mapState: IMapState): void {
+    this.gridWidth = mapState.width;
+    this.gridHeight = mapState.height;
+
+    // Nettoyer les anciens meshes
+    this.disposeMeshes();
+
+    // Construire les BufferGeometry groupées par texture
+    const meshGroups = buildParklandMesh(mapState);
+
+    // Collecter tous les chemins de texture uniques
+    const neededPaths = new Set<string>();
+    for (const group of meshGroups) {
+      if (group.texturePath) neededPaths.add(group.texturePath);
+    }
+
+    // Lancer le chargement des textures manquantes
+    this.pendingTextures = neededPaths.size;
+    for (const path of neededPaths) {
+      if (this.textureCache.has(path)) {
+        this.pendingTextures--;
+        continue;
       }
+
+      // Placeholder en attendant le chargement
+      this.textureCache.set(path, null!);
+
+      this.loader.load(
+        path,
+        (tex: THREE.Texture) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.magFilter = THREE.LinearFilter;
+          tex.minFilter = THREE.LinearMipmapLinearFilter;
+          tex.anisotropy = rendererCapabilities().maxAnisotropy;
+          this.textureCache.set(path, tex);
+          this.pendingTextures--;
+          this.refreshMaterials();
+        },
+        undefined,
+        () => {
+          // Échec de chargement
+          console.warn(`[TileRenderer] Texture manquante: ${path}`);
+          this.textureCache.set(path, null!);
+          this.pendingTextures--;
+        },
+      );
+    }
+
+    // Créer les meshes
+    for (const group of meshGroups) {
+      this.createMesh(group);
     }
   }
 
-  ctx.restore(); // restore identity transform
+  // ================================================================
+  // Cycle de rendu
+  // ================================================================
+
+  /**
+   * Rendu d'une frame. À appeler dans requestAnimationFrame.
+   */
+  render(): void {
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Redimensionnement du canvas au container parent.
+   * Appelé automatiquement au resize de la fenêtre.
+   */
+  resize(): void {
+    const container = this.renderer.domElement.parentElement;
+    if (!container) return;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (w === 0 || h === 0) return;
+
+    this.renderer.setSize(w, h);
+    resizeDimetricCamera(this.camera, this.gridWidth, this.gridHeight);
+  }
+
+  /**
+   * Nettoie toutes les ressources GPU.
+   */
+  dispose(): void {
+    this.disposeMeshes();
+    this.renderer.dispose();
+    this.controls.dispose();
+    for (const tex of this.textureCache.values()) {
+      if (tex) tex.dispose();
+    }
+    this.textureCache.clear();
+    window.removeEventListener('resize', () => this.resize());
+  }
+
+  /**
+   * Réinitialise la vue à la position dimétrique par défaut.
+   */
+  resetView(): void {
+    this.camera.position.copy(this.initialCameraPosition);
+    this.camera.zoom = 1;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(this.initialTarget);
+    this.controls.update();
+  }
+
+  // ================================================================
+  // Internes de maillage
+  // ================================================================
+
+  /**
+   * Crée un Mesh Three.js pour un groupe de géométrie + texture.
+   * Utilise MeshBasicMaterial (pas d'éclairage, rendu 1:1 avec les textures).
+   */
+  private createMesh(group: MeshGroup): void {
+    const fallbackColor = new THREE.Color(
+      group.fallbackColor[0],
+      group.fallbackColor[1],
+      group.fallbackColor[2],
+    );
+
+    const material = new THREE.MeshBasicMaterial({
+      color: fallbackColor,
+      side: THREE.DoubleSide,
+    });
+
+    // Si la texture est déjà chargée, l'appliquer
+    if (group.texturePath) {
+      const tex = this.textureCache.get(group.texturePath);
+      if (tex) {
+        material.map = tex;
+        material.color.setHex(0xffffff);
+      }
+    }
+
+    const mesh = new THREE.Mesh(group.geometry, material);
+    mesh.userData.texturePath = group.texturePath;
+    mesh.userData.fallbackColor = group.fallbackColor;
+    this.meshGroup.add(mesh);
+  }
+
+  /**
+   * Détruit tous les meshes et libère la mémoire GPU.
+   */
+  private disposeMeshes(): void {
+    for (let i = this.meshGroup.children.length - 1; i >= 0; i--) {
+      const child = this.meshGroup.children[i];
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (child.material instanceof THREE.Material) {
+          child.material.dispose();
+        }
+      }
+      this.meshGroup.remove(child);
+    }
+  }
+
+  /**
+   * Met à jour les matériaux de tous les meshes dont la texture
+   * vient d'être chargée.
+   */
+  private refreshMaterials(): void {
+    for (const child of this.meshGroup.children) {
+      if (!(child instanceof THREE.Mesh)) continue;
+      const path = child.userData.texturePath as string | undefined;
+      if (!path) continue;
+
+      const tex = this.textureCache.get(path);
+      if (!tex) continue; // pas encore chargée
+
+      const mat = child.material as THREE.MeshBasicMaterial;
+      if (mat.map === tex) continue; // déjà à jour
+
+      mat.map = tex;
+      mat.color.setHex(0xffffff); // supprime le fallback
+      mat.needsUpdate = true;
+    }
+  }
+}
+
+// ================================================================
+// Helper : capacités du renderer (anisotropy max)
+// ================================================================
+
+let _caps: { maxAnisotropy: number } | null = null;
+
+function rendererCapabilities(): { maxAnisotropy: number } {
+  if (_caps) return _caps;
+  const tmp = new THREE.WebGLRenderer({ alpha: true });
+  const max = tmp.capabilities.getMaxAnisotropy();
+  tmp.dispose();
+  _caps = { maxAnisotropy: isFinite(max) ? max : 4 };
+  return _caps;
 }
