@@ -262,34 +262,23 @@ const TYPES_SEAM_ONLY: Set<TileType> = new Set([
  *
  *   Pass 0 : Fond uni — texture 0001 entière (quadrants [0,1,2,3])
  *
- *   Pass 1+ : Overlays cumulatifs :
- *     - Bordure droite (1 voisin card. diff.) : texture 0002, bande fine
- *       extraite le long de l'arête (BORDER_STRIP=6px)
- *     - Diagonale isolée (voisin diag. diff., cardinaux identiques) :
- *       texture 0003, 1 quadrant (coin)
+ *   Pass 1+ : Overlays cumulatifs pour chaque direction déclencheuse
+ *     - Bordure droite (1 voisin diff.) : texture 0002, 2 quadrants
  *     - Angle arrondi (2 voisins adj. diff.) : texture 0004, 1 quadrant
  *     - Îlot (4 voisins diff.) : texture 0005 entière
  *
- *   Suffixe cosmétique : pour les tuiles plates (geometry='A') en
- *   famille grass, on utilise A-E basé sur la position pour casser
- *   la monotonie de la texture de base.
- *
  *   Table de correspondance :
- *     Direction | Bits masque | Texture | Contenu
- *     ──────────┼─────────────┼─────────┼─────────────────────
- *     N         | 1           | 0002    | bande haute (strip)
- *     E         | 2           | 0002    | bande droite (strip)
- *     S         | 4           | 0002    | bande basse (strip)
- *     W         | 8           | 0002    | bande gauche (strip)
- *     NE isolé  | diag        | 0003    | quadrant 1 (NE)
- *     SE isolé  | diag        | 0003    | quadrant 3 (SE)
- *     SW isolé  | diag        | 0003    | quadrant 2 (SW)
- *     NW isolé  | diag        | 0003    | quadrant 0 (NW)
- *     N+E       | 1+2         | 0004    | quadrant 1 (NE)
- *     E+S       | 2+4         | 0004    | quadrant 3 (SE)
- *     S+W       | 4+8         | 0004    | quadrant 2 (SW)
- *     W+N       | 8+1         | 0004    | quadrant 0 (NW)
- *     ∀         | 1+2+4+8     | 0005    | quadrants [0,1,2,3]
+ *     Direction | Bits masque | Texture | Quadrants
+ *     ──────────┼─────────────┼─────────┼──────────
+ *     N         | 1           | 0002    | [0,1] (NW+NE)
+ *     E         | 2           | 0002    | [1,3] (NE+SE)
+ *     S         | 4           | 0002    | [2,3] (SW+SE)
+ *     W         | 8           | 0002    | [0,2] (NW+SW)
+ *     N+E       | 1+2         | 0004    | [1]   (NE)
+ *     E+S       | 2+4         | 0004    | [3]   (SE)
+ *     S+W       | 4+8         | 0004    | [2]   (SW)
+ *     W+N       | 8+1         | 0004    | [0]   (NW)
+ *     ∀         | 1+2+4+8     | 0005    | [0,1,2,3] (entier)
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
@@ -306,24 +295,7 @@ export function computeRenderPasses(
   const passes: IRenderPass[] = [];
   const family = getTerrainFamily(tile.type);
   const geomSuffix = getGeometryType(tile.elevation);
-
-  // ---- Suffixe cosmétique ----
-  // Pour les tuiles plates en famille grass, on varie A-E par position
-  // pour casser la monotonie du Rough.
-  let baseSuffix: string;
-  if (family === 0) {
-    if (geomSuffix === 'A') {
-      // Plat → cosmétique A-E basé sur position
-      const cosIdx = ((tile.x * 7 + tile.y * 13) & 0x7FFFFFFF) % 5;
-      baseSuffix = String.fromCharCode(65 + cosIdx);
-    } else {
-      // Non-plat → géométrie d'élévation
-      baseSuffix = geomSuffix;
-    }
-  } else {
-    // Non-grass → toujours 'A' (ou orientation pour border types)
-    baseSuffix = 'A';
-  }
+  const baseSuffix = (family === 0) ? geomSuffix : 'A';
 
   // ---- Pass 0 : Fond uni 0001 (texture entière) ----
   passes.push({
@@ -334,12 +306,9 @@ export function computeRenderPasses(
     // quadrants omis = texture entière
   });
 
-  // ---- Masque asymétrique (4 cardinaux) ----
+  // ---- Masque asymétrique ----
   const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-  if (mask === 0 && tile.x >= 0) {
-    // On vérifie les diagonales même si aucun cardinal n'est différent
-    // (cas rare mais possible : seul un diagonal est différent)
-  }
+  if (mask === 0) return passes;  // Aucun overlay
 
   // ---- Shortcut : 4 voisins différents → texture 0005 entière ----
   if (mask === 0b1111) {
@@ -353,31 +322,15 @@ export function computeRenderPasses(
   }
 
   // ---- Définition des overlays ----
-  type OverlayDef = {
-    bits: number;
-    texVar: number;
-    quads: number[];
-    stripEdge?: 'N' | 'E' | 'S' | 'W';
-  };
+  // Directions : { bits, texture, quadrants }
+  type OverlayDef = { bits: number; texVar: number; quads: number[] };
 
-  // Overlays de bordure droite (texture 0002, bande fine par direction)
-  // Ces passes utilisent stripEdge pour n'extraire qu'une bande fine
-  // de BORDER_STRIP pixels le long de l'arête.
+  // Overlays de bordure droite (texture 0002, 2 quadrants par direction)
   const edgeOverlays: OverlayDef[] = [
-    { bits: 1, texVar: 1, quads: [0, 1], stripEdge: 'N' },  // fichier 0002, N → haut
-    { bits: 2, texVar: 1, quads: [1, 3], stripEdge: 'E' },  // fichier 0002, E → droite
-    { bits: 4, texVar: 1, quads: [2, 3], stripEdge: 'S' },  // fichier 0002, S → bas
-    { bits: 8, texVar: 1, quads: [0, 2], stripEdge: 'W' },  // fichier 0002, W → gauche
-  ];
-
-  // Overlays de diagonale isolée (texture 0003, 1 quadrant par coin)
-  // Condition : voisin diagonal différent, mais les 2 cardinaux qui
-  // l'encadrent sont identiques (bits mask = 0 pour les deux).
-  const diagOverlays: { ddx: number; ddy: number; c1: number; c2: number; quad: number }[] = [
-    { ddx: 1,  ddy: -1, c1: 1, c2: 2,  quad: 1 },  // NE : N(1) & E(2) identiques
-    { ddx: 1,  ddy: 1,  c1: 2, c2: 4,  quad: 3 },  // SE : E(2) & S(4) identiques
-    { ddx: -1, ddy: 1,  c1: 4, c2: 8,  quad: 2 },  // SW : S(4) & W(8) identiques
-    { ddx: -1, ddy: -1, c1: 8, c2: 1,  quad: 0 },  // NW : W(8) & N(1) identiques
+    { bits: 1, texVar: 1, quads: [0, 1] },  // fichier 0002, N → haut
+    { bits: 2, texVar: 1, quads: [1, 3] },  // fichier 0002, E → droite
+    { bits: 4, texVar: 1, quads: [2, 3] },  // fichier 0002, S → bas
+    { bits: 8, texVar: 1, quads: [0, 2] },  // fichier 0002, W → gauche
   ];
 
   // Overlays d'angle arrondi (texture 0004, 1 quadrant par coin)
@@ -388,7 +341,7 @@ export function computeRenderPasses(
     { bits: 8 | 1, texVar: 3, quads: [0] },  // fichier 0004, W+N → NW
   ];
 
-  // 1. Ajoute les overlays de bordure droite (bandes fines 0002)
+  // Ajoute les overlays de bordure droite
   for (const edge of edgeOverlays) {
     if ((mask & edge.bits) === edge.bits) {
       passes.push({
@@ -397,33 +350,11 @@ export function computeRenderPasses(
         suffix: baseSuffix,
         subType: tile.subType,
         quadrants: edge.quads,
-        stripEdge: edge.stripEdge,
       });
     }
   }
 
-  // 2. Ajoute les overlays de diagonale isolée (texture 0003)
-  for (const diag of diagOverlays) {
-    const nx = tile.x + diag.ddx;
-    const ny = tile.y + diag.ddy;
-    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-      if (isNeighbourTriggeringBorder(tile.type, tiles[ny * w + nx].type)) {
-        // Diagonal différent : vérifier que les 2 cardinaux sont identiques
-        // (leurs bits ne sont PAS activés dans le masque)
-        if ((mask & diag.c1) === 0 && (mask & diag.c2) === 0) {
-          passes.push({
-            type: tile.type,
-            variation: 2,        // fichier 0003 = diagonale (0-indexed)
-            suffix: baseSuffix,
-            subType: tile.subType,
-            quadrants: [diag.quad],
-          });
-        }
-      }
-    }
-  }
-
-  // 3. Ajoute les overlays d'angle arrondi (texture 0004)
+  // Ajoute les overlays d'angle arrondi
   for (const corner of cornerOverlays) {
     if ((mask & corner.bits) === corner.bits) {
       passes.push({
