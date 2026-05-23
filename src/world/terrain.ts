@@ -211,20 +211,24 @@ const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
 
 /**
  * borderOverride — Types qui utilisent les TEXTURES D'UN AUTRE TYPE
- * comme bordures. Correspond au champ borderOverride (offset +0x0c)
- * dans la table typeInfo du jeu original.
+ * comme textures de bordure alpha-transparente.
+ * Correspond au champ borderOverride (offset +0x0c dans typeInfo,
+ * stride 24 bytes, table à this+0x40 dans Terrain.dll).
  *
- * Quand un type a un borderOverride, toutes ses passes de bordure
- * utiliseront les textures du type spécifié (variation incluse).
+ * Confirmé Ghidra (ASM @ 0x10003310 : imul eax, eax, 0x18) :
+ *   Fairway(1)       → borderOverride=8  → GrassySand  (vert, transition fairway→rough)
+ *   FirmFairway(19)  → borderOverride=8  → GrassySand
+ *   SandBunker(3)    → borderOverride=9  → GrassBunker (brun/olive, transition sable→herbe)
+ *   PotSandBunker(20)→ borderOverride=9  → GrassBunker
  *
- * Exemple : SandBunker → GrassySand. Une tuile SandBunker adjacente
- * à du Rough générera des passes avec les textures GrassySand A-D.
+ * CORRIGÉ : l'ancien code avait Fairway→GrassBunker (marron) et SandBunker→GrassySand (vert),
+ * ce qui inversait les couleurs et produisait l'effet "gaufrier".
  */
 const BORDER_OVERRIDE: Partial<Record<TileType, TileType>> = {
-  [TileType.SandBunker]:   TileType.GrassySand,    // borderOverride=8
-  [TileType.PotSandBunker]:TileType.GrassySand,    // borderOverride=8
-  [TileType.Fairway]:      TileType.GrassBunker,   // borderOverride=9
-  [TileType.FirmFairway]:  TileType.GrassBunker,   // borderOverride=9
+  [TileType.SandBunker]:   TileType.GrassBunker,   // brun  : sable → herbe
+  [TileType.PotSandBunker]:TileType.GrassBunker,   // brun  : sable → herbe
+  [TileType.Fairway]:      TileType.GrassySand,    // vert  : fairway → rough
+  [TileType.FirmFairway]:  TileType.GrassySand,    // vert  : fairway → rough
 };
 
 /**
