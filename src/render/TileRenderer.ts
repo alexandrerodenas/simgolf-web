@@ -166,6 +166,12 @@ export function renderMap(
               let dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
               let dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
 
+              // Angles arrondis (texture 0004, 1 quadrant) : offset latéraux
+              if (pass.variation === 3 && quads.length === 1) {
+                if (q === 1) { dy -= BORDER_STRIP; }  // NE → haut
+                if (q === 2) { dx -= BORDER_STRIP; }  // SW → gauche
+              }
+
               ctx.setTransform(
                 z, z * 0.5,
                 -z, z * 0.5,
