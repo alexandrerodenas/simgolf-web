@@ -166,14 +166,11 @@ export function renderMap(
               let dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
               let dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
 
-              // Les corners (texture 0004, 1 quadrant) doivent être décalés
-              // vers l'extérieur pour remplir le creux entre les bandes d'arête.
+              // Les corners (texture 0004, 1 quadrant) : offset de 6 unités
+              // pour les angles latéraux NE et SW.
               if (pass.variation === 3 && quads.length === 1) {
-                // NW (quad 0) : offset (-s, -s) → au-dessus du sommet haut
-                if (q === 0) { dx -= BORDER_STRIP; dy -= BORDER_STRIP; }
-                if (q === 1) { /* NE → à voir */ }
-                if (q === 2) { /* SW → à voir */ }
-                if (q === 3) { /* SE → à voir */ }
+                if (q === 1) { dy -= BORDER_STRIP; }  // NE → vers le haut
+                if (q === 2) { dy += BORDER_STRIP; }  // SW → vers le bas
               }
 
               ctx.setTransform(
