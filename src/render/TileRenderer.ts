@@ -1,15 +1,15 @@
 /**
- * render/TileRenderer.ts — Rendu 2D Canvas Sub-Tiling 4 Quadrants
+ * render/TileRenderer.ts — Rendu 2D Canvas — Overlays par Quadrants
  *
- * Chaque tuile est divisée en 4 quadrants de 32×32 px (NW, NE, SW, SE)
- * pouvant chacun avoir une texture différente. Le rendu utilise
- * ctx.drawImage avec source rectangle pour n'afficher qu'un quadrant
- * de la texture 64×64.
+ * Algorithme Holistique : chaque tuile commence par un fond uni 0001,
+ * puis des overlays par quadrants viennent plaquer les bordures
+ * (textures 0002/0004/0005) uniquement là où c'est nécessaire.
  *
- * Ordre de rendu : painter's algorithm par (mapX + mapY) croissant.
  * Projection dimétrique 2:1 (REFERENCE_GUIDE.md §4.2) :
  *   screenX = (mapX - mapY) × 64
  *   screenY = (mapX + mapY) × 32
+ *
+ * Ordre de rendu : painter's algorithm par (mapX + mapY) croissant.
  */
 
 import { IMapState, IRenderPass } from '../core/types';
@@ -19,26 +19,29 @@ const QUAD_SIZE = 32;
 
 /**
  * Coordonnées source (dans la texture 64×64) pour chaque quadrant.
- * Quadrant 0 = NW (haut-gauche), 1 = NE, 2 = SW, 3 = SE
  */
-const QUAD_SRC: [number, number][] = [
-  [0,  0],  // NW
-  [32, 0],  // NE
-  [0,  32], // SW
-  [32, 32], // SE
-];
+const QUAD_SRC: Record<number, [number, number]> = {
+  0: [0,  0],   // NW
+  1: [32, 0],   // NE
+  2: [0,  32],  // SW
+  3: [32, 32],  // SE
+};
 
 /**
- * Rendu complet de la carte en sub-tiling 4 quadrants.
+ * Rendu complet de la carte en overlays cumulatifs par quadrants.
  *
- * Chaque tuile est rendue comme 4 quadrants 32×32 indépendants.
- * Chaque quadrant peut utiliser une texture de base ou de bordure
- * selon le voisinage (déterminé par computeRenderPasses).
+ * Chaque tuile est rendue en multiples passes :
+ *   Pass 0 : Fond uni 0001 (texture entière 64×64)
+ *   Pass+  : Overlays quadrants depuis 0002 (bords droits)
+ *            ou 0004 (angles arrondis) ou 0005 (îlot)
+ *
+ * Les overlays s'empilent avec alpha compositing (source-over) :
+ * le fond 0001 reste visible là où les overlays sont transparents.
  *
  * @param ctx         Contexte 2D du canvas
  * @param mapState    État de la carte
  * @param cam         Caméra 2D (offset + zoom)
- * @param getImages   Fonction (tileIdx) → HTMLImageElement[] (1 par passe/quadrant)
+ * @param getImages   Fonction (tileIdx) → HTMLImageElement[] (1 par passe)
  * @param reverse     Si true, ordre inverse (vue de dessus)
  */
 export function renderMap(
@@ -46,12 +49,13 @@ export function renderMap(
   mapState: IMapState,
   cam: { offsetX: number; offsetY: number; zoom: number },
   getImages: (tileIdx: number) => HTMLImageElement[],
+  getPasses?: (tileIdx: number) => IRenderPass[],
   reverse: boolean = false,
 ): void {
-  const { width, height } = mapState;
+  const { width, height, tiles } = mapState;
   const z = cam.zoom;
 
-  // Painter's algorithm : tri croissant ou décroissant selon reverse
+  // Painter's algorithm
   const range = Array.from({ length: width + height }, (_, i) =>
     reverse ? width + height - 1 - i : i,
   );
@@ -62,44 +66,51 @@ export function renderMap(
       if (x < 0 || x >= width) continue;
 
       const tileIdx = y * width + x;
-      const tile = mapState.tiles[tileIdx];
+      const tile = tiles[tileIdx];
+      const passes = getPasses ? getPasses(tileIdx) : tile.renderPasses;
+      const images = getImages(tileIdx);
 
-      // Origine du losange à l'écran (sommet haut)
+      // Origine du losange à l'écran
       const originX = (tile.x - tile.y) * 64 * z + cam.offsetX;
       const originY = (tile.x + tile.y) * 32 * z + cam.offsetY;
 
-      // Rendu des 4 quadrants
-      const images = getImages(tileIdx);
-      // Par défaut (si pas d'images), on dessine 4 fois la même base
-      for (let q = 0; q < 4; q++) {
-        const img = images[q];
-        if (!img) {
-          // Peut-être un fallback ? On continue.
-          continue;
+      // Itère sur chaque passe (base + overlays)
+      for (let p = 0; p < Math.min(passes.length, images.length); p++) {
+        const pass = passes[p];
+        const img = images[p];
+        if (!img) continue;
+
+        // Si la passe a des quadrants spécifiques, ne rendre qu'eux
+        const quads = pass.quadrants ?? [0, 1, 2, 3];  // tous par défaut
+
+        // Transformation de base pour la tuile entière
+        ctx.setTransform(z, z * 0.5, -z, z * 0.5, originX, originY);
+
+        if (quads.length === 4) {
+          // Texture entière : drawImage direct
+          ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
+        } else {
+          // Quadrants spécifiques : source rect dans la texture
+          for (const q of quads) {
+            const [sx, sy] = QUAD_SRC[q];
+            // Position destination dans le losange
+            const dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
+            const dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
+
+            // Ajuster la transform pour ce quadrant
+            ctx.setTransform(
+              z, z * 0.5,
+              -z, z * 0.5,
+              originX + dx * z - dy * z,
+              originY + (dx + dy) * z * 0.5,
+            );
+
+            ctx.drawImage(img, sx, sy, QUAD_SIZE, QUAD_SIZE, 0, 0, QUAD_SIZE, QUAD_SIZE);
+          }
         }
-
-        // Source : quadrant q dans la texture 64×64
-        const [sx, sy] = QUAD_SRC[q];
-        // Destination : quadrant q dans le losange (en coords locales)
-        const dx = (q === 0 || q === 2) ? 0 : 32;  // NW/SW → gauche, NE/SE → droite
-        const dy = (q === 0 || q === 1) ? 0 : 32;  // NW/NE → haut, SW/SE → bas
-
-        // Matrice de projection pour CE quadrant
-        // Le quadrant fait 32×32 dans l'espace local de la texture,
-        // rendu comme un sous-losange 32×16 à l'écran
-        ctx.setTransform(
-          z, z * 0.5,              // eX: → droite (1, 0.5)
-          -z, z * 0.5,             // eY: → gauche (1, -0.5) = -1, 0.5
-          originX + dx * z - dy * z,  // Translation X
-          originY + dx * z * 0.5 + dy * z * 0.5,  // Translation Y
-        );
-
-        // Dessine le quadrant : source 32×32 dans la texture, destination 32×32
-        ctx.drawImage(img, sx, sy, QUAD_SIZE, QUAD_SIZE, 0, 0, QUAD_SIZE, QUAD_SIZE);
       }
     }
   }
 
-  // Restaurer la matrice identité
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }

@@ -81,11 +81,12 @@ export interface IRenderPass {
   subType?: number;
 
   /**
-   * Quadrant pour le sub-tiling (0-3). Si défini, cette passe ne rend
-   * qu'un sous-rectangle 32×32 de la texture 64×64.
-   *   0 = NW, 1 = NE, 2 = SW, 3 = SE
+   * Quadrants à rendre depuis cette texture (0-3).
+   * Tableau de 1 à 4 valeurs : [0]=NW, [1]=NE, [2]=SW, [3]=SE.
+   * Si omis ou [0,1,2,3] = texture entière 64×64.
+   * Ex: [0,1] = les 2 quadrants du haut (bordure Nord)
    */
-  quadrant?: number;
+  quadrants?: number[];
 }
 
 // ================================================================

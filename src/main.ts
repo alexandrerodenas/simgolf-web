@@ -21,6 +21,7 @@ import { generateVegetationGrid, texturePathForPass,
          getGeometryType, maxVariationForType } from './world/terrain';
 import { createCamera2D, Camera2D } from './render/camera';
 import { renderMap } from './render/TileRenderer';
+import { IRenderPass } from './core/types';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;
@@ -297,12 +298,15 @@ function animate(): void {
   ctx.fillStyle = '#1a3a1a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Rendu des tuiles (multi-passes)
+  // Rendu des tuiles (overlays cumulatifs par quadrants)
   const getImages = (idx: number): HTMLImageElement[] => {
     return tilePassImages[idx] ?? [];
   };
+  const getPasses = (idx: number): IRenderPass[] => {
+    return mapState.tiles[idx]?.renderPasses ?? [];
+  };
   const isTopDown = cam.offsetY > canvas.height / 2 + 100;
-  renderMap(ctx, mapState, cam, getImages, isTopDown);
+  renderMap(ctx, mapState, cam, getImages, getPasses, isTopDown);
 
   // Debug
   drawDebug();

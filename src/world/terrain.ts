@@ -277,22 +277,33 @@ const TYPES_SEAM_ONLY: Set<TileType> = new Set([
 /**
  * Calcule les renderPasses pour une tuile donnée.
  *
- * Sub-Tiling en 4 quadrants (conforme §5.17.6) :
- *   Chaque tuile logique (64×64) est rendue en 4 quadrants indépendants
- *   de 32×32, chacun pouvant avoir une texture différente.
+ * Système Holistique : Base 0001 + Overlays par Quadrants
  *
- *   Quadrant | Coin texture | Déclenché par
- *   ─────────┼──────────────┼────────────────
- *   0 (NW)   | (0,0)-(32,32) | N OR W (masque bit 1 ou 8)
- *   1 (NE)   | (32,0)-(64,32) | N OR E (masque bit 1 ou 2)
- *   2 (SW)   | (0,32)-(32,64) | S OR W (masque bit 4 ou 8)
- *   3 (SE)   | (32,32)-(64,64) | S OR E (masque bit 4 ou 2)
+ *   Pass 0 : Fond uni — texture 0001 entière (quadrants [0,1,2,3])
+ *
+ *   Pass 1+ : Overlays cumulatifs pour chaque direction déclencheuse
+ *     - Bordure droite (1 voisin diff.) : texture 0002, 2 quadrants
+ *     - Angle arrondi (2 voisins adj. diff.) : texture 0004, 1 quadrant
+ *     - Îlot (4 voisins diff.) : texture 0005 entière
+ *
+ *   Table de correspondance :
+ *     Direction | Bits masque | Texture | Quadrants
+ *     ──────────┼─────────────┼─────────┼──────────
+ *     N         | 1           | 0002    | [0,1] (NW+NE)
+ *     E         | 2           | 0002    | [1,3] (NE+SE)
+ *     S         | 4           | 0002    | [2,3] (SW+SE)
+ *     W         | 8           | 0002    | [0,2] (NW+SW)
+ *     N+E       | 1+2         | 0004    | [1]   (NE)
+ *     E+S       | 2+4         | 0004    | [3]   (SE)
+ *     S+W       | 4+8         | 0004    | [2]   (SW)
+ *     W+N       | 8+1         | 0004    | [0]   (NW)
+ *     ∀         | 1+2+4+8     | 0005    | [0,1,2,3] (entier)
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
  * @param w      Largeur de la grille
  * @param h      Hauteur de la grille
- * @returns      Tableau de renderPasses (toujours 4 passes)
+ * @returns      Tableau de renderPasses
  */
 export function computeRenderPasses(
   tile: ITile,
@@ -305,64 +316,77 @@ export function computeRenderPasses(
   const geomSuffix = getGeometryType(tile.elevation);
   const baseSuffix = (family === 0) ? geomSuffix : 'A';
 
-  // Détermine le type de texture de bordure (si applicable)
-  const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-  const borderType = BORDER_OVERRIDE[tile.type] !== undefined
-    ? BORDER_OVERRIDE[tile.type]!
-    : TYPES_WITH_BORDER_TEXTURES.has(tile.type)
-      ? tile.type
-      : null;
+  // ---- Pass 0 : Fond uni 0001 (texture entière) ----
+  passes.push({
+    type: tile.type,
+    variation: 1,        // TOUJOURS 0001
+    suffix: baseSuffix,
+    subType: tile.subType,
+    // quadrants omis = texture entière
+  });
 
-  // Pour chaque quadrant, choisir base ou border selon le masque
-  // Un quadrant prend la bordure si UN de ses 2 côtés adjacents déclenche
-  // Q0 (NW): N(bit1) OR W(bit8)
-  // Q1 (NE): N(bit1) OR E(bit2)
-  // Q2 (SW): S(bit4) OR W(bit8)
-  // Q3 (SE): S(bit4) OR E(bit2)
-  const quadrantChecks: [number, number[]][] = [
-    [0, [1, 8]],   // Q0 = NW = N OR W
-    [1, [1, 2]],   // Q1 = NE = N OR E
-    [2, [4, 8]],   // Q2 = SW = S OR W
-    [3, [4, 2]],   // Q3 = SE = S OR E
+  // ---- Masque asymétrique ----
+  const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+  if (mask === 0) return passes;  // Aucun overlay
+
+  // ---- Shortcut : 4 voisins différents → texture 0005 entière ----
+  if (mask === 0b1111) {
+    passes.push({
+      type: tile.type,
+      variation: 5,        // 0005 = îlot
+      suffix: baseSuffix,
+      subType: tile.subType,
+    });
+    return passes;
+  }
+
+  // ---- Définition des overlays ----
+  // Directions : { bits, texture, quadrants }
+  type OverlayDef = { bits: number; texVar: number; quads: number[] };
+
+  // Overlays de bordure droite (texture 0002, 2 quadrants par direction)
+  const edgeOverlays: OverlayDef[] = [
+    { bits: 1, texVar: 2, quads: [0, 1] },  // N → haut
+    { bits: 2, texVar: 2, quads: [1, 3] },  // E → droite
+    { bits: 4, texVar: 2, quads: [2, 3] },  // S → bas
+    { bits: 8, texVar: 2, quads: [0, 2] },  // W → gauche
   ];
 
-  for (const [qIdx, triggerBits] of quadrantChecks) {
-    const needsBorder = borderType !== null &&
-      triggerBits.some(bit => (mask & bit) !== 0);
+  // Overlays d'angle arrondi (texture 0004, 1 quadrant par coin)
+  const cornerOverlays: OverlayDef[] = [
+    { bits: 1 | 2, texVar: 4, quads: [1] },  // N+E → NE
+    { bits: 2 | 4, texVar: 4, quads: [3] },  // E+S → SE
+    { bits: 4 | 8, texVar: 4, quads: [2] },  // S+W → SW
+    { bits: 8 | 1, texVar: 4, quads: [0] },  // W+N → NW
+  ];
 
-    const texType = needsBorder ? borderType! : tile.type;
-    // Pour un quadrant border : utiliser le suffixe directionnel du
-    // premier bit déclencheur trouvé (N→A, E→B, S→C, W→D)
-    let suffix = baseSuffix;
-    if (needsBorder) {
-      for (const bit of triggerBits) {
-        if (mask & bit) {
-          suffix = bitToSuffix(bit);
-          break;
-        }
-      }
+  // Ajoute les overlays de bordure droite
+  for (const edge of edgeOverlays) {
+    if ((mask & edge.bits) === edge.bits) {
+      passes.push({
+        type: tile.type,
+        variation: edge.texVar,
+        suffix: baseSuffix,
+        subType: tile.subType,
+        quadrants: edge.quads,
+      });
     }
+  }
 
-    passes.push({
-      type: texType,
-      variation: tile.variation,
-      suffix,
-      subType: tile.subType,
-      quadrant: qIdx,
-    });
+  // Ajoute les overlays d'angle arrondi
+  for (const corner of cornerOverlays) {
+    if ((mask & corner.bits) === corner.bits) {
+      passes.push({
+        type: tile.type,
+        variation: corner.texVar,
+        suffix: baseSuffix,
+        subType: tile.subType,
+        quadrants: corner.quads,
+      });
+    }
   }
 
   return passes;
-}
-
-function bitToSuffix(bit: number): string {
-  switch (bit) {
-    case 1: return 'A';
-    case 2: return 'B';
-    case 4: return 'C';
-    case 8: return 'D';
-    default: return 'A';
-  }
 }
 
 /**
