@@ -170,7 +170,7 @@ export function renderMap(
               // pour les angles latéraux NE et SW.
               if (pass.variation === 3 && quads.length === 1) {
                 if (q === 1) { dy -= BORDER_STRIP; }  // NE → vers le haut
-                if (q === 2) { dy += BORDER_STRIP; }  // SW → vers le bas
+                if (q === 2) { dx -= BORDER_STRIP; }  // SW → vers la gauche
               }
 
               ctx.setTransform(
