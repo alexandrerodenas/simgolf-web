@@ -308,7 +308,6 @@ export function computeRenderPasses(
 
   // ---- Masque asymétrique ----
   const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-  if (mask === 0) return passes;  // Aucun overlay
 
   // ---- Shortcut : 4 voisins différents → texture 0005 entière ----
   if (mask === 0b1111) {
@@ -364,6 +363,37 @@ export function computeRenderPasses(
         subType: tile.subType,
         quadrants: corner.quads,
       });
+    }
+  }
+
+  // ---- Diagonales isolées (texture 0003) ----
+  // Condition : voisin diagonal différent, MAIS les 2 cardinaux qui
+  // l'encadrent sont identiques à la tuile courante (bits à 0 dans mask).
+  // Utilise 1 quadrant de la texture 0003 pour le coin correspondant.
+  type DiagDef = { ddx: number; ddy: number; c1: number; c2: number; quad: number };
+  const diagOverlays: DiagDef[] = [
+    { ddx: 1,  ddy: -1, c1: 1, c2: 2,  quad: 1 },  // NE : N(1) & E(2) identiques
+    { ddx: 1,  ddy: 1,  c1: 2, c2: 4,  quad: 3 },  // SE : E(2) & S(4) identiques
+    { ddx: -1, ddy: 1,  c1: 4, c2: 8,  quad: 2 },  // SW : S(4) & W(8) identiques
+    { ddx: -1, ddy: -1, c1: 8, c2: 1,  quad: 0 },  // NW : W(8) & N(1) identiques
+  ];
+
+  for (const diag of diagOverlays) {
+    const nx = tile.x + diag.ddx;
+    const ny = tile.y + diag.ddy;
+    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+      if (isNeighbourTriggeringBorder(tile.type, tiles[ny * w + nx].type)) {
+        // Diagonal différent : les cardinaux doivent être identiques
+        if ((mask & diag.c1) === 0 && (mask & diag.c2) === 0) {
+          passes.push({
+            type: tile.type,
+            variation: 2,        // fichier 0003 = diagonale isolée (0-indexed)
+            suffix: baseSuffix,
+            subType: tile.subType,
+            quadrants: [diag.quad],
+          });
+        }
+      }
     }
   }
 
