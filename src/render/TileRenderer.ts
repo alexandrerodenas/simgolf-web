@@ -56,20 +56,20 @@ function stripRects(
       };
     case 'E':
       // Bande droite : extrait les s derniers pixels du bord droit,
-      // placée À DROITE de la tuile, côté voisin Est (dx = QUAD_SIZE)
+      // placée À DROITE de la tuile, côté voisin Est (dx = TEX_SIZE = 64)
       return {
         sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: QUAD_SIZE,
+        dx: TEX_SIZE,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
       };
     case 'S':
       // Bande basse : extrait les s derniers pixels du bord bas,
-      // placée EN-DESSOUS de la tuile, côté voisin Sud (dy = QUAD_SIZE)
+      // placée EN-DESSOUS de la tuile, côté voisin Sud (dy = TEX_SIZE = 64)
       return {
         sx: sxBase, sy: syBase + QUAD_SIZE - s, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: QUAD_SIZE, dw: QUAD_SIZE, dh: s,
+        dy: TEX_SIZE, dw: QUAD_SIZE, dh: s,
       };
     case 'W':
       // Bande gauche : extrait les s premiers pixels du bord gauche,
