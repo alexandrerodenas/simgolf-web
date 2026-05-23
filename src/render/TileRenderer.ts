@@ -59,7 +59,7 @@ function stripRects(
       // placée À DROITE de la tuile, côté voisin Est
       return {
         sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: 66,
+        dx: 70,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
       };
