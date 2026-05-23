@@ -23,6 +23,9 @@ const QUAD_SIZE = 32;
 /** Épaisseur de la bande de bordure fine (en pixels source texture) */
 const BORDER_STRIP = 6;
 
+/** Décalage depuis l'arête de la texture pour sauter le biseau d'herbe interne. */
+const STRIP_SHIFT = 2;
+
 /**
  * Coordonnées source (dans la texture 64×64) pour chaque quadrant.
  */
@@ -42,42 +45,37 @@ function stripRects(
   edge: 'N' | 'E' | 'S' | 'W',
 ): { sx: number; sy: number; sw: number; sh: number; dx: number; dy: number; dw: number; dh: number } {
   const [sxBase, syBase] = QUAD_SRC[q];
-  const s = BORDER_STRIP;
 
   switch (edge) {
     case 'N':
-      // Bande haute : extraite du haut de la texture, placée AU-DESSUS de la tuile (dy = -s)
-      // → la bande dépasse vers l'extérieur (côté voisin Nord)
+      // Bande haute : saute STRIP_SHIFT px de biseau, réduit hauteur d'autant
       return {
-        sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
+        sx: sxBase, sy: syBase + STRIP_SHIFT, sw: QUAD_SIZE, sh: BORDER_STRIP - STRIP_SHIFT,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: -s, dw: QUAD_SIZE, dh: s,
+        dy: -BORDER_STRIP + STRIP_SHIFT, dw: QUAD_SIZE, dh: BORDER_STRIP - STRIP_SHIFT,
       };
     case 'E':
-      // Bande droite : extraite du bord droit de la texture, placée À DROITE de la tuile
-      // → la bande dépasse vers l'extérieur (côté voisin Est)
+      // Bande droite : réduit largeur à l'arête (exclut le biseau au bord droit)
       return {
-        sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
+        sx: sxBase + QUAD_SIZE - BORDER_STRIP, sy: syBase, sw: BORDER_STRIP - STRIP_SHIFT, sh: QUAD_SIZE,
         dx: QUAD_SIZE,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
-        dw: s, dh: QUAD_SIZE,
+        dw: BORDER_STRIP - STRIP_SHIFT, dh: QUAD_SIZE,
       };
     case 'S':
-      // Bande basse : extraite du bas de la texture, placée EN-DESSOUS de la tuile
-      // → la bande dépasse vers l'extérieur (côté voisin Sud)
+      // Bande basse : réduit hauteur à l'arête (exclut le biseau au bord bas)
       return {
-        sx: sxBase, sy: syBase + QUAD_SIZE - s, sw: QUAD_SIZE, sh: s,
+        sx: sxBase, sy: syBase + QUAD_SIZE - BORDER_STRIP, sw: QUAD_SIZE, sh: BORDER_STRIP - STRIP_SHIFT,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: QUAD_SIZE, dw: QUAD_SIZE, dh: s,
+        dy: QUAD_SIZE, dw: QUAD_SIZE, dh: BORDER_STRIP - STRIP_SHIFT,
       };
     case 'W':
-      // Bande gauche : extraite du bord gauche de la texture, placée À GAUCHE de la tuile
-      // → la bande dépasse vers l'extérieur (côté voisin Ouest)
+      // Bande gauche : saute STRIP_SHIFT px de biseau, réduit largeur d'autant
       return {
-        sx: sxBase, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: -s,
+        sx: sxBase + STRIP_SHIFT, sy: syBase, sw: BORDER_STRIP - STRIP_SHIFT, sh: QUAD_SIZE,
+        dx: -BORDER_STRIP + STRIP_SHIFT,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
-        dw: s, dh: QUAD_SIZE,
+        dw: BORDER_STRIP - STRIP_SHIFT, dh: QUAD_SIZE,
       };
   }
 }
