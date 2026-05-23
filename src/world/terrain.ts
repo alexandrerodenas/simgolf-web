@@ -275,89 +275,24 @@ const TYPES_SEAM_ONLY: Set<TileType> = new Set([
 ]);
 
 /**
- * Compte le nombre de bits à 1 dans un masque 4-bit.
- */
-function popcount4(mask: number): number {
-  // https://en.wikipedia.org/wiki/Hamming_weight
-  let n = mask;
-  n = n - ((n >>> 1) & 0x55555555);
-  n = (n & 0x33333333) + ((n >>> 2) & 0x33333333);
-  return (n + (n >>> 4)) & 0x0F;
-}
-
-/**
- * Vérifie si deux bits sont adjacents (forment un coin dans le masque 4-bit).
- * Ordre des bits : N=1, E=2, S=4, W=8
- * Adjacences valides : N+E (1+2=3), E+S (2+4=6), S+W (4+8=12), W+N (8+1=9)
- */
-function isAdjacentPair(mask: number): boolean {
-  return mask === 3 || mask === 6 || mask === 12 || mask === 9;
-}
-
-/**
- * Mappe un masque de voisinage 4 bits vers l'index de variation
- * (Bitmask Tileset) pour les familles Grass et Play.
+ * Calcule les renderPasses pour une tuile donnée.
  *
- * Les textures 0001-0005 ne sont pas du bruit cosmétique mais les
- * pièces structurelles d'un tileset bitmask :
+ * Système multi-passes triangulaire (conforme Ghidra renderSingleTile) :
  *
- *   0001 = Plein / Centre  — aucun voisin différent (Inner Tile)
- *   0002 = Bord droit      — 1 voisin différent (Edge Tile)
- *   0004 = Angle arrondi   — 2 voisins adjacents différents (Corner Tile)
- *   0005 = Îlot isolé      — 4 voisins différents (Isolated Tile)
+ *   Pass 0 : Triangle 1 du quad de base — texture {TYPE}{suffix}0001
+ *   Pass 1 : Triangle 2 du quad de base — même texture
+ *   Pass 2+ : Overlays directionnels A-D pour chaque voisin déclencheur
+ *     (borderOverride ou A-D du type lui-même)
  *
- * Cas spéciaux :
- *   - 2 bits opposés (N+S=5, E+W=10) : "tunnel" → 0003
- *   - 3 bits : cul-de-sac → 0004
- *
- * REFERENCE: Spec § "Mappage du neighborMask vers l'index de Variation"
- */
-export function maskToVariation(mask: number): number {
-  const bits = popcount4(mask);
-
-  // 0 bits : intérieur (Inner)
-  if (bits === 0) return 1;
-
-  // 4 bits : îlot isolé (Isolated)
-  if (bits === 4) return 5;
-
-  // 1 bit : bord droit (Edge)
-  if (bits === 1) return 2;
-
-  // 2 bits adjacents : angle arrondi (Corner)
-  if (bits === 2 && isAdjacentPair(mask)) return 4;
-
-  // 2 bits opposés : "tunnel" (N+S ou E+W)
-  if (bits === 2) return 3;
-
-  // 3 bits : cul-de-sac → angle arrondi
-  return 4;
-}
-
-/**
- * Calcule les renderPasses pour une tuile donnée en fonction de
- * ses voisins et de son type de terrain.
- *
- * SYSTÈME BITMASK (familles Grass et Play) :
- *   La variation est déterminée par le neighborMask via maskToVariation().
- *   Les textures 0001-0005 encodent directement la configuration des
- *   bordures. Pas de passes d'overlay supplémentaires — la texture
- *   contient déjà l'information de bordure.
- *
- *   Pass 0 unique : {TYPE}{suffix}{variation}.webp
- *     - variation = maskToVariation(neighborMask)
- *     - suffix = 'A'-'E' pour grass (géométrie), 'A' pour play
- *
- * SYSTÈME DIRECTIONNEL A-D (autres familles) :
- *   Les passes de bordure supplémentaires (A-D) sont ajoutées pour
- *   les types avec renderMode=1 (TYPES_WITH_BORDER_TEXTURES) ou
- *   borderOverride.
+ * La variation de base est TOUJOURS 0001 (texture pleine, sans bordure).
+ * Les variations 0002-0005 sont réservées au décor interne du Rough.
+ * Les bordures viennent des passes d'overlay avec textures A-D alpha.
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
  * @param w      Largeur de la grille
  * @param h      Hauteur de la grille
- * @returns      Tableau de renderPasses (1 à 4 passes)
+ * @returns      Tableau de renderPasses (1 à 6 passes)
  */
 export function computeRenderPasses(
   tile: ITile,
@@ -370,76 +305,69 @@ export function computeRenderPasses(
   const geomSuffix = getGeometryType(tile.elevation);
 
   // ================================================================
-  // SYSTÈME BITMASK — familles Grass (0) et Play (1)
+  // PASSES 0-1 : Quad de base (2 triangles, texture unie 0001)
   // ================================================================
-  // Ces types utilisent un tileset bitmask : la variation encode
-  // directement la configuration des bordures via le neighborMask.
-  // Pas de passes supplémentaires — une seule texture par tuile.
-  if (family === 0 || family === 1) {
-    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-    const bitmaskVar = maskToVariation(mask);
+  // Le fond de la tuile est toujours la texture 0001 (pleine).
+  // Grass family → suffixe géométrie A-E
+  // Play et autres → suffixe 'A'
+  const baseSuffix = (family === 0) ? geomSuffix : 'A';
 
-    // Grass family : suffixe = géométrie d'élévation (A-E)
-    // Play family  : suffixe = 'A' (plat)
-    const suffix = (family === 0) ? geomSuffix : 'A';
-
-    passes.push({
-      type: tile.type,
-      variation: bitmaskVar,
-      suffix,
-      subType: tile.subType,
-    });
-
-    return passes;
-  }
-
-  // ================================================================
-  // SYSTÈME DIRECTIONNEL A-D — Sand, Water, Cliff, Path, Building
-  // ================================================================
-  // Ces types utilisent des passes d'overlay directionnelles (A-D)
-  // pour les bordures, avec ou sans borderOverride.
-
-  // Pass 0 : Texture de base (toujours suffixe 'A')
+  // Passe 0 : premier triangle du quad
   passes.push({
     type: tile.type,
-    variation: tile.variation,
-    suffix: 'A',
+    variation: 1,          // TOUJOURS 0001 pour la base
+    suffix: baseSuffix,
     subType: tile.subType,
   });
 
-  // Détermine le type à utiliser pour les bordures A-D
+  // Passe 1 : second triangle du quad (même texture)
+  passes.push({
+    type: tile.type,
+    variation: 1,
+    suffix: baseSuffix,
+    subType: tile.subType,
+  });
+
+  // ================================================================
+  // PASSES 2+ : Overlays directionnels A-D
+  // ================================================================
+  // Pour chaque direction où le masque asymétrique détecte un voisin
+  // de famille déclencheuse, on ajoute des passes triangulaires avec
+  // la texture de bordure orientée (A, B, C, D).
+
+  const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+  if (mask === 0) return passes;  // Aucun overlay — que le quad de base
+
+  // Détermine le type de texture à utiliser pour les overlays
   const borderType = BORDER_OVERRIDE[tile.type] !== undefined
     ? BORDER_OVERRIDE[tile.type]!
     : TYPES_WITH_BORDER_TEXTURES.has(tile.type)
       ? tile.type
       : null;
 
-  if (borderType !== null) {
-    const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
+  if (borderType === null) return passes;  // Pas de texture de bordure
 
-    // Directions dans l'ordre de priorité N > E > S > W
-    const directions: { bit: number; suffix: string }[] = [
-      { bit: 1, suffix: 'A' },  // N
-      { bit: 2, suffix: 'B' },  // E
-      { bit: 4, suffix: 'C' },  // S
-      { bit: 8, suffix: 'D' },  // W
-    ];
+  // Directions dans l'ordre de priorité N > E > S > W
+  const directions: { bit: number; suffix: string }[] = [
+    { bit: 1, suffix: 'A' },  // N → texture orientée A
+    { bit: 2, suffix: 'B' },  // E → texture orientée B
+    { bit: 4, suffix: 'C' },  // S → texture orientée C
+    { bit: 8, suffix: 'D' },  // W → texture orientée D
+  ];
 
-    // Max 3 bordures (passe 1, 2, 3) pour rester ≤ 4 passes total
-    let borderCount = 0;
-    for (const dir of directions) {
-      if (mask & dir.bit) {
-        if (borderCount < 3) {
-          passes.push({
-            type: borderType,
-            variation: tile.variation,
-            suffix: dir.suffix,
-          });
-          borderCount++;
-        }
-        // Si borderCount >= 3, on ignore les directions restantes
-        // (priorité N > E > S > W, donc W est abandonné en dernier)
-      }
+  for (const dir of directions) {
+    if (mask & dir.bit) {
+      // Chaque overlay = 2 passes triangulaires (comme le quad de base)
+      passes.push({
+        type: borderType,
+        variation: tile.variation,
+        suffix: dir.suffix,
+      });
+      passes.push({
+        type: borderType,
+        variation: tile.variation,
+        suffix: dir.suffix,
+      });
     }
   }
 
@@ -641,10 +569,11 @@ export function generateVegetationGrid(
   // 4. Élévation plate (paramétrable)
   // Par défaut [0,0,0,0] comme initialisé ci-dessus.
 
-  // 5. La variation est ignorée pour les familles Grass/Play
-  //    (le neighborMask détermine la variation dans computeRenderPasses).
-  //    On met 0 par défaut — seule la passe de rendu compte.
-  //    Voir maskToVariation() pour le mapping.
+  // 5. La variation cosmétique est initialisée à 0.
+  //    Pour les types Grass/Play, la variation de base dans
+  //    computeRenderPasses est FORCÉE à 0001 (quad uni).
+  //    Les variations 0002-0005 sont réservées au décor interne.
+  //    Les bordures sont des overlays A-D, pas des changements de variation.
 
   // 6. Calcul des renderPasses (auto-tiling bitmask)
   computeAllRenderPasses(tiles, width, height);
