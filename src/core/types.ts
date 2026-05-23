@@ -87,6 +87,13 @@ export interface IRenderPass {
    * Ex: [0,1] = les 2 quadrants du haut (bordure Nord)
    */
   quadrants?: number[];
+
+  /**
+   * Pour les bordures droites (texture 0002) : direction de la bande
+   * de 6 pixels à extraire sur l'arête externe, au lieu du quadrant
+   * entier 32×32.
+   */
+  stripEdge?: 'N' | 'E' | 'S' | 'W';
 }
 
 // ================================================================

@@ -3,7 +3,10 @@
  *
  * Algorithme Holistique : chaque tuile commence par un fond uni 0001,
  * puis des overlays par quadrants viennent plaquer les bordures
- * (textures 0002/0004/0005) uniquement là où c'est nécessaire.
+ * (textures 0002/0003/0004/0005) uniquement là où c'est nécessaire.
+ *
+ * Pour les bordures droites (texture 0002), on extrait une BANDE fine
+ * de 6 pixels le long de l'arête externe, pas le quadrant entier.
  *
  * Projection dimétrique 2:1 (REFERENCE_GUIDE.md §4.2) :
  *   screenX = (mapX - mapY) × 64
@@ -17,6 +20,9 @@ import { IMapState, IRenderPass } from '../core/types';
 const TEX_SIZE = 64;
 const QUAD_SIZE = 32;
 
+/** Épaisseur de la bande de bordure fine (6 pixels les plus proches de l'arête) */
+const BORDER_STRIP = 6;
+
 /**
  * Coordonnées source (dans la texture 64×64) pour chaque quadrant.
  */
@@ -28,12 +34,63 @@ const QUAD_SRC: Record<number, [number, number]> = {
 };
 
 /**
+ * Calcule source rect et dest rect pour un quadrant en mode strip.
+ * Extrait une bande de BORDER_STRIP pixels le long de l'arête externe
+ * de la texture et la place à l'extérieur de la tuile, côté jonction.
+ */
+function stripRects(
+  q: number,
+  edge: 'N' | 'E' | 'S' | 'W',
+): { sx: number; sy: number; sw: number; sh: number; dx: number; dy: number; dw: number; dh: number } {
+  const [sxBase, syBase] = QUAD_SRC[q];
+  const s = BORDER_STRIP;
+
+  switch (edge) {
+    case 'N':
+      // Bande haute : extrait les s premiers pixels du haut de la texture,
+      // placée AU-DESSUS de la tuile (dy = -s) côté voisin Nord
+      return {
+        sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
+        dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
+        dy: -s, dw: QUAD_SIZE, dh: s,
+      };
+    case 'E':
+      // Bande droite : extrait les s derniers pixels du bord droit,
+      // placée À DROITE de la tuile, côté voisin Est
+      return {
+        sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
+        dx: QUAD_SIZE,
+        dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
+        dw: s, dh: QUAD_SIZE,
+      };
+    case 'S':
+      // Bande basse : extrait les s derniers pixels du bord bas,
+      // placée EN-DESSOUS de la tuile, côté voisin Sud
+      return {
+        sx: sxBase, sy: syBase + QUAD_SIZE - s, sw: QUAD_SIZE, sh: s,
+        dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
+        dy: QUAD_SIZE, dw: QUAD_SIZE, dh: s,
+      };
+    case 'W':
+      // Bande gauche : extrait les s premiers pixels du bord gauche,
+      // placée À GAUCHE de la tuile, côté voisin Ouest
+      return {
+        sx: sxBase, sy: syBase, sw: s, sh: QUAD_SIZE,
+        dx: -s,
+        dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
+        dw: s, dh: QUAD_SIZE,
+      };
+  }
+}
+
+/**
  * Rendu complet de la carte en overlays cumulatifs par quadrants.
  *
  * Chaque tuile est rendue en multiples passes :
  *   Pass 0 : Fond uni 0001 (texture entière 64×64)
- *   Pass+  : Overlays quadrants depuis 0002 (bords droits)
- *            ou 0004 (angles arrondis) ou 0005 (îlot)
+ *   Pass+  : Overlays quadrants depuis 0002 (bords droits, bandes fines)
+ *            ou 0003 (diagonales isolées), 0004 (angles arrondis),
+ *            0005 (îlot)
  *
  * Les overlays s'empilent avec alpha compositing (source-over) :
  * le fond 0001 reste visible là où les overlays sont transparents.
@@ -82,30 +139,42 @@ export function renderMap(
 
         // Si la passe a des quadrants spécifiques, ne rendre qu'eux
         const quads = pass.quadrants ?? [0, 1, 2, 3];  // tous par défaut
+        const stripEdge = pass.stripEdge;
 
         // Transformation de base pour la tuile entière
         ctx.setTransform(z, z * 0.5, -z, z * 0.5, originX, originY);
 
-        if (quads.length === 4) {
+        if (quads.length === 4 && !stripEdge) {
           // Texture entière : drawImage direct
           ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
         } else {
-          // Quadrants spécifiques : source rect dans la texture
+          // Quadrants spécifiques
           for (const q of quads) {
-            const [sx, sy] = QUAD_SRC[q];
-            // Position destination dans le losange
-            const dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
-            const dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
+            if (stripEdge) {
+              // --- Mode strip : bande fine le long de l'arête ---
+              const r = stripRects(q, stripEdge);
+              ctx.setTransform(
+                z, z * 0.5,
+                -z, z * 0.5,
+                originX + r.dx * z - r.dy * z,
+                originY + (r.dx + r.dy) * z * 0.5,
+              );
+              ctx.drawImage(img, r.sx, r.sy, r.sw, r.sh, 0, 0, r.dw, r.dh);
+            } else {
+              // --- Mode quadrant normal (32×32) ---
+              const [sx, sy] = QUAD_SRC[q];
+              const dx = (q === 0 || q === 2) ? 0 : QUAD_SIZE;
+              const dy = (q === 0 || q === 1) ? 0 : QUAD_SIZE;
 
-            // Ajuster la transform pour ce quadrant
-            ctx.setTransform(
-              z, z * 0.5,
-              -z, z * 0.5,
-              originX + dx * z - dy * z,
-              originY + (dx + dy) * z * 0.5,
-            );
+              ctx.setTransform(
+                z, z * 0.5,
+                -z, z * 0.5,
+                originX + dx * z - dy * z,
+                originY + (dx + dy) * z * 0.5,
+              );
 
-            ctx.drawImage(img, sx, sy, QUAD_SIZE, QUAD_SIZE, 0, 0, QUAD_SIZE, QUAD_SIZE);
+              ctx.drawImage(img, sx, sy, QUAD_SIZE, QUAD_SIZE, 0, 0, QUAD_SIZE, QUAD_SIZE);
+            }
           }
         }
       }

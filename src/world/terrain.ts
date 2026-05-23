@@ -321,15 +321,14 @@ export function computeRenderPasses(
   }
 
   // ---- Définition des overlays ----
-  // Directions : { bits, texture, quadrants }
-  type OverlayDef = { bits: number; texVar: number; quads: number[] };
+  type OverlayDef = { bits: number; texVar: number; quads: number[]; stripEdge?: 'N' | 'E' | 'S' | 'W' };
 
-  // Overlays de bordure droite (texture 0002, 2 quadrants par direction)
+  // Overlays de bordure droite (texture 0002, bande fine de 6px par direction)
   const edgeOverlays: OverlayDef[] = [
-    { bits: 1, texVar: 1, quads: [0, 1] },  // fichier 0002, N → haut
-    { bits: 2, texVar: 1, quads: [1, 3] },  // fichier 0002, E → droite
-    { bits: 4, texVar: 1, quads: [2, 3] },  // fichier 0002, S → bas
-    { bits: 8, texVar: 1, quads: [0, 2] },  // fichier 0002, W → gauche
+    { bits: 1, texVar: 1, quads: [0, 1], stripEdge: 'N' },  // fichier 0002, N → haut
+    { bits: 2, texVar: 1, quads: [1, 3], stripEdge: 'E' },  // fichier 0002, E → droite
+    { bits: 4, texVar: 1, quads: [2, 3], stripEdge: 'S' },  // fichier 0002, S → bas
+    { bits: 8, texVar: 1, quads: [0, 2], stripEdge: 'W' },  // fichier 0002, W → gauche
   ];
 
   // Overlays d'angle arrondi (texture 0004, 1 quadrant par coin)
@@ -349,6 +348,7 @@ export function computeRenderPasses(
         suffix: baseSuffix,
         subType: tile.subType,
         quadrants: edge.quads,
+        stripEdge: edge.stripEdge,
       });
     }
   }
