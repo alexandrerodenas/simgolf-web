@@ -79,6 +79,13 @@ export interface IRenderPass {
    *   - SandBunker : 0=A, 1=1A, 2=2A, 3=3A, 4=4A
    */
   subType?: number;
+
+  /**
+   * Quadrant pour le sub-tiling (0-3). Si défini, cette passe ne rend
+   * qu'un sous-rectangle 32×32 de la texture 64×64.
+   *   0 = NW, 1 = NE, 2 = SW, 3 = SE
+   */
+  quadrant?: number;
 }
 
 // ================================================================

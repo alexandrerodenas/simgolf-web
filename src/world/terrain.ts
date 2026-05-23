@@ -277,22 +277,22 @@ const TYPES_SEAM_ONLY: Set<TileType> = new Set([
 /**
  * Calcule les renderPasses pour une tuile donnée.
  *
- * Système multi-passes triangulaire (conforme Ghidra renderSingleTile) :
+ * Sub-Tiling en 4 quadrants (conforme §5.17.6) :
+ *   Chaque tuile logique (64×64) est rendue en 4 quadrants indépendants
+ *   de 32×32, chacun pouvant avoir une texture différente.
  *
- *   Pass 0 : Triangle 1 du quad de base — texture {TYPE}{suffix}0001
- *   Pass 1 : Triangle 2 du quad de base — même texture
- *   Pass 2+ : Overlays directionnels A-D pour chaque voisin déclencheur
- *     (borderOverride ou A-D du type lui-même)
- *
- * La variation de base est TOUJOURS 0001 (texture pleine, sans bordure).
- * Les variations 0002-0005 sont réservées au décor interne du Rough.
- * Les bordures viennent des passes d'overlay avec textures A-D alpha.
+ *   Quadrant | Coin texture | Déclenché par
+ *   ─────────┼──────────────┼────────────────
+ *   0 (NW)   | (0,0)-(32,32) | N OR W (masque bit 1 ou 8)
+ *   1 (NE)   | (32,0)-(64,32) | N OR E (masque bit 1 ou 2)
+ *   2 (SW)   | (0,32)-(32,64) | S OR W (masque bit 4 ou 8)
+ *   3 (SE)   | (32,32)-(64,64) | S OR E (masque bit 4 ou 2)
  *
  * @param tile   La tuile à traiter
  * @param tiles  Grille complète
  * @param w      Largeur de la grille
  * @param h      Hauteur de la grille
- * @returns      Tableau de renderPasses (1 à 6 passes)
+ * @returns      Tableau de renderPasses (toujours 4 passes)
  */
 export function computeRenderPasses(
   tile: ITile,
@@ -303,75 +303,66 @@ export function computeRenderPasses(
   const passes: IRenderPass[] = [];
   const family = getTerrainFamily(tile.type);
   const geomSuffix = getGeometryType(tile.elevation);
-
-  // ================================================================
-  // PASSES 0-1 : Quad de base (2 triangles, texture unie 0001)
-  // ================================================================
-  // Le fond de la tuile est toujours la texture 0001 (pleine).
-  // Grass family → suffixe géométrie A-E
-  // Play et autres → suffixe 'A'
   const baseSuffix = (family === 0) ? geomSuffix : 'A';
 
-  // Passe 0 : premier triangle du quad
-  passes.push({
-    type: tile.type,
-    variation: 1,          // TOUJOURS 0001 pour la base
-    suffix: baseSuffix,
-    subType: tile.subType,
-  });
-
-  // Passe 1 : second triangle du quad (même texture)
-  passes.push({
-    type: tile.type,
-    variation: 1,
-    suffix: baseSuffix,
-    subType: tile.subType,
-  });
-
-  // ================================================================
-  // PASSES 2+ : Overlays directionnels A-D
-  // ================================================================
-  // Pour chaque direction où le masque asymétrique détecte un voisin
-  // de famille déclencheuse, on ajoute des passes triangulaires avec
-  // la texture de bordure orientée (A, B, C, D).
-
+  // Détermine le type de texture de bordure (si applicable)
   const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-  if (mask === 0) return passes;  // Aucun overlay — que le quad de base
-
-  // Détermine le type de texture à utiliser pour les overlays
   const borderType = BORDER_OVERRIDE[tile.type] !== undefined
     ? BORDER_OVERRIDE[tile.type]!
     : TYPES_WITH_BORDER_TEXTURES.has(tile.type)
       ? tile.type
       : null;
 
-  if (borderType === null) return passes;  // Pas de texture de bordure
-
-  // Directions dans l'ordre de priorité N > E > S > W
-  const directions: { bit: number; suffix: string }[] = [
-    { bit: 1, suffix: 'A' },  // N → texture orientée A
-    { bit: 2, suffix: 'B' },  // E → texture orientée B
-    { bit: 4, suffix: 'C' },  // S → texture orientée C
-    { bit: 8, suffix: 'D' },  // W → texture orientée D
+  // Pour chaque quadrant, choisir base ou border selon le masque
+  // Un quadrant prend la bordure si UN de ses 2 côtés adjacents déclenche
+  // Q0 (NW): N(bit1) OR W(bit8)
+  // Q1 (NE): N(bit1) OR E(bit2)
+  // Q2 (SW): S(bit4) OR W(bit8)
+  // Q3 (SE): S(bit4) OR E(bit2)
+  const quadrantChecks: [number, number[]][] = [
+    [0, [1, 8]],   // Q0 = NW = N OR W
+    [1, [1, 2]],   // Q1 = NE = N OR E
+    [2, [4, 8]],   // Q2 = SW = S OR W
+    [3, [4, 2]],   // Q3 = SE = S OR E
   ];
 
-  for (const dir of directions) {
-    if (mask & dir.bit) {
-      // Chaque overlay = 2 passes triangulaires (comme le quad de base)
-      passes.push({
-        type: borderType,
-        variation: tile.variation,
-        suffix: dir.suffix,
-      });
-      passes.push({
-        type: borderType,
-        variation: tile.variation,
-        suffix: dir.suffix,
-      });
+  for (const [qIdx, triggerBits] of quadrantChecks) {
+    const needsBorder = borderType !== null &&
+      triggerBits.some(bit => (mask & bit) !== 0);
+
+    const texType = needsBorder ? borderType! : tile.type;
+    // Pour un quadrant border : utiliser le suffixe directionnel du
+    // premier bit déclencheur trouvé (N→A, E→B, S→C, W→D)
+    let suffix = baseSuffix;
+    if (needsBorder) {
+      for (const bit of triggerBits) {
+        if (mask & bit) {
+          suffix = bitToSuffix(bit);
+          break;
+        }
+      }
     }
+
+    passes.push({
+      type: texType,
+      variation: tile.variation,
+      suffix,
+      subType: tile.subType,
+      quadrant: qIdx,
+    });
   }
 
   return passes;
+}
+
+function bitToSuffix(bit: number): string {
+  switch (bit) {
+    case 1: return 'A';
+    case 2: return 'B';
+    case 4: return 'C';
+    case 8: return 'D';
+    default: return 'A';
+  }
 }
 
 /**
