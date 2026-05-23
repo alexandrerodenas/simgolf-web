@@ -124,19 +124,50 @@ export function getTerrainFamily(type: TileType): number {
   return TERRAIN_FAMILY_ID[type] ?? 0;
 }
 
-// ================================================================
-// computeNeighborMask — Masque de voisinage 4 bits
-//
-// Ordre de priorité strict : Nord (1) > Est (2) > Sud (4) > Ouest (8)
-//
-// Chaque bit = 1 si le voisin cardinal est d'une famille différente.
-// REFERENCE_GUIDE.md §5.3
-// ================================================================
+/**
+ * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
+ *
+ * Logique asymétrique (discrimination des types) :
+ *   - Grass family (Rough, DeepRough, Woods, Brush) :
+ *     ne réagit QUE face à du Play (Fairway, Green).
+ *     Les grass entre eux → Seam (pas de bordure).
+ *   - Play family (Fairway, Green) :
+ *     réagit dès qu'elle rencontre du Grass.
+ *   - Autres familles (Sand, Water, Cliff, Path, Building) :
+ *     règle générale : familles différentes → bordure.
+ */
+function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
+  const curFamily = getTerrainFamily(currentType);
+  const neiFamily = getTerrainFamily(neighborType);
+
+  // Grass family : ne réagit QUE face au Play (Fairway/Green)
+  if (curFamily === 0) {
+    return neiFamily === 1;
+  }
+
+  // Play family : réagit dès qu'elle rencontre du Grass
+  if (curFamily === 1) {
+    return neiFamily === 0;
+  }
+
+  // Autres familles : règle générale
+  return curFamily !== neiFamily;
+}
+
+/**
+ * computeNeighborMask — Masque de voisinage 4 bits
+ *
+ * Ordre de priorité strict : Nord (1) > Est (2) > Sud (4) > Ouest (8)
+ *
+ * Utilise isNeighbourTriggeringBorder() pour une détection asymétrique :
+ * les tuiles grass (Rough, Brush, Woods, DeepRough) ne déclenchent PAS
+ * de bordures entre elles — uniquement face au Fairway/Green.
+ * REFERENCE_GUIDE.md §5.3
+ */
 export function computeNeighborMask(
   tiles: ITile[], w: number, h: number, x: number, y: number,
 ): number {
   const idx = y * w + x;
-  const family = getTerrainFamily(tiles[idx].type);
   let mask = 0;
 
   // Ordre cardinal : N(1) > E(2) > S(4) > W(8)
@@ -151,7 +182,7 @@ export function computeNeighborMask(
     const nx = x + dx;
     const ny = y + dy;
     if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-      if (getTerrainFamily(tiles[ny * w + nx].type) !== family) {
+      if (isNeighbourTriggeringBorder(tiles[idx].type, tiles[ny * w + nx].type)) {
         mask |= bit;
       }
     } else {
