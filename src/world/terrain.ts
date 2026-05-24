@@ -7,7 +7,7 @@
  *   - Familles : TERRAIN_FAMILY, MAX_VARIATION → terrain-ts
  *
  * Ce fichier ne fait QUE :
- *   1. Génération procédurale (bruit + distribution)
+ *   1. Génération procédurale (bruit + distribution dont water clusters)
  *   2. Mapping passe → chemin de texture WebP
  *   3. Construction de maillage Three.js
  */
@@ -30,7 +30,7 @@ import { ELEVATION_LEVELS } from '../core/types';
 
 const COSMETIC_MAX = 5;
 
-// ─── GÉNÉRATION VÉGÉTALE ───
+// ─── GÉNÉRATION VÉGÉTALE + EAU ───
 
 function hash11(x: number, y: number): number {
   let h = x * 374761393 + y * 668265263;
@@ -65,8 +65,155 @@ function generateNoise(w: number, h: number, scale: number): Float32Array {
 }
 
 /**
- * Génère une carte Parkland simplifiée (uniquement végétation).
- * Tous les types sont famille grass → seamless.
+ * Identifie les tuiles d'eau par bruit + filtre clusters.
+ * Retourne un tableau: 0=terre, 1=eau.
+ */
+function generateWaterMask(
+  w: number, h: number,
+  noise: Float32Array,
+  threshold: number,     // seuil de base (ex: 0.18)
+  minClusterSize: number, // taille minimale pour garder un cluster
+  mergeDist: number,      // distance max pour fusionner clusters
+): Uint8Array {
+  const mask = new Uint8Array(w * h);
+
+  // 1. Seuillage
+  for (let i = 0; i < w * h; i++) {
+    mask[i] = noise[i] < threshold ? 1 : 0;
+  }
+
+  // 2. Flood-fill pour étiqueter les clusters
+  const labels = new Int32Array(w * h).fill(-1);
+  const sizes: number[] = [];
+  const queue: number[] = [];
+
+  function flood(start: number, label: number): number {
+    let count = 0;
+    queue.push(start);
+    labels[start] = label;
+    while (queue.length > 0) {
+      const idx = queue.pop()!;
+      count++;
+      const x = idx % w;
+      const y = Math.floor(idx / w);
+      const neighbors = [
+        [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1],
+      ];
+      for (const [nx, ny] of neighbors) {
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const ni = ny * w + nx;
+        if (mask[ni] === 1 && labels[ni] === -1) {
+          labels[ni] = label;
+          queue.push(ni);
+        }
+      }
+    }
+    return count;
+  }
+
+  let nextLabel = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (mask[i] === 1 && labels[i] === -1) {
+      const size = flood(i, nextLabel);
+      sizes.push(size);
+      nextLabel++;
+    }
+  }
+
+  // 3. Filtrer les petits clusters
+  for (let i = 0; i < w * h; i++) {
+    const label = labels[i];
+    if (label >= 0 && sizes[label] < minClusterSize) {
+      mask[i] = 0;
+    }
+  }
+
+  return mask;
+}
+
+/**
+ * Assigne la profondeur d'eau pour un masque donné.
+ *   - Shallow : bordure (eau adjacente à terre)
+ *   - Middle  : transition (1 tuile depuis shallow)
+ *   - Deep    : centre (2+ tuiles depuis bordure)
+ */
+function assignWaterDepth(
+  tiles: ITile[],
+  mask: Uint8Array,
+  w: number, h: number,
+  waterType: 'parkland' | 'lake',
+): void {
+  // Distance à la terre la plus proche (Manhattan approximé)
+  const dist = new Int32Array(w * h).fill(99);
+  const queue: number[] = [];
+
+  // Initialiser les bords eau↔terre à distance 1
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      if (mask[idx] === 0) continue; // terre
+      // Vérifier les 4 voisins
+      const neighbors = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
+      let adjacentToLand = false;
+      for (const [nx, ny] of neighbors) {
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) {
+          adjacentToLand = true; // bord de carte = terre
+          continue;
+        }
+        if (mask[ny * w + nx] === 0) adjacentToLand = true;
+      }
+      if (adjacentToLand) {
+        dist[idx] = 1;
+        queue.push(idx);
+      }
+    }
+  }
+
+  // BFS pour propager les distances
+  let qi = 0;
+  while (qi < queue.length) {
+    const idx = queue[qi++];
+    const x = idx % w;
+    const y = Math.floor(idx / w);
+    const d = dist[idx] + 1;
+    const neighbors = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+      const ni = ny * w + nx;
+      if (mask[ni] === 1 && dist[ni] > d) {
+        dist[ni] = d;
+        queue.push(ni);
+      }
+    }
+  }
+
+  // Assigner le type selon distance
+  for (let i = 0; i < w * h; i++) {
+    if (mask[i] === 0) continue;
+    const d = dist[i];
+    if (d <= 1) {
+      tiles[i].type = TileType.WaterShallow;
+    } else if (d <= 3) {
+      tiles[i].type = TileType.WaterMiddle;
+    } else {
+      tiles[i].type = TileType.WaterDeep;
+    }
+    tiles[i].elevation = [0, 0, 0, 0];
+  }
+}
+
+/**
+ * Génère une carte Parkland avec végétation et points d'eau.
+ *
+ * Distribution :
+ *   - Eau : ~15% de la carte, en clusters (lacs/étangs)
+ *   - Rough     : ~50%
+ *   - DeepRough : ~13%
+ *   - Woods     : ~12%
+ *   - Brush     : ~10%
+ *
+ * Les points d'eau sont des clusters coalescés : petits lacs et étangs
+ * avec profondeur progressive (shallow → middle → deep).
  */
 export function generateVegetationGrid(
   width: number = 40,
@@ -77,12 +224,24 @@ export function generateVegetationGrid(
   terrain.theme = CourseTheme.Parkland;
 
   const { tiles } = terrain;
-  const noise1 = generateNoise(width, height, 6);
-  const noise2 = generateNoise(width, height, 3);
 
+  // Bruit terrain
+  const noise1 = generateNoise(width, height, 6);   // grandes zones
+  const noise2 = generateNoise(width, height, 3);   // détails
+
+  // Bruit eau (basse fréquence — lacs de grande échelle)
+  const waterNoise = generateNoise(width, height, 10);
+
+  // Masque d'eau avec clusters (min 8 tuiles)
+  const waterMask = generateWaterMask(width, height, waterNoise, 0.18, 8, 2);
+
+  // Distribution des types de sol (hors eau)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
+
+      if (waterMask[idx] === 1) continue; // traité après
+
       const n = noise1[idx] * 0.6 + noise2[idx] * 0.4;
       const type = n < 0.60 ? TileType.Rough
         : n < 0.75 ? TileType.DeepRough
@@ -91,6 +250,9 @@ export function generateVegetationGrid(
       terrain.setType(tiles[idx], type, 0);
     }
   }
+
+  // Assigner profondeurs d'eau
+  assignWaterDepth(tiles, waterMask, width, height, 'parkland');
 
   terrain.computeAllRenderPasses();
 
