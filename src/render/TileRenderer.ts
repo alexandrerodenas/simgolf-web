@@ -23,6 +23,9 @@ const QUAD_SIZE = 32;
 /** Épaisseur de la bande de bordure fine (6 pixels les plus proches de l'arête) */
 const BORDER_STRIP = 6;
 
+/** Sur-remplissage (overdraw) en pixels pour masquer les fissures entre quads. */
+const OVERDRAW = 0.5;
+
 /**
  * Coordonnées source (dans la texture 64×64) pour chaque quadrant.
  */
@@ -144,8 +147,11 @@ export function renderMap(
         ctx.setTransform(z, z * 0.5, -z, z * 0.5, originX, originY);
 
         if (quads.length === 4 && !stripEdge) {
-          // Texture entière : drawImage direct
-          ctx.drawImage(img, 0, 0, TEX_SIZE, TEX_SIZE);
+          // Texture entière : overdraw + half-texel pour masquer les seams
+          ctx.drawImage(img,
+            0.5, 0.5, TEX_SIZE - 1, TEX_SIZE - 1,
+            -OVERDRAW, -OVERDRAW, TEX_SIZE + OVERDRAW * 2, TEX_SIZE + OVERDRAW * 2,
+          );
         } else {
           // Quadrants spécifiques
           for (const q of quads) {
@@ -179,7 +185,11 @@ export function renderMap(
                 originY + (dx + dy) * z * 0.5,
               );
 
-              ctx.drawImage(img, sx, sy, QUAD_SIZE, QUAD_SIZE, 0, 0, QUAD_SIZE, QUAD_SIZE);
+              // Quadrant : overdraw + half-texel pour masquer les seams
+              ctx.drawImage(img,
+                sx + 0.5, sy + 0.5, QUAD_SIZE - 1, QUAD_SIZE - 1,
+                -OVERDRAW, -OVERDRAW, QUAD_SIZE + OVERDRAW * 2, QUAD_SIZE + OVERDRAW * 2,
+              );
             }
           }
         }
