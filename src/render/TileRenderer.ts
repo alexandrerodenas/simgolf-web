@@ -55,14 +55,14 @@ function stripRects(
       return {
         sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: -8, dw: QUAD_SIZE, dh: s,
+        dy: -6, dw: QUAD_SIZE, dh: s,
       };
     case 'E':
       // Bande droite : extrait les s derniers pixels du bord droit,
       // placée À DROITE de la tuile, côté voisin Est
       return {
         sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: 76,
+        dx: 60,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
       };
