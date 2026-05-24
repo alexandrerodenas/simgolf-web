@@ -125,17 +125,77 @@ export function getTerrainFamily(type: TileType): number {
 }
 
 /**
- * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
+ * Fonction de transition GHIDRA FUN_10013f00 — calcule un index composite
+ * encodant 3 familles (courante + 2 voisines) en un seul entier.
  *
- * 👉 Deux types différents → bordure, sauf si les deux sont famille grass
- *    (Rough, DeepRough, Woods, Brush) : seamless entre eux.
+ * Poids par position selon la famille :
+ *   Grass(0) → 0
+ *   Play (1) → courant=4, voisinA=1, voisinB=2
+ *   Sand (2) → courant=40(0x28), voisinA=10(0xA), voisinB=20(0x14)
+ *
+ * L'index résultant (0-70) est unique pour chaque combinaison de 3 familles
+ * et sert à sélectionner la texture de bordure appropriée.
+ */
+function computeTransitionIndex(fCurrent: number, fN1: number, fN2: number): number {
+  let result = 0;
+  if (fCurrent === 1)      result = 4;
+  else if (fCurrent === 2) result = 0x28;   // 40
+  if (fN1 === 1)           result += 1;
+  else if (fN1 === 2)      result += 10;    // 0xA
+  if (fN2 === 1)           result += 2;
+  else if (fN2 === 2)      result += 0x14;  // 20
+  return result;
+}
+
+/**
+ * Détermine la texture de bordure override pour une paire (courant, voisin).
+ * Basé sur le champ borderOverride du jeu original (offset +0x0c dans typeInfo).
+ *
+ * La transition est ASYMÉTRIQUE : la bordure vue côté courant diffère
+ * de celle vue côté voisin, comme confirmé par la décompilation Ghidra
+ * (@ populateRenderPasses 0x10012ec0, FUN_10013f00).
+ *
+ * Mapping du jeu original :
+ *   SAND→GRASS : GrassySand  (végétation qui reprend sur le sable)
+ *   GRASS→SAND : GrassBunker (sol qui affleure sous l'herbe)
+ *   SAND→PLAY  : SandBunker  (bordure sable naturelle)
+ *   PLAY→SAND  : GrassBunker (sol sous l'herbe rase du fairway)
+ *   WATER→*    : WaterShallow (bord d'eau peu profonde)
+ *   *→WATER    : Marsh       (zone humide de transition)
+ */
+function borderOverrideForTransition(currentType: TileType, neighborType: TileType): TileType | undefined {
+  const fCurr = getTerrainFamily(currentType);
+  const fNei  = getTerrainFamily(neighborType);
+
+  // Même famille → pas de bordure
+  if (fCurr === fNei) return undefined;
+
+  // Asymétrie sand↔grass
+  if (fCurr === 2 && fNei === 0) return TileType.GrassySand;  // SAND→GRASS
+  if (fCurr === 0 && fNei === 2) return TileType.GrassBunker; // GRASS→SAND
+
+  // Asymétrie sand↔play
+  if (fCurr === 2 && fNei === 1) return TileType.SandBunker;  // SAND→PLAY
+  if (fCurr === 1 && fNei === 2) return TileType.GrassBunker; // PLAY→SAND
+
+  // Water vers non-water → bord d'eau peu profonde
+  if (fCurr === 3 && fNei !== 3) return TileType.WaterShallow;
+  // Non-water vers water → zone humide
+  if (fCurr !== 3 && fNei === 3) return TileType.Marsh;
+
+  return undefined;
+}
+
+/**
+ * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
+ * Utilise la logique famille du jeu original (FUN_10015650) : pas de bordure
+ * si les deux tuiles sont de la même famille.
+ *
+ * Cette fonction répond UNIQUEMENT à la question binaire « bordure ou pas ? ».
+ * La texture de bordure spécifique est déterminée par borderOverrideForTransition.
  */
 function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
-  // Grass family → seamless (pas de bordure entre eux)
-  if (getTerrainFamily(currentType) === 0 && getTerrainFamily(neighborType) === 0) {
-    return false;
-  }
-  return currentType !== neighborType;
+  return getTerrainFamily(currentType) !== getTerrainFamily(neighborType);
 }
 
 /**
@@ -217,46 +277,7 @@ const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
   TileType.Marsh,          // water mais A-C border (marécage)
 ]);
 
-/**
- * borderOverride — Types qui utilisent les TEXTURES D'UN AUTRE TYPE
- * comme textures de bordure alpha-transparente.
- * Correspond au champ borderOverride (offset +0x0c dans typeInfo,
- * stride 24 bytes, table à this+0x40 dans la structure Terrain).
- *
- * Vérifié Ghidra @ populateRenderPasses (0x10012ec0) :
- *   Le jeu regarde d'abord si borderOverride ≠ -1. Si oui, les passes
- *   de bordure utilisent le type override, PAS le type original.
- *
- * Mapping du jeu original (REFERENCE_GUIDE.md §5.8.3) :
- *   SandBunker(3)    → GrassySand(8)   : le sable emprunte les bordures
- *     herbe→sable de GrassySand (montre la végétation qui reprend sur le sable)
- *   PotSandBunker(20)→ GrassySand(8)   : idem
- *   Fairway(1)       → GrassBunker(9)  : le fairway emprunte les bordures
- *     sable→herbe de GrassBunker (montre le sol qui affleure sous l'herbe rase)
- *   FirmFairway(19)  → GrassBunker(9)  : idem
- */
-const BORDER_OVERRIDE: Partial<Record<TileType, TileType>> = {
-  [TileType.SandBunker]:   TileType.GrassySand,
-  [TileType.PotSandBunker]:TileType.GrassySand,
-  [TileType.Fairway]:      TileType.GrassBunker,
-  [TileType.FirmFairway]:  TileType.GrassBunker,
-};
-
-/**
- * Types qui ne sont PAS dans une famille grass MAIS n'ont pas de
- * textures de bordure ni de borderOverride → ils font du seam.
- * Utile pour les vérifications.
- */
-const TYPES_SEAM_ONLY: Set<TileType> = new Set([
-  TileType.PuttingGreen,
-  TileType.Tee,
-  TileType.TrickyGreen,
-  TileType.Path,
-  TileType.Bridge,
-  TileType.Building,
-  TileType.RetainingWall,
-  TileType.ZenSand,
-]);
+/** borderOverrideForTransition */
 
 /**
  * Calcule les renderPasses pour une tuile donnée.
@@ -312,14 +333,47 @@ export function computeRenderPasses(
   // ---- Masque asymétrique ----
   const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
 
+  // Helper : type de la tuile voisine pour une direction
+  const neighborAt = (dx: number, dy: number): TileType | undefined => {
+    const nx = tile.x + dx;
+    const ny = tile.y + dy;
+    if (nx >= 0 && nx < w && ny >= 0 && ny < h)
+      return tiles[ny * w + nx].type;
+    return undefined;
+  };
+
+  // Helper : obtient le type override de bordure pour une direction.
+  // Retourne undefined si la direction ne déclenche pas de bordure
+  // ou si le type résultant n'a pas de textures A-D.
+  const borderTypeForNeighbor = (dx: number, dy: number): TileType | undefined => {
+    const nType = neighborAt(dx, dy);
+    if (nType === undefined) {
+      // Bord de carte : traité comme si le voisin était Rough (grass)
+      // → produit la bordure standard pour (current, grass)
+      const ov = borderOverrideForTransition(tile.type, TileType.Rough);
+      const bt = ov ?? tile.type;
+      return TYPES_WITH_BORDER_TEXTURES.has(bt) ? bt : undefined;
+    }
+    if (!isNeighbourTriggeringBorder(tile.type, nType)) return undefined;
+    // Override basé sur (courant, voisin) — transition asymétrique
+    const ov = borderOverrideForTransition(tile.type, nType);
+    const bt = ov ?? tile.type;
+    // Ne produit une passe que si le type résultant a des textures A-D
+    return TYPES_WITH_BORDER_TEXTURES.has(bt) ? bt : undefined;
+  };
+
   // ---- Shortcut : 4 voisins différents → texture 0005 entière ----
   if (mask === 0b1111) {
-    passes.push({
-      type: tile.type,
-      variation: 4,        // fichier 0005 = îlot (0-indexed)
-      suffix: baseSuffix,
-      subType: tile.subType,
-    });
+    // Pour l'îlot, on utilise l'override du premier voisin N
+    const borderType = borderTypeForNeighbor(0, -1);
+    if (borderType) {
+      passes.push({
+        type: borderType,
+        variation: 4,        // fichier 0005 = îlot (0-indexed)
+        suffix: 'A',
+        subType: tile.subType,
+      });
+    }
     return passes;
   }
 
@@ -366,10 +420,15 @@ export function computeRenderPasses(
       if ((mask & pairBits) === pairBits) { suppressed = true; break; }
     }
     if (suppressed) continue;
+    // Détermine le type de texture via borderOverrideForTransition
+    const dxy: Record<string, [number, number]> = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
+    const [ddx, ddy] = dxy[edge.stripEdge!];
+    const borderType = borderTypeForNeighbor(ddx, ddy);
+    if (!borderType) continue;
     passes.push({
-      type: tile.type,
+      type: borderType,
       variation: edge.texVar,
-      suffix: baseSuffix,
+      suffix: 'A',
       subType: tile.subType,
       quadrants: edge.quads,
       stripEdge: edge.stripEdge,
@@ -377,12 +436,22 @@ export function computeRenderPasses(
   }
 
   // Ajoute les overlays d'angle arrondi
-  for (const corner of cornerOverlays) {
+  const cornerDirs: [number, number][] = [
+    [1, 0],   // corner[0] = N+E → voisin E
+    [0, 1],   // corner[1] = E+S → voisin S
+    [-1, 0],  // corner[2] = S+W → voisin W
+    [0, -1],  // corner[3] = W+N → voisin N
+  ];
+  for (let ci = 0; ci < cornerOverlays.length; ci++) {
+    const corner = cornerOverlays[ci];
     if ((mask & corner.bits) === corner.bits) {
+      const [ddx, ddy] = cornerDirs[ci];
+      const borderType = borderTypeForNeighbor(ddx, ddy);
+      if (!borderType) continue;
       passes.push({
-        type: tile.type,
+        type: borderType,
         variation: corner.texVar,
-        suffix: baseSuffix,
+        suffix: 'A',
         subType: tile.subType,
         quadrants: corner.quads,
       });
@@ -405,13 +474,17 @@ export function computeRenderPasses(
     const nx = tile.x + diag.ddx;
     const ny = tile.y + diag.ddy;
     if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-      if (isNeighbourTriggeringBorder(tile.type, tiles[ny * w + nx].type)) {
+      const nType = tiles[ny * w + nx].type;
+      if (isNeighbourTriggeringBorder(tile.type, nType)) {
         // Diagonal différent : les cardinaux doivent être identiques
         if ((mask & diag.c1) === 0 && (mask & diag.c2) === 0) {
+          const ov = borderOverrideForTransition(tile.type, nType);
+          const borderType = ov ?? tile.type;
+          if (!TYPES_WITH_BORDER_TEXTURES.has(borderType)) continue;
           passes.push({
-            type: tile.type,
+            type: borderType,
             variation: 2,        // fichier 0003 = diagonale isolée (0-indexed)
-            suffix: baseSuffix,
+            suffix: 'A',
             subType: tile.subType,
             quadrants: [diag.quad],
           });
