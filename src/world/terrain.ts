@@ -127,11 +127,14 @@ export function getTerrainFamily(type: TileType): number {
 /**
  * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
  *
- * 👉 Deux types différents → bordure, quelque soit la famille.
- *    Overgrowth est le seul type grass qui a ses propres textures A-D,
- *    mais le déclenchement est le même : type différent = bordure.
+ * 👉 Deux types différents → bordure, sauf si les deux sont famille grass
+ *    (Rough, DeepRough, Woods, Brush) : seamless entre eux.
  */
 function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
+  // Grass family → seamless (pas de bordure entre eux)
+  if (getTerrainFamily(currentType) === 0 && getTerrainFamily(neighborType) === 0) {
+    return false;
+  }
   return currentType !== neighborType;
 }
 
