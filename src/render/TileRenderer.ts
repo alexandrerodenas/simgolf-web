@@ -46,42 +46,38 @@ function stripRects(
   edge: 'N' | 'E' | 'S' | 'W',
 ): { sx: number; sy: number; sw: number; sh: number; dx: number; dy: number; dw: number; dh: number } {
   const [sxBase, syBase] = QUAD_SRC[q];
-  const s = BORDER_STRIP;
+  const s = BORDER_STRIP; // 6 pixels par défaut (pour N et W)
+  const compS = BORDER_STRIP * 2; // 12 pixels pour compenser l'écrasement sur E et S
 
   switch (edge) {
     case 'N':
-      // Bande haute : extrait les s premiers pixels du haut de la texture,
-      // placée AU-DESSUS de la tuile, côté voisin Nord (dy = -s réduit)
       return {
         sx: sxBase, sy: syBase, sw: QUAD_SIZE, sh: s,
         dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: -6, dw: QUAD_SIZE, dh: s,
-      };
-    case 'E':
-      // Bande droite : extrait les s derniers pixels du bord droit,
-      // plaquée contre la frontière Est (dx = 64 - s = 58)
-      return {
-        sx: sxBase + QUAD_SIZE - s, sy: syBase, sw: s, sh: QUAD_SIZE,
-        dx: QUAD_SIZE * 2 - s,
-        dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
-        dw: s, dh: QUAD_SIZE,
-      };
-    case 'S':
-      // Bande basse : extrait les s derniers pixels du bord bas,
-      // plaquée contre la frontière Sud (dy = 64 - s = 58)
-      return {
-        sx: sxBase, sy: syBase + QUAD_SIZE - s, sw: QUAD_SIZE, sh: s,
-        dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
-        dy: QUAD_SIZE * 2 - s, dw: QUAD_SIZE, dh: s,
+        dy: -s, dw: QUAD_SIZE, dh: s,
       };
     case 'W':
-      // Bande gauche : extrait les s premiers pixels du bord gauche,
-      // placée À GAUCHE de la tuile, côté voisin Ouest (dx = -s)
       return {
         sx: sxBase, sy: syBase, sw: s, sh: QUAD_SIZE,
         dx: -s,
         dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
         dw: s, dh: QUAD_SIZE,
+      };
+    case 'E':
+      // Extrait compS (12px) au lieu de s (6px) du bord droit
+      return {
+        sx: sxBase + QUAD_SIZE - compS, sy: syBase, sw: compS, sh: QUAD_SIZE,
+        dx: QUAD_SIZE * 2 - compS, // Aligné dynamiquement à 52 au lieu de 58
+        dy: (q === 0 || q === 1) ? 0 : QUAD_SIZE,
+        dw: compS, dh: QUAD_SIZE,
+      };
+    case 'S':
+      // Extrait compS (12px) au lieu de s (6px) du bord bas
+      return {
+        sx: sxBase, sy: syBase + QUAD_SIZE - compS, sw: QUAD_SIZE, sh: compS,
+        dx: (q === 0 || q === 2) ? 0 : QUAD_SIZE,
+        dy: QUAD_SIZE * 2 - compS, // Aligné dynamiquement à 52 au lieu de 58
+        dw: QUAD_SIZE, dh: compS,
       };
   }
 }
