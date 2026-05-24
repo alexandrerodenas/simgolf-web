@@ -197,59 +197,6 @@ function borderOverrideForTransition(currentType: TileType, neighborType: TileTy
 function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
   return getTerrainFamily(currentType) !== getTerrainFamily(neighborType);
 }
-
-/**
- * computeNeighborMask — Masque de voisinage 4 bits
- *
- * Ordre de priorité strict : Nord (1) > Est (2) > Sud (4) > Ouest (8)
- *
- * Utilise isNeighbourTriggeringBorder() pour une détection asymétrique :
- * les tuiles grass (Rough, Brush, Woods, DeepRough) ne déclenchent PAS
- * de bordures entre elles — uniquement face au Fairway/Green.
- * REFERENCE_GUIDE.md §5.3
- */
-export function computeNeighborMask(
-  tiles: ITile[], w: number, h: number, x: number, y: number,
-): number {
-  const idx = y * w + x;
-  let mask = 0;
-
-  // Ordre cardinal : N(1) > E(2) > S(4) > W(8)
-  const checks: [number, number, number][] = [
-    [ 0, -1, 1],  // N → bit 1
-    [ 1,  0, 2],  // E → bit 2
-    [ 0,  1, 4],  // S → bit 4
-    [-1,  0, 8],  // W → bit 8
-  ];
-
-  for (const [dx, dy, bit] of checks) {
-    const nx = x + dx;
-    const ny = y + dy;
-    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-      if (isNeighbourTriggeringBorder(tiles[idx].type, tiles[ny * w + nx].type)) {
-        mask |= bit;
-      }
-    } else {
-      // Bord de la carte : considéré comme famille différente (bordure)
-      mask |= bit;
-    }
-  }
-
-  return mask;
-}
-
-// ================================================================
-// computeRenderPasses — Calcule les passes de rendu pour une tuile
-//
-// Pass 0 : Texture de base du type de terrain.
-//   - Grass family : suffixe = géométrie d'élévation (A-E)
-//   - Non-grass    : suffixe = 'A' (base)
-//
-// Pass 1..3 : Textures de bordure (si voisin de famille ≠).
-//   - On itère les directions N > E > S > W.
-//   - Chaque direction différente génère une passe de bordure avec le
-//     suffixe d'orientation correspondant (N→A, E→B, S→C, W→D).
-//   - Seulement pour les types qui ONT des textures A-D disponibles.
 // ================================================================
 
 /**
@@ -330,10 +277,7 @@ export function computeRenderPasses(
     // quadrants omis = texture entière
   });
 
-  // ---- Masque asymétrique ----
-  const mask = computeNeighborMask(tiles, w, h, tile.x, tile.y);
-
-  // Helper : type de la tuile voisine pour une direction
+  // ---- Helper : type de la tuile voisine pour une direction ----
   const neighborAt = (dx: number, dy: number): TileType | undefined => {
     const nx = tile.x + dx;
     const ny = tile.y + dy;
@@ -342,154 +286,134 @@ export function computeRenderPasses(
     return undefined;
   };
 
-  // Helper : obtient le type override de bordure pour une direction.
-  // Retourne undefined si la direction ne déclenche pas de bordure
-  // ou si le type résultant n'a pas de textures A-D.
-  const borderTypeForNeighbor = (dx: number, dy: number): TileType | undefined => {
-    const nType = neighborAt(dx, dy);
-    if (nType === undefined) {
-      // Bord de carte : traité comme si le voisin était Rough (grass)
-      // → produit la bordure standard pour (current, grass)
-      const ov = borderOverrideForTransition(tile.type, TileType.Rough);
-      const bt = ov ?? tile.type;
-      return TYPES_WITH_BORDER_TEXTURES.has(bt) ? bt : undefined;
-    }
-    if (!isNeighbourTriggeringBorder(tile.type, nType)) return undefined;
-    // Override basé sur (courant, voisin) — transition asymétrique
-    const ov = borderOverrideForTransition(tile.type, nType);
+  // ---- Helper : override pour une direction (bord de carte → Rough) ----
+  const overrideFor = (nType: TileType | undefined): TileType | undefined => {
+    const t = nType ?? TileType.Rough;
+    if (!isNeighbourTriggeringBorder(tile.type, t)) return undefined;
+    const ov = borderOverrideForTransition(tile.type, t);
     const bt = ov ?? tile.type;
-    // Ne produit une passe que si le type résultant a des textures A-D
     return TYPES_WITH_BORDER_TEXTURES.has(bt) ? bt : undefined;
   };
 
-  // ---- Shortcut : 4 voisins différents → texture 0005 entière ----
-  if (mask === 0b1111) {
-    // Pour l'îlot, on utilise l'override du premier voisin N
-    const borderType = borderTypeForNeighbor(0, -1);
-    if (borderType) {
-      passes.push({
-        type: borderType,
-        variation: 4,        // fichier 0005 = îlot (0-indexed)
-        suffix: 'A',
-        subType: tile.subType,
-      });
-    }
-    return passes;
-  }
-
-  // ---- Définition des overlays ----
-  type OverlayDef = { bits: number; texVar: number; quads: number[]; stripEdge?: 'N' | 'E' | 'S' | 'W' };
-
-  // Overlays de bordure droite (texture 0002, bande fine de 6px par direction)
-  const edgeOverlays: OverlayDef[] = [
-    { bits: 1, texVar: 1, quads: [0, 1], stripEdge: 'N' },  // fichier 0002, N → haut
-    { bits: 2, texVar: 1, quads: [1, 3], stripEdge: 'E' },  // fichier 0002, E → droite
-    { bits: 4, texVar: 1, quads: [2, 3], stripEdge: 'S' },  // fichier 0002, S → bas
-    { bits: 8, texVar: 1, quads: [0, 2], stripEdge: 'W' },  // fichier 0002, W → gauche
+  // ---- Blob Tiling par Quadrant (FUN_10013f00) ----
+  // Chaque quadrant (NW/NE/SW/SE) interroge ses 2 cardinaux adjacents
+  // et décide localement : edge / corner / diagonal / none.
+  //
+  // Définition des 4 quadrants :
+  //   quad | card1 | card2 | diag
+  //   ─────┼───────┼───────┼─────
+  //   0 NW | N     | W     | NW
+  //   1 NE | N     | E     | NE
+  //   2 SW | S     | W     | SW
+  //   3 SE | S     | E     | SE
+  const QUAD_DEFS = [
+    { quad: 0, c1: [0, -1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1, -1] as [number, number] },
+    { quad: 1, c1: [0, -1] as [number, number], c2: [1,  0] as [number, number], diag: [ 1, -1] as [number, number] },
+    { quad: 2, c1: [0,  1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1,  1] as [number, number] },
+    { quad: 3, c1: [0,  1] as [number, number], c2: [1,  0] as [number, number], diag: [ 1,  1] as [number, number] },
   ];
 
-  // Overlays d'angle arrondi (texture 0004, 1 quadrant par coin)
-  const cornerOverlays: OverlayDef[] = [
-    { bits: 1 | 2, texVar: 3, quads: [1] },  // fichier 0004, N+E → NE
-    { bits: 2 | 4, texVar: 3, quads: [3] },  // fichier 0004, E+S → SE
-    { bits: 4 | 8, texVar: 3, quads: [2] },  // fichier 0004, S+W → SW
-    { bits: 8 | 1, texVar: 3, quads: [0] },  // fichier 0004, W+N → NW
-  ];
-
-  // ---- Suppression des bandes aux coins ----
-  // Quand deux cardinaux adjacents sont différents (ex: N+W), la bande droite
-  // (0002) de chaque direction est supprimée : l'angle arrondi (0004) gère
-  // tout le coin à lui seul, évitant les pics d'intersection.
-  // N(1) supprimé par N+W(9) ou N+E(3)
-  // E(2) supprimé par N+E(3) ou E+S(6)
-  // S(4) supprimé par E+S(6) ou S+W(12)
-  // W(8) supprimé par S+W(12) ou W+N(9)
-  const CORNER_SUPPRESS: Record<number, number[]> = {
-    1: [3, 9],   // N
-    2: [3, 6],   // E
-    4: [6, 12],  // S
-    8: [12, 9],  // W
+  // Edge direction name par offset cardinal
+  const EDGE_NAME: Record<string, 'N' | 'E' | 'S' | 'W'> = {
+    '0,-1': 'N', '1,0': 'E', '0,1': 'S', '-1,0': 'W',
   };
 
-  // Ajoute les overlays de bordure droite (texture 0002)
-  for (const edge of edgeOverlays) {
-    if ((mask & edge.bits) !== edge.bits) continue;
-    // Supprimé si un coin adjacent est actif (l'angle 0004 le gère)
-    let suppressed = false;
-    for (const pairBits of CORNER_SUPPRESS[edge.bits]) {
-      if ((mask & pairBits) === pairBits) { suppressed = true; break; }
+  // Opérations par quadrant
+  type QStrip = { kind: 'strip'; quad: number; edge: 'N' | 'E' | 'S' | 'W'; overrideType: TileType };
+  type QCorner = { kind: 'corner'; quad: number; overrideType: TileType };
+  type QDiag = { kind: 'diagonal'; quad: number; overrideType: TileType };
+  type QOp = QStrip | QCorner | QDiag;
+
+  const qOps: QOp[] = [];
+
+  for (const qd of QUAD_DEFS) {
+    const c1Type = neighborAt(qd.c1[0], qd.c1[1]);
+    const c2Type = neighborAt(qd.c2[0], qd.c2[1]);
+    const ov1 = overrideFor(c1Type);
+    const ov2 = overrideFor(c2Type);
+
+    if (ov1 && ov2) {
+      // Les 2 cardinaux diffèrent → corner (texture 0004)
+      qOps.push({ kind: 'corner', quad: qd.quad, overrideType: ov1 });
+    } else if (ov1) {
+      qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c1.join(',')], overrideType: ov1 });
+    } else if (ov2) {
+      qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c2.join(',')], overrideType: ov2 });
+    } else {
+      // Les 2 cardinaux sont même famille → vérifier la diagonale
+      const diagType = neighborAt(qd.diag[0], qd.diag[1]);
+      const ovDiag = overrideFor(diagType);
+      if (ovDiag) {
+        qOps.push({ kind: 'diagonal', quad: qd.quad, overrideType: ovDiag });
+      }
     }
-    if (suppressed) continue;
-    // Détermine le type de texture via borderOverrideForTransition
-    const dxy: Record<string, [number, number]> = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
-    const [ddx, ddy] = dxy[edge.stripEdge!];
-    const borderType = borderTypeForNeighbor(ddx, ddy);
-    if (!borderType) continue;
+  }
+
+  // ---- Consolidation des strips par direction ----
+  // Regroupe les strips N, E, S, W adjacents en une seule passe
+  // (ex: N strip des quadrants 0+1 → une passe quads [0,1])
+  const stripGroups: Record<string, { quads: number[]; overrideType: TileType }> = {};
+  for (const op of qOps) {
+    if (op.kind === 'strip') {
+      const key = op.edge;
+      if (!stripGroups[key]) stripGroups[key] = { quads: [], overrideType: op.overrideType };
+      stripGroups[key].quads.push(op.quad);
+      // En cas de conflit d'override (rare), garder le premier
+    }
+  }
+
+  // Émet les passes de strip edge (texture 0002)
+  for (const [edge, group] of Object.entries(stripGroups)) {
     passes.push({
-      type: borderType,
-      variation: edge.texVar,
+      type: group.overrideType,
+      variation: 1,        // 0002
       suffix: 'A',
       subType: tile.subType,
-      quadrants: edge.quads,
-      stripEdge: edge.stripEdge,
+      quadrants: group.quads,
+      stripEdge: edge as 'N' | 'E' | 'S' | 'W',
     });
   }
 
-  // Ajoute les overlays d'angle arrondi
-  const cornerDirs: [number, number][] = [
-    [1, 0],   // corner[0] = N+E → voisin E
-    [0, 1],   // corner[1] = E+S → voisin S
-    [-1, 0],  // corner[2] = S+W → voisin W
-    [0, -1],  // corner[3] = W+N → voisin N
-  ];
-  for (let ci = 0; ci < cornerOverlays.length; ci++) {
-    const corner = cornerOverlays[ci];
-    if ((mask & corner.bits) === corner.bits) {
-      const [ddx, ddy] = cornerDirs[ci];
-      const borderType = borderTypeForNeighbor(ddx, ddy);
-      if (!borderType) continue;
+  // Émet les passes de corner (texture 0004)
+  for (const op of qOps) {
+    if (op.kind === 'corner') {
       passes.push({
-        type: borderType,
-        variation: corner.texVar,
+        type: op.overrideType,
+        variation: 3,        // 0004
         suffix: 'A',
         subType: tile.subType,
-        quadrants: corner.quads,
+        quadrants: [op.quad],
       });
     }
   }
 
-  // ---- Diagonales isolées (texture 0003) ----
-  // Condition : voisin diagonal différent, MAIS les 2 cardinaux qui
-  // l'encadrent sont identiques à la tuile courante (bits à 0 dans mask).
-  // Utilise 1 quadrant de la texture 0003 pour le coin correspondant.
-  type DiagDef = { ddx: number; ddy: number; c1: number; c2: number; quad: number };
-  const diagOverlays: DiagDef[] = [
-    { ddx: 1,  ddy: -1, c1: 1, c2: 2,  quad: 1 },  // NE : N(1) & E(2) identiques
-    { ddx: 1,  ddy: 1,  c1: 2, c2: 4,  quad: 3 },  // SE : E(2) & S(4) identiques
-    { ddx: -1, ddy: 1,  c1: 4, c2: 8,  quad: 2 },  // SW : S(4) & W(8) identiques
-    { ddx: -1, ddy: -1, c1: 8, c2: 1,  quad: 0 },  // NW : W(8) & N(1) identiques
-  ];
+  // Émet les passes de diagonale isolée (texture 0003)
+  for (const op of qOps) {
+    if (op.kind === 'diagonal') {
+      passes.push({
+        type: op.overrideType,
+        variation: 2,        // 0003
+        suffix: 'A',
+        subType: tile.subType,
+        quadrants: [op.quad],
+      });
+    }
+  }
 
-  for (const diag of diagOverlays) {
-    const nx = tile.x + diag.ddx;
-    const ny = tile.y + diag.ddy;
-    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-      const nType = tiles[ny * w + nx].type;
-      if (isNeighbourTriggeringBorder(tile.type, nType)) {
-        // Diagonal différent : les cardinaux doivent être identiques
-        if ((mask & diag.c1) === 0 && (mask & diag.c2) === 0) {
-          const ov = borderOverrideForTransition(tile.type, nType);
-          const borderType = ov ?? tile.type;
-          if (!TYPES_WITH_BORDER_TEXTURES.has(borderType)) continue;
-          passes.push({
-            type: borderType,
-            variation: 2,        // fichier 0003 = diagonale isolée (0-indexed)
-            suffix: 'A',
-            subType: tile.subType,
-            quadrants: [diag.quad],
-          });
-        }
-      }
+  // ---- Shortcut îlot (4 voisins différents) ----
+  // Si tous les quadrants ont un op (edge ou corner) → pas de diagonale
+  // Si les 4 quadrants ont un coin → c'est un îlot
+  if (qOps.length === 4) {  // tous les quadrants sont occupés
+    const allCorner = qOps.every(op => op.kind === 'corner');
+    if (allCorner) {
+      // Remplacer toutes les passes par une seule texture 0005
+      passes.length = 1;  // garde seulement la base
+      passes.push({
+        type: qOps[0].overrideType,
+        variation: 4,        // 0005
+        suffix: 'A',
+        subType: tile.subType,
+      });
     }
   }
 
