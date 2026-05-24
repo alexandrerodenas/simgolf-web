@@ -20,7 +20,7 @@
 import { generateVegetationGrid, texturePathForPass } from './world/terrain';
 import { createCamera2D, Camera2D } from './render/camera';
 import { renderMap } from './render/TileRenderer';
-import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType } from './terrain-lib/index.js';
+import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType, TileType } from './terrain-lib/index.js';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;
@@ -346,3 +346,77 @@ const el = document.createElement('div');
 el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
 el.textContent = `SimGolf — Végétation ${MAP_W}×${MAP_H}\nTouch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug  P=passes`;
 document.body.appendChild(el);
+
+// ---- Infos tuile survolée ----
+const infoEl = document.createElement('div');
+infoEl.style.cssText = 'position:fixed;bottom:74px;left:8px;background:rgba(0,0,0,0.85);color:#ff0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre;display:none';
+document.body.appendChild(infoEl);
+
+/** Convertit coordonnées écran → tile grille */
+function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
+  const z = cam.zoom;
+  // Inverse de la projection dimétrique
+  // screenX = (x - y) * 64 * z + cam.offsetX
+  // screenY = (x + y) * 32 * z + cam.offsetY
+  // → x = (screenX - cam.offsetX) / (64*z) + (screenY - cam.offsetY) / (32*z)
+  const rx = (sx - cam.offsetX) / (64 * z);
+  const ry = (sy - cam.offsetY) / (32 * z);
+  const tx = (rx + ry) / 2;
+  const ty = (ry - rx) / 2;
+  const x = Math.round(tx);
+  const y = Math.round(ty);
+  if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) return null;
+  return { x, y };
+}
+
+canvas.addEventListener('mousemove', (e: MouseEvent) => {
+  const tile = screenToTile(e.clientX, e.clientY);
+  if (tile) {
+    const idx = tile.y * MAP_W + tile.x;
+    const t = mapState.tiles[idx];
+    const typeNames: Record<number, string> = {
+      0: 'Rough', 1: 'Fairway', 2: 'PuttingGreen', 3: 'SandBunker',
+      4: 'WaterShallow', 5: 'WaterMiddle', 6: 'WaterDeep', 7: 'DeepRough',
+      8: 'GrassySand', 9: 'GrassBunker', 10: 'Tee', 11: 'Cliff',
+      12: 'Path', 13: 'Building', 14: 'Woods', 15: 'Brush',
+    };
+    const elType = typeNames[t.type] ?? `Type${t.type}`;
+    infoEl.style.display = 'block';
+    infoEl.textContent = `Tile [${t.x},${t.y}]  ${elType}  elev:${t.elevation.join(',')}  var:${t.variation}  passes:${t.renderPasses.length}`;
+  } else {
+    infoEl.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('click', (e: MouseEvent) => {
+  const tile = screenToTile(e.clientX, e.clientY);
+  if (!tile) return;
+  
+  const idx = tile.y * MAP_W + tile.x;
+  const t = mapState.tiles[idx];
+  const terrain = Terrain.getInstance();
+  
+  // Cycle à travers les 4 types de végétation
+  const types = [TileType.Rough, TileType.DeepRough, TileType.Tree, TileType.Flower,
+                 TileType.Fairway, TileType.SandBunker, TileType.WaterShallow];
+  const currentIdx = types.indexOf(t.type as TileType);
+  const nextType = types[(currentIdx + 1) % types.length];
+  
+  terrain.setType(t, nextType, 0);
+  terrain.computeAllRenderPasses();
+  
+  // Recharger les images de texture si besoin
+  for (const pass of t.renderPasses) {
+    const path = texturePathForPass(pass);
+    if (path && !textureImages.has(path)) {
+      neededPaths.add(path);
+      const img = new Image();
+      img.onload = () => {
+        textureImages.set(path, img);
+        updateTileImages();
+      };
+      img.src = path;
+    }
+  }
+  updateTileImages();
+});
