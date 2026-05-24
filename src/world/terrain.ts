@@ -22,7 +22,7 @@ import {
   Terrain,
   TERRAIN_FAMILY,
   MAX_VARIATION,
-} from 'terrain-ts';
+} from '../terrain-lib/index.js';
 import { tileVertexPosition } from '../render/camera';
 import { ELEVATION_LEVELS } from '../core/types';
 

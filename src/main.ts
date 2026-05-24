@@ -20,7 +20,7 @@
 import { generateVegetationGrid, texturePathForPass } from './world/terrain';
 import { createCamera2D, Camera2D } from './render/camera';
 import { renderMap } from './render/TileRenderer';
-import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType } from 'terrain-ts';
+import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType } from './terrain-lib/index.js';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;

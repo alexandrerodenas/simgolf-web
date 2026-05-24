@@ -20,7 +20,7 @@ export {
   TILE_W,
   TILE_H,
   ELEVATION_SCALE,
-} from 'terrain-ts';
+} from '../terrain-lib/index.js';
 
 // ── Constantes de rendu (propres à simgolf-web) ──
 // Le rendu Three.js/Canvas2D peut surcharger les valeurs de terrain-ts
