@@ -339,18 +339,38 @@ export function computeRenderPasses(
     { bits: 8 | 1, texVar: 3, quads: [0] },  // fichier 0004, W+N → NW
   ];
 
-  // Ajoute les overlays de bordure droite
+  // ---- Suppression des bandes aux coins ----
+  // Quand deux cardinaux adjacents sont différents (ex: N+W), la bande droite
+  // (0002) de chaque direction est supprimée : l'angle arrondi (0004) gère
+  // tout le coin à lui seul, évitant les pics d'intersection.
+  // N(1) supprimé par N+W(9) ou N+E(3)
+  // E(2) supprimé par N+E(3) ou E+S(6)
+  // S(4) supprimé par E+S(6) ou S+W(12)
+  // W(8) supprimé par S+W(12) ou W+N(9)
+  const CORNER_SUPPRESS: Record<number, number[]> = {
+    1: [3, 9],   // N
+    2: [3, 6],   // E
+    4: [6, 12],  // S
+    8: [12, 9],  // W
+  };
+
+  // Ajoute les overlays de bordure droite (texture 0002)
   for (const edge of edgeOverlays) {
-    if ((mask & edge.bits) === edge.bits) {
-      passes.push({
-        type: tile.type,
-        variation: edge.texVar,
-        suffix: baseSuffix,
-        subType: tile.subType,
-        quadrants: edge.quads,
-        stripEdge: edge.stripEdge,
-      });
+    if ((mask & edge.bits) !== edge.bits) continue;
+    // Supprimé si un coin adjacent est actif (l'angle 0004 le gère)
+    let suppressed = false;
+    for (const pairBits of CORNER_SUPPRESS[edge.bits]) {
+      if ((mask & pairBits) === pairBits) { suppressed = true; break; }
     }
+    if (suppressed) continue;
+    passes.push({
+      type: tile.type,
+      variation: edge.texVar,
+      suffix: baseSuffix,
+      subType: tile.subType,
+      quadrants: edge.quads,
+      stripEdge: edge.stripEdge,
+    });
   }
 
   // Ajoute les overlays d'angle arrondi
