@@ -775,95 +775,66 @@ export class Terrain {
       return TYPES_WITH_BORDER.has(bt) ? bt : undefined;
     };
 
-    // Quadrant ops
-    const QUAD_DEFS = [
-      { quad: 0, c1: [0, -1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1, -1] as [number, number] },
-      { quad: 1, c1: [0, -1] as [number, number], c2: [ 1, 0] as [number, number], diag: [ 1, -1] as [number, number] },
-      { quad: 2, c1: [0,  1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1,  1] as [number, number] },
-      { quad: 3, c1: [0,  1] as [number, number], c2: [ 1, 0] as [number, number], diag: [ 1,  1] as [number, number] },
-    ];
-    const EDGE_NAME: Record<string, 'N' | 'E' | 'S' | 'W'> = {
-      '0,-1': 'N', '1,0': 'E', '0,1': 'S', '-1,0': 'W',
+    // ── Détection des bords par voisin cardinal ──
+    // Chaque voisin (N/E/S/O) peut produire un strip overlay.
+    // Les coins sont automatiquement gérés par l'overlap des strips adjacents.
+    // Orientation : N→A, E→B, S→C, O→D (convention du jeu original)
+    const EDGE_TO_SUFFIX: Record<string, string> = {
+      'N': 'A', 'E': 'B', 'S': 'C', 'W': 'D',
     };
 
-    type QOp = { kind: 'strip' | 'corner' | 'diagonal'; quad: number; edge?: string; overrideType: TileType };
-    const qOps: QOp[] = [];
+    // On utilise les quadrants pour savoir quels voisins cardinaux existent
+    // Chaque quadrant touche 2 voisins cardinaux
+    const CARDINAL_NEIGHBORS: Record<string, { dx: number; dy: number; edge: string }> = {
+      '0,-1': { dx: 0, dy: -1, edge: 'N' },
+      '1,0':  { dx: 1, dy: 0,  edge: 'E' },
+      '0,1':  { dx: 0, dy: 1,  edge: 'S' },
+      '-1,0': { dx: -1, dy: 0, edge: 'W' },
+    };
 
-    for (const qd of QUAD_DEFS) {
-      const c1Type = neighborAt(qd.c1[0], qd.c1[1]);
-      const c2Type = neighborAt(qd.c2[0], qd.c2[1]);
-      const ov1 = overrideFor(c1Type);
-      const ov2 = overrideFor(c2Type);
-
-      if (ov1 && ov2) {
-        qOps.push({ kind: 'corner', quad: qd.quad, overrideType: ov1 });
-      } else if (ov1) {
-        qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c1.join(',')], overrideType: ov1 });
-      } else if (ov2) {
-        qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c2.join(',')], overrideType: ov2 });
-      } else {
-        const diagType = neighborAt(qd.diag[0], qd.diag[1]);
-        const ovDiag = overrideFor(diagType);
-        if (ovDiag) {
-          qOps.push({ kind: 'diagonal', quad: qd.quad, overrideType: ovDiag });
-        }
-      }
+    // Pour chaque voisin cardinal, vérifier s'il y a besoin d'un strip
+    // Un même voisin peut être touché par 2 quadrants → on déduplique
+    const edgesNeeded = new Set<string>();
+    for (const [, info] of Object.entries(CARDINAL_NEIGHBORS)) {
+      const nType = neighborAt(info.dx, info.dy);
+      const ov = overrideFor(nType);
+      if (ov) edgesNeeded.add(info.edge);
     }
 
-    // Strips consolidés par direction
-    const stripGroups: Record<string, { quads: number[]; overrideType: TileType }> = {};
-    for (const op of qOps) {
-      if (op.kind === 'strip' && op.edge) {
-        if (!stripGroups[op.edge]) {
-          stripGroups[op.edge] = { quads: [], overrideType: op.overrideType };
-        }
-        stripGroups[op.edge].quads.push(op.quad);
-      }
-    }
+    // Pour chaque bord, déterminer les quadrants à couvrir
+    // N → quadrants 0 (NW) et 1 (NE)
+    // E → quadrants 1 (NE) et 3 (SE)
+    // S → quadrants 2 (SW) et 3 (SE)
+    // W → quadrants 0 (NW) et 2 (SW)
+    const EDGE_QUADS: Record<string, number[]> = {
+      'N': [0, 1],
+      'E': [1, 3],
+      'S': [2, 3],
+      'W': [0, 2],
+    };
 
-    for (const [edge, group] of Object.entries(stripGroups)) {
+    // Map edge name → delta dx/dy
+    const EDGE_TO_DELTA: Record<string, { dx: number; dy: number }> = {
+      'N': { dx: 0, dy: -1 },
+      'E': { dx: 1, dy: 0 },
+      'S': { dx: 0, dy: 1 },
+      'W': { dx: -1, dy: 0 },
+    };
+
+    for (const edge of edgesNeeded) {
+      const suffix = EDGE_TO_SUFFIX[edge];
+      const delta = EDGE_TO_DELTA[edge];
+      const nType = neighborAt(delta.dx, delta.dy);
+      const ov = overrideFor(nType);
+      if (!ov) continue;
+
       passes.push({
-        type: group.overrideType,
-        variation: 0,        // 0001 — overlay strip
-      suffix: 'A',
+        type: ov,
+        variation: 0,        // 0001 — première variation
+        suffix: suffix,      // N→A, E→B, S→C, W→D
         subType: tile.subType,
-        quadrants: group.quads,
+        quadrants: EDGE_QUADS[edge],
         stripEdge: edge as 'N' | 'E' | 'S' | 'W',
-      });
-    }
-
-    for (const op of qOps) {
-      if (op.kind === 'corner') {
-        passes.push({
-      type: op.overrideType,
-          variation: 0,        // 0001 — overlay corner
-      suffix: 'A',
-          subType: tile.subType,
-          quadrants: [op.quad],
-        });
-      }
-    }
-
-    for (const op of qOps) {
-      if (op.kind === 'diagonal') {
-        passes.push({
-      type: op.overrideType,
-          variation: 0,        // 0001 — overlay corner
-      suffix: 'A',
-          subType: tile.subType,
-          quadrants: [op.quad],
-        });
-      }
-    }
-
-    // Îlot (4 corners = texture 0005)
-    if (qOps.length === 4 && qOps.every(op => op.kind === 'corner')) {
-      passes.length = 1;
-      passes.push({
-        type: qOps[0].overrideType,
-        variation: 0,        // 0001 — overlay island
-        suffix: 'A',
-        subType: tile.subType,
       });
     }
 

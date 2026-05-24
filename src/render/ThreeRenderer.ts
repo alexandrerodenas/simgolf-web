@@ -54,6 +54,8 @@ export class ThreeRenderer {
   camera: THREE.OrthographicCamera;
   private renderer: THREE.WebGLRenderer;
   private meshes: THREE.Mesh[] = [];
+  private textureLoader: THREE.TextureLoader;
+  private textureCache = new Map<string, THREE.Texture>();
   private mapState: IMapState | null = null;
   private gridW = 0;
   private gridH = 0;
@@ -81,6 +83,9 @@ export class ThreeRenderer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x1a3a1a, 1);
     container.appendChild(this.renderer.domElement);
+
+    // Texture loader
+    this.textureLoader = new THREE.TextureLoader();
 
     // --- Éclairage Three.js (modèle lambertien du jeu original) ---
     this.ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
@@ -146,20 +151,61 @@ export class ThreeRenderer {
     this.meshes = [];
 
     for (const group of groups) {
-      // Pour le MVP : on utilise vertex colors + éclairage lambertien
-      // (pas de textures — elles seront ajoutées après)
-      const material = new THREE.MeshLambertMaterial({
-        vertexColors: true,
-        flatShading: true,         // glShadeModel(GL_FLAT) du jeu original
-        side: THREE.DoubleSide,
-        emissive: 0x000000,
-      });
+      const hasTexture = group.texturePath !== null;
+      let texture: THREE.Texture | null = null;
 
-      const mesh = new THREE.Mesh(group.geometry, material);
-      mesh.frustumCulled = false;
+      if (hasTexture && group.texturePath) {
+        // Charger depuis le cache ou créer
+        const cached = this.textureCache.get(group.texturePath);
+        texture = cached ?? null;
+        if (!texture) {
+          texture = this.textureLoader.load(group.texturePath) as THREE.Texture;
+          texture.wrapS = THREE.ClampToEdgeWrapping;
+          texture.wrapT = THREE.ClampToEdgeWrapping;
+          texture.minFilter = THREE.LinearFilter;
+          texture.magFilter = THREE.LinearFilter;
+          this.textureCache.set(group.texturePath, texture);
+        }
+      }
 
-      this.meshes.push(mesh);
-      this.scene.add(mesh);
+      if (hasTexture && texture) {
+        // Texture disponible : on multiplie texture × vertexColors blancs
+        // Modifier les vertex colors → blanc (1,1,1) pour laisser la texture visible
+        const colorAttr = group.geometry.getAttribute('color');
+        if (colorAttr) {
+          const arr = colorAttr.array as Float32Array;
+          for (let i = 0; i < arr.length; i++) {
+            arr[i] = 1.0; // white
+          }
+          colorAttr.needsUpdate = true;
+        }
+
+        const material = new THREE.MeshLambertMaterial({
+          map: texture,
+          vertexColors: true,
+          flatShading: true,
+          side: THREE.DoubleSide,
+          emissive: 0x000000,
+        });
+
+        const mesh = new THREE.Mesh(group.geometry, material);
+        mesh.frustumCulled = false;
+        this.meshes.push(mesh);
+        this.scene.add(mesh);
+      } else {
+        // Pas de texture : vertex colors seuls
+        const material = new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          flatShading: true,
+          side: THREE.DoubleSide,
+          emissive: 0x000000,
+        });
+
+        const mesh = new THREE.Mesh(group.geometry, material);
+        mesh.frustumCulled = false;
+        this.meshes.push(mesh);
+        this.scene.add(mesh);
+      }
     }
   }
 
