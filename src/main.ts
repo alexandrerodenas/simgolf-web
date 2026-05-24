@@ -1,12 +1,8 @@
 /**
- * main.ts — Moteur de rendu Canvas 2D SimGolf
+ * main.ts — Moteur de rendu 3D SimGolf (Three.js)
  *
- * Projection dimétrique 2:1, rendu multi-passes par tuile.
- * Chaque tuile peut avoir jusqu'à 4 textures superposées (base + bordures).
- *
- * Utilise generateVegetationGrid() pour une carte simplifiée avec
- * uniquement des types famille grass (Rough, DeepRough, Woods, Brush)
- * — seamless, pas de bordures entre eux.
+ * Projection dimétrique 2:1, éclairage lambertien comme le jeu original.
+ * Normales 3D calculées depuis l'élévation.
  *
  * Contrôles : pan tactile (1 doigt) / souris, pincement (2 doigts) /
  * molette pour le zoom.
@@ -14,107 +10,68 @@
  * Raccourcis :
  *   R  →  Reset vue
  *   T  →  Vue de dessus
- *   D  →  Debug overlay (lettre passe + nombre de passes)
+ *   D  →  Debug overlay (type + géométrie + variation)
  */
 
-import { generateVegetationGrid, texturePathForPass } from './world/terrain';
-import { createCamera2D, Camera2D } from './render/camera';
-import { renderMap } from './render/TileRenderer';
-import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType, TileType } from './terrain-lib/index.js';
+import * as THREE from 'three';
+import { generateVegetationGrid } from './world/terrain';
+import { getGeometryType, TileType } from './terrain-lib/index.js';
+import { ThreeRenderer } from './render/ThreeRenderer';
+import { gridCenter } from './render/camera';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;
 const MAP_H = 40;
 
-// ---- 2. Canvas de rendu ----
-const canvas = document.createElement('canvas');
-canvas.style.cssText = 'display:block;width:100%;height:100%;position:fixed;top:0;left:0;touch-action:none';
-const ctx = canvas.getContext('2d')!;
-document.body.appendChild(canvas);
+// ---- 2. Conteneur pour Three.js ----
+const container = document.createElement('div');
+container.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;overflow:hidden';
+document.body.appendChild(container);
 
-function resize(): void {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  ctx.imageSmoothingEnabled = false;
-}
+// ---- 3. Initialisation du renderer Three.js ----
+const renderer = new ThreeRenderer(container);
 
-resize();
-window.addEventListener('resize', resize);
-
-// ---- 3. Caméra 2D (pan + zoom uniquement, pas de rotation) ----
-const cam = createCamera2D();
-let showPassCount = false;
-
-// Centrer la vue initiale
-const GRID_CENTER_Y = ((MAP_W / 2) + (MAP_H / 2)) * 32 + 32;
-cam.offsetX = canvas.width / 2;
-cam.offsetY = canvas.height / 2 - GRID_CENTER_Y;
-cam.zoom = 1;
-
-// ---- 4. Génération du terrain (végétation uniquement) ----
+// ---- 4. Génération du terrain (avec élévation) ----
 const mapState = generateVegetationGrid(MAP_W, MAP_H);
+renderer.loadMap(mapState);
 
 console.log(`[SimGolf] Carte générée : ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
+console.log(`[SimGolf] Éclairage : ambient=${mapState.lighting.ambient}, diffuse=${mapState.lighting.diffuse}, dir=${mapState.lighting.lightDir}`);
 
-// ---- 5. Pré-chargement des textures Multi-Passes ----
-// On collecte TOUS les chemins uniques depuis TOUS les renderPasses
-const neededPaths = new Set<string>();
-for (const tile of mapState.tiles) {
-  for (const pass of tile.renderPasses) {
-    const path = texturePathForPass(pass);
-    if (path) neededPaths.add(path);
-  }
+// ---- 5. Point focal de la caméra (point que la caméra regarde) ----
+const center = gridCenter(MAP_W, MAP_H);
+const focusPoint = new THREE.Vector3(center.x, 0, center.z);
+
+/**
+ * Recalcule la position de la caméra en fonction du focusPoint + zoom.
+ * La caméra reste à distance fixe du focus avec le même angle dimétrique.
+ */
+function updateCameraFromFocus(): void {
+  const cam = renderer.camera;
+  const dist = Math.max(MAP_W, MAP_H) * 50 / cam.zoom;
+  const AZIMUTH = Math.PI / 4;
+  const ELEVATION = Math.atan(1 / Math.sqrt(2));
+
+  cam.position.set(
+    focusPoint.x + dist * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
+    focusPoint.y + dist * Math.sin(ELEVATION),
+    focusPoint.z + dist * Math.cos(ELEVATION) * Math.cos(AZIMUTH),
+  );
+  cam.lookAt(focusPoint);
+
+  // Ajuster frustum si zoom change
+  const aspect = window.innerWidth / window.innerHeight;
+  const baseDim = Math.max(MAP_W, MAP_H) * 60;
+  cam.left = -(baseDim * aspect) / 2;
+  cam.right = (baseDim * aspect) / 2;
+  cam.top = baseDim / 2;
+  cam.bottom = -baseDim / 2;
+  cam.zoom = 1; // On utilise la distance (dist) pour le zoom, pas la propriété zoom
+  cam.updateProjectionMatrix();
 }
 
-const textureImages = new Map<string, HTMLImageElement>();
-// tilePassImages[tileIdx] = tableau d'images pour chaque passe
-const tilePassImages: HTMLImageElement[][] = new Array(mapState.tiles.length);
-let texturesToLoad = neededPaths.size;
-let texturesLoaded = 0;
-
-console.log(`[SimGolf] ${texturesToLoad} textures à charger (multi-passes)`);
-
-// Stats : répartition des passes
-let totalPasses = 0;
-let maxPasses = 0;
-for (const tile of mapState.tiles) {
-  totalPasses += tile.renderPasses.length;
-  if (tile.renderPasses.length > maxPasses) maxPasses = tile.renderPasses.length;
-}
-console.log(`[SimGolf] Stats passes : total=${totalPasses}, max/tile=${maxPasses}, moyenne=${(totalPasses / mapState.tiles.length).toFixed(2)}`);
-
-for (const path of neededPaths) {
-  const img = new Image();
-  img.onload = () => {
-    textureImages.set(path, img);
-    texturesLoaded++;
-    if (texturesLoaded === texturesToLoad) {
-      console.log('[SimGolf] Toutes les textures chargées');
-      updateTileImages();
-    }
-  };
-  img.onerror = () => {
-    texturesLoaded++;
-    console.warn(`[SimGolf] Texture manquante: ${path}`);
-  };
-  img.src = path;
-}
-
-// Pré-calcul des images par tuile pour chaque passe
-function updateTileImages(): void {
-  for (let i = 0; i < mapState.tiles.length; i++) {
-    const tile = mapState.tiles[i];
-    const images: HTMLImageElement[] = [];
-    for (const pass of tile.renderPasses) {
-      const path = texturePathForPass(pass);
-      const img = path ? textureImages.get(path) : undefined;
-      if (img) images.push(img);
-    }
-    tilePassImages[i] = images;
-  }
-}
-
-let frameCount = 0;
+// Initialisation de la vue
+updateCameraFromFocus();
 
 // ---- 6. Contrôles tactiles ----
 let lastTouchDist = 0;
@@ -122,7 +79,7 @@ let lastTouchX = 0;
 let lastTouchY = 0;
 let isPanning = false;
 
-canvas.addEventListener('touchstart', (e: TouchEvent) => {
+container.addEventListener('touchstart', (e: TouchEvent) => {
   e.preventDefault();
   if (e.touches.length === 1) {
     isPanning = true;
@@ -136,13 +93,18 @@ canvas.addEventListener('touchstart', (e: TouchEvent) => {
   }
 }, { passive: false });
 
-canvas.addEventListener('touchmove', (e: TouchEvent) => {
+container.addEventListener('touchmove', (e: TouchEvent) => {
   e.preventDefault();
   if (e.touches.length === 1 && isPanning) {
-    const dx = e.touches[0].clientX - lastTouchX;
-    const dy = e.touches[0].clientY - lastTouchY;
-    cam.offsetX += dx;
-    cam.offsetY += dy;
+    const dx = (e.touches[0].clientX - lastTouchX);
+    const dy = (e.touches[0].clientY - lastTouchY);
+
+    // Facteur d'échelle : au zoom max, on panne plus lentement
+    const zoomFactor = renderer.currentZoom;
+    focusPoint.x -= dx * zoomFactor * 0.5;
+    focusPoint.z -= dy * zoomFactor * 0.5;
+    updateCameraFromFocus();
+
     lastTouchX = e.touches[0].clientX;
     lastTouchY = e.touches[0].clientY;
   } else if (e.touches.length === 2) {
@@ -150,22 +112,27 @@ canvas.addEventListener('touchmove', (e: TouchEvent) => {
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (lastTouchDist > 0) {
-      const scale = dist / lastTouchDist;
-      cam.zoom = Math.max(0.5, Math.min(20, cam.zoom * scale));
+      const scale = lastTouchDist / dist;
+      renderer.currentZoom = Math.max(0.3, Math.min(20, renderer.currentZoom * scale));
+      updateCameraFromFocus();
     }
     lastTouchDist = dist;
     const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
     const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
     if (lastTouchX !== 0) {
-      cam.offsetX += mx - lastTouchX;
-      cam.offsetY += my - lastTouchY;
+      const dx2 = mx - lastTouchX;
+      const dy2 = my - lastTouchY;
+      const zoomFactor = renderer.currentZoom;
+      focusPoint.x -= dx2 * zoomFactor;
+      focusPoint.z -= dy2 * zoomFactor;
+      updateCameraFromFocus();
     }
     lastTouchX = mx;
     lastTouchY = my;
   }
 }, { passive: false });
 
-canvas.addEventListener('touchend', () => {
+container.addEventListener('touchend', () => {
   isPanning = false;
   lastTouchDist = 0;
 });
@@ -175,50 +142,65 @@ let mouseDown = false;
 let mouseX = 0;
 let mouseY = 0;
 
-canvas.addEventListener('mousedown', (e: MouseEvent) => {
+container.addEventListener('mousedown', (e: MouseEvent) => {
   mouseDown = true;
   mouseX = e.clientX;
   mouseY = e.clientY;
-  canvas.style.cursor = 'grabbing';
+  container.style.cursor = 'grabbing';
 });
 
-canvas.addEventListener('mousemove', (e: MouseEvent) => {
+container.addEventListener('mousemove', (e: MouseEvent) => {
   if (mouseDown) {
     const dx = e.clientX - mouseX;
     const dy = e.clientY - mouseY;
-    cam.offsetX += dx;
-    cam.offsetY += dy;
+    const zoomFactor = renderer.currentZoom;
+    focusPoint.x -= dx * zoomFactor * 2;
+    focusPoint.z -= dy * zoomFactor * 2;
+    updateCameraFromFocus();
     mouseX = e.clientX;
     mouseY = e.clientY;
   }
 });
 
-canvas.addEventListener('mouseup', () => {
+container.addEventListener('mouseup', () => {
   mouseDown = false;
-  canvas.style.cursor = 'grab';
+  container.style.cursor = 'grab';
 });
 
-canvas.addEventListener('wheel', (e: WheelEvent) => {
+container.addEventListener('wheel', (e: WheelEvent) => {
   e.preventDefault();
-  const delta = e.deltaY > 0 ? 0.9 : 1.1;
-  cam.zoom = Math.max(0.5, Math.min(20, cam.zoom * delta));
+  const delta = e.deltaY > 0 ? 1.15 : 0.85;
+  renderer.currentZoom = Math.max(0.3, Math.min(20, renderer.currentZoom * delta));
+  updateCameraFromFocus();
 }, { passive: false });
 
-canvas.style.cursor = 'grab';
+container.style.cursor = 'grab';
 
 // ---- 8. Raccourcis clavier ----
 let debugMode = false;
 
 function resetView(): void {
-  cam.offsetX = canvas.width / 2;
-  cam.offsetY = canvas.height / 2 - GRID_CENTER_Y;
-  cam.zoom = 1;
+  renderer.currentZoom = 1;
+  focusPoint.set(center.x, 0, center.z);
+  updateCameraFromFocus();
 }
 
 function topDownView(): void {
-  cam.offsetX = canvas.width / 2;
-  cam.offsetY = canvas.height / 2;
+  const cam = renderer.camera;
+  renderer.currentZoom = 1.5;
+  const dist = Math.max(MAP_W, MAP_H) * 50 / renderer.currentZoom;
+  cam.position.set(focusPoint.x, dist, focusPoint.z);
+  cam.up.set(0, 0, -1);
+  cam.lookAt(focusPoint);
+
+  const aspect = window.innerWidth / window.innerHeight;
+  const baseDim = Math.max(MAP_W, MAP_H) * 60;
+  cam.left = -(baseDim * aspect) / 2;
+  cam.right = (baseDim * aspect) / 2;
+  cam.top = baseDim / 2;
+  cam.bottom = -baseDim / 2;
   cam.zoom = 1;
+  cam.updateProjectionMatrix();
 }
 
 window.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -229,138 +211,68 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
     debugMode = !debugMode;
     console.log(`[SimGolf] Debug ${debugMode ? 'ON' : 'OFF'}`);
   }
-  else if (e.key === 'p' || e.key === 'P') {
-    e.preventDefault();
-    showPassCount = !showPassCount;
-    console.log(`[SimGolf] Multi-pass overlay ${showPassCount ? 'ON' : 'OFF'}`);
-  }
 });
 
-// ---- 9. Debug overlay ----
+// ---- 9. Debug overlay (Canvas 2D) ----
 const debugCanvas = document.createElement('canvas');
 debugCanvas.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:998';
 const debugCtx = debugCanvas.getContext('2d')!;
 document.body.appendChild(debugCanvas);
 
 function resizeDebug(): void {
-  debugCanvas.width = canvas.width;
-  debugCanvas.height = canvas.height;
+  debugCanvas.width = window.innerWidth;
+  debugCanvas.height = window.innerHeight;
 }
 resizeDebug();
+window.addEventListener('resize', resizeDebug);
 
 function drawDebug(): void {
   if (!debugMode) return;
   debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
-  debugCtx.font = `${12 * devicePixelRatio}px monospace`;
+  debugCtx.font = `${12 * window.devicePixelRatio}px monospace`;
   debugCtx.textAlign = 'center';
   debugCtx.textBaseline = 'middle';
-  const z = cam.zoom;
-  for (const tile of mapState.tiles) {
-    const ox = (tile.x - tile.y) * 64 * z + cam.offsetX;
-    const oy = (tile.x + tile.y) * 32 * z + cam.offsetY;
-    const sx = ox;
-    const sy = oy + 32 * z; // centre du losange
-    if (sx < -50 || sx > debugCanvas.width + 50 || sy < -50 || sy > debugCanvas.height + 50) continue;
 
-    if (showPassCount) {
-      // Affiche le nombre de passes
-      debugCtx.fillStyle = 'rgba(0,255,255,0.85)';
-      debugCtx.fillText(`${tile.renderPasses.length}p`, sx, sy);
-    } else {
-      // Affiche le type et la géométrie
-      const geom = getGeometryType(tile.elevation);
-      const typeNames: Record<number, string> = {
-        0: 'R',  // Rough
-        7: 'DR', // DeepRough
-        14: 'W', // Woods
-        15: 'B', // Brush
-      };
-      const label = typeNames[tile.type] ?? String(tile.type);
-      debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
-      debugCtx.fillText(`${label}${geom}${tile.variation}`, sx, sy);
-    }
+  // Vue centrée approximative
+  const cx = debugCanvas.width / 2;
+  const cy = debugCanvas.height / 2;
+  const zf = renderer.currentZoom;
+
+  for (const tile of mapState.tiles) {
+    // Projection grille → écran (simplifiée)
+    const ox = cx + (tile.x - tile.y) * 32 / zf;
+    const oy = cy + (tile.x + tile.y) * 16 / zf;
+    if (ox < -50 || ox > debugCanvas.width + 50 || oy < -50 || oy > debugCanvas.height + 50) continue;
+
+    const geom = getGeometryType(tile.elevation);
+    const typeNames: Record<number, string> = {
+      0: 'R', 7: 'DR', 14: 'W', 15: 'B',
+    };
+    const label = typeNames[tile.type] ?? String(tile.type);
+    debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
+    debugCtx.fillText(`${label}${geom}${tile.variation}`, ox, oy);
   }
 }
 
 // ---- 10. Boucle d'animation ----
 function animate(): void {
-  // Mettre à jour les images périodiquement
-  frameCount++;
-  if (frameCount % 30 === 0 && texturesLoaded < texturesToLoad) {
-    updateTileImages();
-  }
-  if (frameCount === 1 || texturesLoaded === texturesToLoad) {
-    updateTileImages();
-  }
-
-  // Effacer
-  ctx.fillStyle = '#1a3a1a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Rendu des tuiles (overlays cumulatifs par quadrants)
-  const getImages = (idx: number): HTMLImageElement[] => {
-    return tilePassImages[idx] ?? [];
-  };
-  const getPasses = (idx: number): IRenderPass[] => {
-    return mapState.tiles[idx]?.renderPasses ?? [];
-  };
-  const isTopDown = cam.offsetY > canvas.height / 2 + 100;
-  renderMap(ctx, mapState, cam, getImages, getPasses, isTopDown);
-
-  // Debug
+  renderer.render();
   drawDebug();
-
   requestAnimationFrame(animate);
 }
 
-// Initial update
-updateTileImages();
-animate();
-
-// ---- Bouton Debug tactile ----
-const debugBtn = document.createElement('button');
-debugBtn.textContent = 'D';
-debugBtn.style.cssText = `
-  position:fixed;bottom:70px;right:12px;z-index:1000;
-  width:48px;height:48px;border-radius:24px;
-  background:rgba(0,0,0,0.7);color:#ff0;
-  font:bold 20px monospace;border:2px solid rgba(255,255,0,0.3);
-  cursor:pointer;touch-action:manipulation;
-  display:flex;align-items:center;justify-content:center;
-  box-shadow:0 2px 8px rgba(0,0,0,0.5);
-`;
-debugBtn.addEventListener('click', () => {
-  debugMode = !debugMode;
-  debugBtn.style.background = debugMode
-    ? 'rgba(255,255,0,0.3)'
-    : 'rgba(0,0,0,0.7)';
-  debugBtn.style.borderColor = debugMode
-    ? 'rgba(255,255,0,0.9)'
-    : 'rgba(255,255,0,0.3)';
-  console.log(`[SimGolf] Debug ${debugMode ? 'ON' : 'OFF'}`);
-});
-document.body.appendChild(debugBtn);
-
-// ---- Info DOM ----
-const el = document.createElement('div');
-el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
-el.textContent = `SimGolf — Végétation ${MAP_W}×${MAP_H}\nTouch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug  P=passes`;
-document.body.appendChild(el);
-
-// ---- Infos tuile survolée ----
+// ---- 11. Info tuile survolée ----
 const infoEl = document.createElement('div');
 infoEl.style.cssText = 'position:fixed;bottom:74px;left:8px;background:rgba(0,0,0,0.85);color:#ff0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre;display:none';
 document.body.appendChild(infoEl);
 
-/** Convertit coordonnées écran → tile grille */
+/** Convertit coordonnées écran → tile grille (approximatif) */
 function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
-  const z = cam.zoom;
-  // Inverse de la projection dimétrique
-  // screenX = (x - y) * 64 * z + cam.offsetX
-  // screenY = (x + y) * 32 * z + cam.offsetY
-  // → x = (screenX - cam.offsetX) / (64*z) + (screenY - cam.offsetY) / (32*z)
-  const rx = (sx - cam.offsetX) / (64 * z);
-  const ry = (sy - cam.offsetY) / (32 * z);
+  const cx = debugCanvas.width / 2;
+  const cy = debugCanvas.height / 2;
+  const zf = renderer.currentZoom;
+  const rx = (sx - cx) / (32 / zf);
+  const ry = (sy - cy) / (16 / zf);
   const tx = (rx + ry) / 2;
   const ty = (ry - rx) / 2;
   const x = Math.round(tx);
@@ -369,7 +281,7 @@ function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
   return { x, y };
 }
 
-canvas.addEventListener('mousemove', (e: MouseEvent) => {
+container.addEventListener('mousemove', (e: MouseEvent) => {
   const tile = screenToTile(e.clientX, e.clientY);
   if (tile) {
     const idx = tile.y * MAP_W + tile.x;
@@ -382,41 +294,17 @@ canvas.addEventListener('mousemove', (e: MouseEvent) => {
     };
     const elType = typeNames[t.type] ?? `Type${t.type}`;
     infoEl.style.display = 'block';
-    infoEl.textContent = `Tile [${t.x},${t.y}]  ${elType}  elev:${t.elevation.join(',')}  var:${t.variation}  passes:${t.renderPasses.length}`;
+    infoEl.textContent = `Tile [${t.x},${t.y}]  ${elType}  elev:[${t.elevation.join(',')}]  var:${t.variation}  passes:${t.renderPasses.length}`;
   } else {
     infoEl.style.display = 'none';
   }
 });
 
-canvas.addEventListener('click', (e: MouseEvent) => {
-  const tile = screenToTile(e.clientX, e.clientY);
-  if (!tile) return;
-  
-  const idx = tile.y * MAP_W + tile.x;
-  const t = mapState.tiles[idx];
-  const terrain = Terrain.getInstance();
-  
-  // Cycle à travers les 4 types de végétation
-  const types = [TileType.Rough, TileType.DeepRough, TileType.Tree, TileType.Flower,
-                 TileType.Fairway, TileType.SandBunker, TileType.WaterShallow];
-  const currentIdx = types.indexOf(t.type as TileType);
-  const nextType = types[(currentIdx + 1) % types.length];
-  
-  terrain.setType(t, nextType, 0);
-  terrain.computeAllRenderPasses();
-  
-  // Recharger les images de texture si besoin
-  for (const pass of t.renderPasses) {
-    const path = texturePathForPass(pass);
-    if (path && !textureImages.has(path)) {
-      neededPaths.add(path);
-      const img = new Image();
-      img.onload = () => {
-        textureImages.set(path, img);
-        updateTileImages();
-      };
-      img.src = path;
-    }
-  }
-  updateTileImages();
-});
+// ---- 12. Lancement ----
+animate();
+
+// ---- 13. Info DOM ----
+const el = document.createElement('div');
+el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
+el.textContent = `SimGolf 3D — ${MAP_W}×${MAP_H}  |  Touch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug`;
+document.body.appendChild(el);

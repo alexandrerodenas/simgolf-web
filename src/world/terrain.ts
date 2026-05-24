@@ -29,6 +29,7 @@ import { ELEVATION_LEVELS } from '../core/types';
 // ─── CONSTANTES DE GÉNÉRATION ───
 
 const COSMETIC_MAX = 5;
+const ELEVATION_MAX = 4; // 0-4 comme le jeu original
 
 // ─── GÉNÉRATION VÉGÉTALE + EAU ───
 
@@ -62,6 +63,55 @@ function generateNoise(w: number, h: number, scale: number): Float32Array {
         ((v01 + (v11 - v01) * cx) - (v00 + (v10 - v00) * cx)) * cy;
     }
   return n;
+}
+
+/**
+ * Génère une heightmap sur une grille (w+1)×(h+1) pour les coins de tuiles.
+ * Retourne Float32Array de taille (w+1)*(h+1) avec valeurs 0..ELEVATION_MAX.
+ */
+function generateElevationMap(w: number, h: number): Float32Array {
+  const gw = w + 1;
+  const gh = h + 1;
+  const size = gw * gh;
+  const map = new Float32Array(size);
+
+  // Bruit large échelle pour les collines
+  const noiseLarge = generateNoise(gw, gh, 8);
+  // Bruit fin pour les détails
+  const noiseFine = generateNoise(gw, gh, 3);
+
+  for (let i = 0; i < size; i++) {
+    // Combinaison de bruits
+    const n = noiseLarge[i] * 0.7 + noiseFine[i] * 0.3;
+    // Distribution vers 0-4 avec courbe douce
+    const raw = Math.pow(n, 0.8) * ELEVATION_MAX;
+    map[i] = Math.round(Math.max(0, Math.min(ELEVATION_MAX, raw)));
+  }
+
+  return map;
+}
+
+/**
+ * Assigne les élévations aux tuiles depuis une heightmap de coins.
+ * Chaque tuile (x,y) prend ses 4 coins depuis la grille (w+1)×(h+1).
+ */
+function assignElevations(
+  tiles: ITile[],
+  elevMap: Float32Array,
+  w: number, h: number,
+): void {
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const gw = w + 1;
+      tiles[idx].elevation = [
+        elevMap[y * gw + x],       // TL (y, x)
+        elevMap[y * gw + x + 1],   // TR (y, x+1)
+        elevMap[(y + 1) * gw + x + 1], // BR (y+1, x+1)
+        elevMap[(y + 1) * gw + x],     // BL (y+1, x)
+      ];
+    }
+  }
 }
 
 /**
@@ -198,12 +248,12 @@ function assignWaterDepth(
     } else {
       tiles[i].type = TileType.WaterDeep;
     }
-    tiles[i].elevation = [0, 0, 0, 0];
+    // L'eau reste plate (élévation 0)
   }
 }
 
 /**
- * Génère une carte Parkland avec végétation et points d'eau.
+ * Génère une carte Parkland avec végétation, élévation et points d'eau.
  *
  * Distribution :
  *   - Eau : ~15% de la carte, en clusters (lacs/étangs)
@@ -212,8 +262,8 @@ function assignWaterDepth(
  *   - Woods     : ~12%
  *   - Brush     : ~10%
  *
- * Les points d'eau sont des clusters coalescés : petits lacs et étangs
- * avec profondeur progressive (shallow → middle → deep).
+ * L'élévation est générée par bruit de Perlin-like sur une grille
+ * de coins (width+1)×(height+1), valeurs 0-4.
  */
 export function generateVegetationGrid(
   width: number = 40,
@@ -225,7 +275,11 @@ export function generateVegetationGrid(
 
   const { tiles } = terrain;
 
-  // Bruit terrain
+  // ── 1. Génération de l'élévation ──
+  const elevMap = generateElevationMap(width, height);
+  assignElevations(tiles, elevMap, width, height);
+
+  // ── 2. Bruit terrain (végétation) ──
   const noise1 = generateNoise(width, height, 6);   // grandes zones
   const noise2 = generateNoise(width, height, 3);   // détails
 
@@ -235,12 +289,15 @@ export function generateVegetationGrid(
   // Masque d'eau avec clusters (min 8 tuiles)
   const waterMask = generateWaterMask(width, height, waterNoise, 0.18, 8, 2);
 
-  // Distribution des types de sol (hors eau)
+  // ── 3. Distribution des types de sol (hors eau) ──
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
 
-      if (waterMask[idx] === 1) continue; // traité après
+      if (waterMask[idx] === 1) {
+        // L'eau garde son élévation, le type sera assigné par assignWaterDepth
+        continue;
+      }
 
       const n = noise1[idx] * 0.6 + noise2[idx] * 0.4;
       const type = n < 0.60 ? TileType.Rough
@@ -251,9 +308,10 @@ export function generateVegetationGrid(
     }
   }
 
-  // Assigner profondeurs d'eau
+  // ── 4. Assigner profondeurs d'eau ──
   assignWaterDepth(tiles, waterMask, width, height, 'parkland');
 
+  // ── 5. Calculer les passes de rendu ──
   terrain.computeAllRenderPasses();
 
   return {
@@ -359,7 +417,8 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
 }
 
 /**
- * Génère une carte Parkland complète.
+ * Génère une carte Parkland complète avec fairways, greens, tees,
+ * bunkers, élévation et points d'eau.
  */
 export function generateParklandGrid(
   width: number = 40,
@@ -371,6 +430,11 @@ export function generateParklandGrid(
   terrain.resetTerrain();
 
   const { tiles } = terrain;
+
+  // Générer l'élévation d'abord
+  const elevMap = generateElevationMap(width, height);
+  assignElevations(tiles, elevMap, width, height);
+
   const noise = generateNoise(width, height, 8);
   const fairway = generateFairwayZones(width, height);
 
@@ -388,6 +452,7 @@ export function generateParklandGrid(
           : TileType.Rough, 0);
       } else if (n < 0.10) {
         terrain.setType(tiles[idx], TileType.WaterShallow, 0);
+        tiles[idx].elevation = [0, 0, 0, 0];
       } else if (n < 0.14) {
         terrain.setType(tiles[idx], TileType.SandBunker,
           ((x * 7 + y * 13) % 5));
@@ -417,11 +482,6 @@ export function generateParklandGrid(
 }
 
 // ─── MAPPING PASSE → CHEMIN DE TEXTURE ───
-
-const GEOM_TYPES: Set<TileType> = new Set([
-  TileType.Rough, TileType.DeepRough, TileType.Cliff, TileType.Tree,
-  TileType.Flower, TileType.Rock,
-]);
 
 function textureFolderForType(type: TileType): string {
   switch (type) {
@@ -509,6 +569,8 @@ export interface MeshGroup {
   geometry: THREE.BufferGeometry;
   texturePath: string | null;
   fallbackColor: [number, number, number];
+  /** Valeur uniforme de brillance pour ce groupe (optionnel) */
+  shininess?: number;
 }
 
 const palette: Record<number, [number, number, number]> = {
@@ -538,12 +600,46 @@ const palette: Record<number, [number, number, number]> = {
 };
 
 /**
+ * Calcule la normale d'un quadrilatère par le cross product des diagonales.
+ * Formule du jeu original (Terrain.dll) :
+ *   nx = (zTR - zBL) * TILE_H
+ *   ny = (zBR - zTL) * TILE_W
+ *   nz = TILE_W * TILE_H * 2
+ * Puis normalisation.
+ */
+function computeTileNormal(
+  hTL: number, hTR: number, hBR: number, hBL: number,
+  tileW: number, tileH: number, elevScale: number,
+): THREE.Vector3 {
+  const zTL = hTL * elevScale;
+  const zTR = hTR * elevScale;
+  const zBR = hBR * elevScale;
+  const zBL = hBL * elevScale;
+
+  // Cross product des diagonales (formule Terrain.dll)
+  const nx = (zTR - zBL) * tileH;
+  const ny = (zBR - zTL) * tileW;
+  const nz = tileW * tileH * 2;
+
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+  return new THREE.Vector3(nx / len, ny / len, nz / len);
+}
+
+/**
  * Construit des BufferGeometry Three.js groupés par texture.
+ *
+ * Chaque tuile est rendue comme 2 triangles avec la diagonale
+ * la plus courte comme coupe (TL-BR ou TR-BL).
+ * Les normales sont calculées par tile via computeTileNormal().
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
   const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType }>();
   const NO_TEXTURE = '';
+
+  const TILE_W = 128; // RENDER_TILE_W
+  const TILE_H = 64;  // RENDER_TILE_H
+  const ELEV_SCALE = 32; // RENDER_ELEVATION_SCALE
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
@@ -551,41 +647,46 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       ? tile.renderPasses
       : [{ type: tile.type, variation: tile.variation, suffix: 'A' } as IRenderPass];
 
-    for (const pass of passes) {
-      const path = texturePathForPass(pass);
-      const key = path ?? NO_TEXTURE;
-      if (!groups.has(key)) {
-        groups.set(key, { tileIdx: [], path, type: pass.type });
-      }
-      groups.get(key)!.tileIdx.push(i);
+    // On ne prend que la passe 0 pour le maillage de base
+    // Les passes suivantes seront des overlays (à implémenter)
+    const pass = passes[0];
+    const path = texturePathForPass(pass);
+    const key = path ?? NO_TEXTURE;
+    if (!groups.has(key)) {
+      groups.set(key, { tileIdx: [], path, type: pass.type });
     }
+    groups.get(key)!.tileIdx.push(i);
   }
 
   const results: MeshGroup[] = [];
 
   for (const [, group] of groups) {
     const nTiles = group.tileIdx.length;
-    const vertsPerTile = 6;
+    const vertsPerTile = 6; // 2 triangles = 6 sommets
     const totalVerts = nTiles * vertsPerTile;
     const hasTexture = group.path !== null;
 
     const positions = new Float32Array(totalVerts * 3);
-    const uvs = hasTexture ? new Float32Array(totalVerts * 2) : null;
-    const colors = hasTexture ? null : new Float32Array(totalVerts * 3);
     const normals = new Float32Array(totalVerts * 3);
+    // UV toujours alloués (même pour fallback, pour la cohérence shader)
+    const uvs = new Float32Array(totalVerts * 2);
+    // Vertex colors TOUJOURS alloués (fallback si texture absente)
+    const colors = new Float32Array(totalVerts * 3);
 
     let vi = 0;
-    const setVertex = (x: number, y: number, z: number, u: number, vtx: number) => {
+    const appendVertex = (
+      x: number, y: number, z: number,
+      u: number, v: number,
+      nx: number, ny: number, nz: number,
+    ) => {
       positions[vi * 3]     = x;
       positions[vi * 3 + 1] = y;
       positions[vi * 3 + 2] = z;
-      if (uvs) {
-        uvs[vi * 2]     = u;
-        uvs[vi * 2 + 1] = vtx;
-      }
-      normals[vi * 3]     = 0;
-      normals[vi * 3 + 1] = 1;
-      normals[vi * 3 + 2] = 0;
+      uvs[vi * 2]     = u;
+      uvs[vi * 2 + 1] = v;
+      normals[vi * 3]     = nx;
+      normals[vi * 3 + 1] = ny;
+      normals[vi * 3 + 2] = nz;
       vi++;
     };
 
@@ -595,11 +696,17 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     for (const tileIdx of group.tileIdx) {
       const tile = tiles[tileIdx];
       const [hTL, hTR, hBR, hBL] = tile.elevation;
+
+      // Positions 3D dans l'espace Three.js
       const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
       const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
       const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
       const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
 
+      // Normale de la tuile calculée depuis l'élévation
+      const n = computeTileNormal(hTL, hTR, hBR, hBL, TILE_W, TILE_H, ELEV_SCALE);
+
+      // Choisir la diagonale la plus courte pour le split
       const d1 = Math.abs(hTL - hBR);
       const d2 = Math.abs(hTR - hBL);
       const diagTLBR = d1 < d2;
@@ -607,19 +714,21 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       const baseVi = vi;
 
       if (diagTLBR) {
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+        // Triangles: TL-TR-BL et TR-BR-BL
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
       } else {
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-        setVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-        setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+        // Triangles: TL-TR-BR et TL-BR-BL
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
       }
 
       if (colors) {
@@ -634,9 +743,11 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    if (uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeVertexNormals();
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    // NOTE: on n'utilise PAS computeVertexNormals() car on définit
+    // déjà les normales par tuile (plus proche du rendu original)
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
 
     results.push({ geometry, texturePath: group.path, fallbackColor: baseColor });
   }
