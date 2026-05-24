@@ -1,18 +1,15 @@
 /**
- * world/terrain.ts — Génération du maillage Parkland
+ * world/terrain.ts — Génération de terrain + textures + maillage
  *
- * Produit une IMapState complète (grille de tuiles avec élévation et types)
- * puis construit des BufferGeometry Three.js groupés par texture.
+ * ⚠️ SOURCE DE VÉRITÉ : terrain-ts (simgolf-re/terrain-ts)
+ *   - Types : TileType, ITile, IRenderPass, IMapState → terrain-ts
+ *   - Logique terrain : computeRenderPasses, getGeometryType → terrain-ts
+ *   - Familles : TERRAIN_FAMILY, MAX_VARIATION → terrain-ts
  *
- * REFERENCE_GUIDE.md §3 (Système de Terrain) :
- *   1. resetTerrain() — toutes les tuiles en eau plate
- *   2. applyDistribution() — bruit de valeur + zones fairway
- *   3. placeHoles() — Tees + Greens
- *   4. buildMesh() — maillages Three.js
- *
- * NOUVEAU : generateVegetationGrid() — génération simplifiée avec
- * uniquement des types famille grass (Rough, DeepRough, Woods, Brush).
- * Aucune bordure entre eux (auto-tiling seam).
+ * Ce fichier ne fait QUE :
+ *   1. Génération procédurale (bruit + distribution)
+ *   2. Mapping passe → chemin de texture WebP
+ *   3. Construction de maillage Three.js
  */
 
 import * as THREE from 'three';
@@ -22,495 +19,18 @@ import {
   ITile,
   IRenderPass,
   IMapState,
-  TILE_W,
-  TILE_H,
-  ELEVATION_SCALE,
-} from '../core/types';
+  Terrain,
+  TERRAIN_FAMILY,
+  MAX_VARIATION,
+} from 'terrain-ts';
 import { tileVertexPosition } from '../render/camera';
+import { ELEVATION_LEVELS } from '../core/types';
 
-// ================================================================
-// CONSTANTES — Réglages du terrain
-// ================================================================
+// ─── CONSTANTES DE GÉNÉRATION ───
 
 const COSMETIC_MAX = 5;
 
-// ================================================================
-// Groupes géométriques (A-E) : déterminés par les 4 hauteurs
-// ================================================================
-
-/**
- * Détermine le groupe géométrique (A-E) selon les 4 hauteurs des coins.
- * REFERENCE_GUIDE.md §5.2
- *
- * A = plat (tous égaux)
- * B = pente simple (2 adjacents)
- * C = coin (1 différent)
- * D = diagonale (opposés égaux)
- * E = raide (Δ ≥ 2 entre adjacents)
- */
-export function getGeometryType(e: [number, number, number, number]): string {
-  const [a, b, c, d] = e;
-
-  // E : Raide — écart ≥ 2 entre 2 coins adjacents
-  if (Math.abs(a - b) >= 2 || Math.abs(b - c) >= 2 ||
-      Math.abs(c - d) >= 2 || Math.abs(d - a) >= 2)
-    return 'E';
-  // A : Plat — tous identiques
-  if (a === b && b === c && c === d) return 'A';
-  // D : Diagonale — les DEUX paires opposées sont égales ET différentes
-  //     Ex: [1,0,1,0] → TL=BR=1, TR=BL=0
-  if (a === c && b === d && a !== b) return 'D';
-  // B : Pente simple — 2 coins adjacents égaux, les 2 autres aussi
-  //     Ex: [1,1,0,0] → TL=TR, BR=BL
-  if ((a === b && c === d && a !== c) ||
-      (b === c && d === a && b !== d))
-    return 'B';
-  // C : Coin — tout le reste (1 seul coin différent des 3 autres)
-  return 'C';
-}
-
-// ================================================================
-// Familles de terrain — Auto-Tiling
-// ================================================================
-
-/**
- * Familles de terrain — 2 tuiles de même famille ne produisent PAS
- * de bordure de transition. Basé sur le typeInfo dans le jeu original
- * (champ family à offset +0x04 dans chaque entrée typeInfo à 24 bytes).
- *
- * ID de famille (correspond au jeu original) :
- *   0 = grass   — Rough, DeepRough, Woods, Brush, Rock, Marsh, etc.
- *   1 = play    — Fairway, Tee, PuttingGreen, FirmFairway, TrickyGreen
- *   2 = sand    — SandBunker, GrassySand, GrassBunker, PotSandBunker
- *   3 = water   — WaterShallow, WaterMiddle, WaterDeep
- *   4 = path    — Path, Bridge, Ravine
- *   5 = building — Building, RetainingWall
- *   6 = cliff   — Cliff
- */
-const TERRAIN_FAMILY_ID: Record<number, number> = {
-  [TileType.Rough]:        0,  // grass
-  [TileType.Tree]:         0,  // grass (Woods)
-  [TileType.Flower]:       0,  // grass (Brush)
-  [TileType.DeepRough]:    0,  // grass
-  [TileType.Rock]:         0,  // grass (ou famille roche dédiée)
-  [TileType.Marsh]:        3,  // water — marécage, bordure avec grass
-  [TileType.Overgrowth]:   0,  // grass (UNIQUE : A-D border malgré famille grass)
-  [TileType.Fairway]:      1,  // play
-  [TileType.Tee]:          1,  // play
-  [TileType.PuttingGreen]: 1,  // play
-  [TileType.FirmFairway]:  1,  // play
-  [TileType.TrickyGreen]:  1,  // play
-  [TileType.SandBunker]:   2,  // sand
-  [TileType.GrassySand]:   2,  // sand (transition sable→herbe)
-  [TileType.GrassBunker]:  2,  // sand (transition herbe→sable)
-  [TileType.PotSandBunker]:2,  // sand
-  [TileType.ZenSand]:      2,  // sand
-  [TileType.WaterShallow]: 3,  // water
-  [TileType.WaterMiddle]:  3,  // water
-  [TileType.WaterDeep]:    3,  // water
-  [TileType.Path]:         4,  // path
-  [TileType.Bridge]:       4,  // path
-  [TileType.Ravine]:       4,  // path
-  [TileType.Building]:     5,  // building
-  [TileType.RetainingWall]:5,  // building
-  [TileType.Cliff]:        6,  // cliff
-};
-
-/**
- * Retourne l'ID de famille pour une comparaison d'auto-tiling.
- * Deux tuiles de même family ID ne produisent PAS de bordure.
- */
-export function getTerrainFamily(type: TileType): number {
-  return TERRAIN_FAMILY_ID[type] ?? 0;
-}
-
-/**
- * Fonction de transition GHIDRA FUN_10013f00 — calcule un index composite
- * encodant 3 familles (courante + 2 voisines) en un seul entier.
- *
- * Poids par position selon la famille :
- *   Grass(0) → 0
- *   Play (1) → courant=4, voisinA=1, voisinB=2
- *   Sand (2) → courant=40(0x28), voisinA=10(0xA), voisinB=20(0x14)
- *
- * L'index résultant (0-70) est unique pour chaque combinaison de 3 familles
- * et sert à sélectionner la texture de bordure appropriée.
- */
-function computeTransitionIndex(fCurrent: number, fN1: number, fN2: number): number {
-  let result = 0;
-  if (fCurrent === 1)      result = 4;
-  else if (fCurrent === 2) result = 0x28;   // 40
-  if (fN1 === 1)           result += 1;
-  else if (fN1 === 2)      result += 10;    // 0xA
-  if (fN2 === 1)           result += 2;
-  else if (fN2 === 2)      result += 0x14;  // 20
-  return result;
-}
-
-/**
- * Détermine la texture de bordure override pour une paire (courant, voisin).
- * Basé sur le champ borderOverride du jeu original (offset +0x0c dans typeInfo).
- *
- * La transition est ASYMÉTRIQUE : la bordure vue côté courant diffère
- * de celle vue côté voisin, comme confirmé par la décompilation Ghidra
- * (@ populateRenderPasses 0x10012ec0, FUN_10013f00).
- *
- * Mapping du jeu original :
- *   SAND→GRASS : GrassySand  (végétation qui reprend sur le sable)
- *   GRASS→SAND : GrassBunker (sol qui affleure sous l'herbe)
- *   SAND→PLAY  : SandBunker  (bordure sable naturelle)
- *   PLAY→SAND  : GrassBunker (sol sous l'herbe rase du fairway)
- *   WATER→*    : WaterShallow (bord d'eau peu profonde)
- *   *→WATER    : Marsh       (zone humide de transition)
- */
-function borderOverrideForTransition(currentType: TileType, neighborType: TileType): TileType | undefined {
-  const fCurr = getTerrainFamily(currentType);
-  const fNei  = getTerrainFamily(neighborType);
-
-  // Même famille → pas de bordure
-  if (fCurr === fNei) return undefined;
-
-  // Asymétrie sand↔grass
-  if (fCurr === 2 && fNei === 0) return TileType.GrassySand;  // SAND→GRASS
-  if (fCurr === 0 && fNei === 2) return TileType.GrassBunker; // GRASS→SAND
-
-  // Asymétrie sand↔play
-  if (fCurr === 2 && fNei === 1) return TileType.SandBunker;  // SAND→PLAY
-  if (fCurr === 1 && fNei === 2) return TileType.GrassBunker; // PLAY→SAND
-
-  // Water vers non-water → bord d'eau peu profonde
-  if (fCurr === 3 && fNei !== 3) return TileType.WaterShallow;
-  // Non-water vers water → zone humide
-  if (fCurr !== 3 && fNei === 3) return TileType.Marsh;
-
-  return undefined;
-}
-
-/**
- * Vérifie si le voisin doit déclencher un bit de bordure pour la tuile courante.
- * Utilise la logique famille du jeu original (FUN_10015650) : pas de bordure
- * si les deux tuiles sont de la même famille.
- *
- * Cette fonction répond UNIQUEMENT à la question binaire « bordure ou pas ? ».
- * La texture de bordure spécifique est déterminée par borderOverrideForTransition.
- */
-function isNeighbourTriggeringBorder(currentType: TileType, neighborType: TileType): boolean {
-  return getTerrainFamily(currentType) !== getTerrainFamily(neighborType);
-}
-// ================================================================
-
-/**
- * Types de terrain qui possèdent leurs propres textures de bordure (A-D).
- * renderMode=1 dans typeInfo du jeu original.
- *
- * Seuls les types suivants ont des textures A-D directionnelles pour
- * les bordures. Les autres types (grass, play, path, building) ont
- * soit A-E pour la géométrie d'élévation, soit A seulement pour le plat.
- *
- * ⚠️ Overgrowth est le SEUL type grass avec A-D border.
- * ⚠️ Ravine a ses propres A-D (contrairement à Path et Bridge qui sont A-only).
- * ⚠️ Brush/Flower en Parkland = A-E géométrie, PAS border.
- */
-const TYPES_WITH_BORDER_TEXTURES: Set<TileType> = new Set([
-  // Auto-borders : leurs A-D = textures de bordure directionnelles
-  TileType.WaterShallow,
-  TileType.WaterMiddle,
-  TileType.WaterDeep,
-  TileType.Cliff,
-  TileType.GrassBunker,
-  TileType.GrassySand,
-  TileType.Overgrowth,    // grass mais A-D border (fourré qui déborde)
-  TileType.Ravine,         // path mais A-D border (ravin qui borde)
-  TileType.Marsh,          // water mais A-C border (marécage)
-]);
-
-/** borderOverrideForTransition */
-
-/**
- * Calcule les renderPasses pour une tuile donnée.
- *
- * Système Holistique : Base 0001 + Overlays par Quadrants
- *
- *   Pass 0 : Fond uni — texture 0001 entière (quadrants [0,1,2,3])
- *
- *   Pass 1+ : Overlays cumulatifs pour chaque direction déclencheuse
- *     - Bordure droite (1 voisin diff.) : texture 0002, 2 quadrants
- *     - Angle arrondi (2 voisins adj. diff.) : texture 0004, 1 quadrant
- *     - Îlot (4 voisins diff.) : texture 0005 entière
- *
- *   Table de correspondance :
- *     Direction | Bits masque | Texture | Quadrants
- *     ──────────┼─────────────┼─────────┼──────────
- *     N         | 1           | 0002    | [0,1] (NW+NE)
- *     E         | 2           | 0002    | [1,3] (NE+SE)
- *     S         | 4           | 0002    | [2,3] (SW+SE)
- *     W         | 8           | 0002    | [0,2] (NW+SW)
- *     N+E       | 1+2         | 0004    | [1]   (NE)
- *     E+S       | 2+4         | 0004    | [3]   (SE)
- *     S+W       | 4+8         | 0004    | [2]   (SW)
- *     W+N       | 8+1         | 0004    | [0]   (NW)
- *     ∀         | 1+2+4+8     | 0005    | [0,1,2,3] (entier)
- *
- * @param tile   La tuile à traiter
- * @param tiles  Grille complète
- * @param w      Largeur de la grille
- * @param h      Hauteur de la grille
- * @returns      Tableau de renderPasses
- */
-export function computeRenderPasses(
-  tile: ITile,
-  tiles: ITile[],
-  w: number,
-  h: number,
-): IRenderPass[] {
-  const passes: IRenderPass[] = [];
-  const family = getTerrainFamily(tile.type);
-  const geomSuffix = getGeometryType(tile.elevation);
-  const baseSuffix = (family === 0) ? geomSuffix : 'A';
-
-  // ---- Pass 0 : Fond uni 0001 (texture entière) ----
-  passes.push({
-    type: tile.type,
-    variation: 0,        // fichier 0001 (0-indexed → +1 dans texturePathForPass)
-    suffix: baseSuffix,
-    subType: tile.subType,
-    // quadrants omis = texture entière
-  });
-
-  // ---- Helper : type de la tuile voisine pour une direction ----
-  const neighborAt = (dx: number, dy: number): TileType | undefined => {
-    const nx = tile.x + dx;
-    const ny = tile.y + dy;
-    if (nx >= 0 && nx < w && ny >= 0 && ny < h)
-      return tiles[ny * w + nx].type;
-    return undefined;
-  };
-
-  // ---- Helper : override pour une direction (bord de carte → Rough) ----
-  const overrideFor = (nType: TileType | undefined): TileType | undefined => {
-    const t = nType ?? TileType.Rough;
-    if (!isNeighbourTriggeringBorder(tile.type, t)) return undefined;
-    const ov = borderOverrideForTransition(tile.type, t);
-    const bt = ov ?? tile.type;
-    return TYPES_WITH_BORDER_TEXTURES.has(bt) ? bt : undefined;
-  };
-
-  // ---- Blob Tiling par Quadrant (FUN_10013f00) ----
-  // Chaque quadrant (NW/NE/SW/SE) interroge ses 2 cardinaux adjacents
-  // et décide localement : edge / corner / diagonal / none.
-  //
-  // Définition des 4 quadrants :
-  //   quad | card1 | card2 | diag
-  //   ─────┼───────┼───────┼─────
-  //   0 NW | N     | W     | NW
-  //   1 NE | N     | E     | NE
-  //   2 SW | S     | W     | SW
-  //   3 SE | S     | E     | SE
-  const QUAD_DEFS = [
-    { quad: 0, c1: [0, -1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1, -1] as [number, number] },
-    { quad: 1, c1: [0, -1] as [number, number], c2: [1,  0] as [number, number], diag: [ 1, -1] as [number, number] },
-    { quad: 2, c1: [0,  1] as [number, number], c2: [-1, 0] as [number, number], diag: [-1,  1] as [number, number] },
-    { quad: 3, c1: [0,  1] as [number, number], c2: [1,  0] as [number, number], diag: [ 1,  1] as [number, number] },
-  ];
-
-  // Edge direction name par offset cardinal
-  const EDGE_NAME: Record<string, 'N' | 'E' | 'S' | 'W'> = {
-    '0,-1': 'N', '1,0': 'E', '0,1': 'S', '-1,0': 'W',
-  };
-
-  // Opérations par quadrant
-  type QStrip = { kind: 'strip'; quad: number; edge: 'N' | 'E' | 'S' | 'W'; overrideType: TileType };
-  type QCorner = { kind: 'corner'; quad: number; overrideType: TileType };
-  type QDiag = { kind: 'diagonal'; quad: number; overrideType: TileType };
-  type QOp = QStrip | QCorner | QDiag;
-
-  const qOps: QOp[] = [];
-
-  for (const qd of QUAD_DEFS) {
-    const c1Type = neighborAt(qd.c1[0], qd.c1[1]);
-    const c2Type = neighborAt(qd.c2[0], qd.c2[1]);
-    const ov1 = overrideFor(c1Type);
-    const ov2 = overrideFor(c2Type);
-
-    if (ov1 && ov2) {
-      // Les 2 cardinaux diffèrent → corner (texture 0004)
-      qOps.push({ kind: 'corner', quad: qd.quad, overrideType: ov1 });
-    } else if (ov1) {
-      qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c1.join(',')], overrideType: ov1 });
-    } else if (ov2) {
-      qOps.push({ kind: 'strip', quad: qd.quad, edge: EDGE_NAME[qd.c2.join(',')], overrideType: ov2 });
-    } else {
-      // Les 2 cardinaux sont même famille → vérifier la diagonale
-      const diagType = neighborAt(qd.diag[0], qd.diag[1]);
-      const ovDiag = overrideFor(diagType);
-      if (ovDiag) {
-        qOps.push({ kind: 'diagonal', quad: qd.quad, overrideType: ovDiag });
-      }
-    }
-  }
-
-  // ---- Consolidation des strips par direction ----
-  // Regroupe les strips N, E, S, W adjacents en une seule passe
-  // (ex: N strip des quadrants 0+1 → une passe quads [0,1])
-  const stripGroups: Record<string, { quads: number[]; overrideType: TileType }> = {};
-  for (const op of qOps) {
-    if (op.kind === 'strip') {
-      const key = op.edge;
-      if (!stripGroups[key]) stripGroups[key] = { quads: [], overrideType: op.overrideType };
-      stripGroups[key].quads.push(op.quad);
-      // En cas de conflit d'override (rare), garder le premier
-    }
-  }
-
-  // Émet les passes de strip edge (texture 0002)
-  for (const [edge, group] of Object.entries(stripGroups)) {
-    passes.push({
-      type: group.overrideType,
-      variation: 1,        // 0002
-      suffix: 'A',
-      subType: tile.subType,
-      quadrants: group.quads,
-      stripEdge: edge as 'N' | 'E' | 'S' | 'W',
-    });
-  }
-
-  // Émet les passes de corner (texture 0004)
-  for (const op of qOps) {
-    if (op.kind === 'corner') {
-      passes.push({
-        type: op.overrideType,
-        variation: 3,        // 0004
-        suffix: 'A',
-        subType: tile.subType,
-        quadrants: [op.quad],
-      });
-    }
-  }
-
-  // Émet les passes de diagonale isolée (texture 0003)
-  for (const op of qOps) {
-    if (op.kind === 'diagonal') {
-      passes.push({
-        type: op.overrideType,
-        variation: 2,        // 0003
-        suffix: 'A',
-        subType: tile.subType,
-        quadrants: [op.quad],
-      });
-    }
-  }
-
-  // ---- Shortcut îlot (4 voisins différents) ----
-  // Si tous les quadrants ont un op (edge ou corner) → pas de diagonale
-  // Si les 4 quadrants ont un coin → c'est un îlot
-  if (qOps.length === 4) {  // tous les quadrants sont occupés
-    const allCorner = qOps.every(op => op.kind === 'corner');
-    if (allCorner) {
-      // Remplacer toutes les passes par une seule texture 0005
-      passes.length = 1;  // garde seulement la base
-      passes.push({
-        type: qOps[0].overrideType,
-        variation: 4,        // 0005
-        suffix: 'A',
-        subType: tile.subType,
-      });
-    }
-  }
-
-  return passes;
-}
-
-/**
- * Calcule les renderPasses pour toutes les tuiles de la grille.
- * Appelée après toute modification du terrain.
- */
-export function computeAllRenderPasses(
-  tiles: ITile[],
-  w: number,
-  h: number,
-): void {
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      tiles[idx].renderPasses = computeRenderPasses(tiles[idx], tiles, w, h);
-    }
-  }
-}
-
-// ================================================================
-// Nombre max de variations cosmétiques disponibles pour chaque type
-// ================================================================
-
-/**
- * Nombre max de variations cosmétiques disponibles pour chaque type de tuile.
- * REFERENCE_GUIDE.md §5.4 + §5.10
- *
- * Ces valeurs sont utilisées par setType() avec rand() % maxVariation.
- * Les types sans * n'ont qu'une seule texture.
- */
-export function maxVariationForType(type: TileType): number {
-  switch (type) {
-    case TileType.Rough:
-      return 5;   // Rough A-E × 5
-    case TileType.DeepRough:
-      return 9;   // DeepRough A-D × 9
-    case TileType.Fairway:
-      return 5;   // Fairway A × 5
-    case TileType.PuttingGreen:
-      return 5;   // PuttingGreen A × 5
-    case TileType.SandBunker:
-      return 5;   // SandBunker{1-4}A × 5
-    case TileType.Tee:
-      return 25;  // Tee A × 25
-    case TileType.GrassySand:
-      return 9;   // GrassySand A × 9
-    case TileType.GrassBunker:
-      return 9;   // GrassBunker A-D × 9
-    case TileType.WaterShallow:
-      return 9;   // WaterShallow A-D × 9
-    case TileType.WaterMiddle:
-      return 9;   // WaterMiddle A-D × 9
-    case TileType.WaterDeep:
-      return 5;   // WaterDeep A-D × 5
-    case TileType.Cliff:
-      return 9;   // Cliff A-D × 9
-    case TileType.Tree:
-      return 9;   // Woods A-D × 9
-    case TileType.Flower:
-      return 9;   // Brush A-D × 9
-    case TileType.Rock:
-      return 9;   // Rock A-E × 9
-    case TileType.Marsh:
-      return 9;   // Marsh A-C × 9
-    case TileType.Overgrowth:
-      return 9;   // Overgrowth A-D × 9
-    case TileType.FirmFairway:
-      return 9;   // FirmFairway A × 9
-    case TileType.ZenSand:
-      return 9;   // ZenSand A × 9
-    case TileType.TrickyGreen:
-      return 5;   // TrickyGreen A-C × 5
-    case TileType.PotSandBunker:
-      return 5;   // PotSandBunker A × 5
-    default:
-      return 1;
-  }
-}
-
-// ================================================================
-// Génération Végétale (VEGETATION INIT)
-//
-// generateVegetationGrid() — génération simplifiée avec uniquement
-// des types famille grass (Rough, DeepRough, Woods, Brush).
-//
-// Caractéristiques :
-//   - 4 types seulement, tous famille grass (ID 0)
-//   - Aucune bordure entre eux (auto-tiling n'ajoute pas de passes)
-//   - Élévation plate [0,0,0,0]
-//   - Variations via rand() % maxVariation
-// ================================================================
-
-// ---- Bruit de valeur (value noise avec interpolation cosinus) ----
+// ─── GÉNÉRATION VÉGÉTALE ───
 
 function hash11(x: number, y: number): number {
   let h = x * 374761393 + y * 668265263;
@@ -544,102 +64,50 @@ function generateNoise(w: number, h: number, scale: number): Float32Array {
   return n;
 }
 
-// ---- Seconde couche de bruit pour les patches de Woods/Brush ----
-
-function generateSecondaryNoise(w: number, h: number, scale: number): Float32Array {
-  return generateNoise(w, h, scale);
-}
-
 /**
  * Génère une carte Parkland simplifiée (uniquement végétation).
- *
- * Distribution :
- *   Rough     : 60% (bruit bas à moyen)
- *   DeepRough : 15% (bruit bas-moyen, zones denses)
- *   Woods     : 15% (bruit moyen-haut, patches)
- *   Brush     : 10% (bruit haut, lisières)
- *
- * Tous sont famille grass → système bitmask seamless.
- * La variation est déterminée par le neighborMask dans
- * computeRenderPasses(), PAS par rand().
- *
- * Élévation plate [0,0,0,0].
+ * Tous les types sont famille grass → seamless.
  */
 export function generateVegetationGrid(
   width: number = 40,
   height: number = 40,
 ): IMapState {
-  const tiles: ITile[] = [];
+  const terrain = Terrain.getInstance();
+  terrain.initSystem(width, height, null, false);
+  terrain.theme = CourseTheme.Parkland;
 
-  // 1. Grille initiale : tout en Rough plat
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      tiles.push({
-        x,
-        y,
-        type: TileType.Rough,
-        elevation: [0, 0, 0, 0],
-        variation: 0,
-        tileFlags: 0,
-        renderPasses: [],
-      });
-    }
-  }
+  const { tiles } = terrain;
+  const noise1 = generateNoise(width, height, 6);
+  const noise2 = generateNoise(width, height, 3);
 
-  // 2. Bruit de valeur pour la distribution
-  const noise1 = generateNoise(width, height, 6);    // grandes zones
-  const noise2 = generateSecondaryNoise(width, height, 3);  // détails
-
-  // 3. Distribution des 4 types grass
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      const n1 = noise1[idx];
-      const n2 = noise2[idx];
-
-      // Mélange des deux couches de bruit
-      const n = (n1 * 0.6 + n2 * 0.4);
-
-      if (n < 0.60) {
-        tiles[idx].type = TileType.Rough;
-      } else if (n < 0.75) {
-        tiles[idx].type = TileType.DeepRough;
-      } else if (n < 0.90) {
-        tiles[idx].type = TileType.Tree;  // Woods
-      } else {
-        tiles[idx].type = TileType.Flower;  // Brush
-      }
+      const n = noise1[idx] * 0.6 + noise2[idx] * 0.4;
+      const type = n < 0.60 ? TileType.Rough
+        : n < 0.75 ? TileType.DeepRough
+        : n < 0.90 ? TileType.Tree
+        : TileType.Flower;
+      terrain.setType(tiles[idx], type, 0);
     }
   }
 
-  // 4. Élévation plate (paramétrable)
-  // Par défaut [0,0,0,0] comme initialisé ci-dessus.
+  terrain.computeAllRenderPasses();
 
-  // 5. La variation cosmétique est initialisée à 0.
-  //    Pour les types Grass/Play, la variation de base dans
-  //    computeRenderPasses est FORCÉE à 0001 (quad uni).
-  //    Les variations 0002-0005 sont réservées au décor interne.
-  //    Les bordures sont des overlays A-D, pas des changements de variation.
-
-  // 6. Calcul des renderPasses (auto-tiling bitmask)
-  computeAllRenderPasses(tiles, width, height);
-
-  return { width, height, theme: CourseTheme.Parkland, tiles };
+  return {
+    width, height,
+    theme: CourseTheme.Parkland,
+    tiles,
+    lighting: terrain.lighting,
+    zoomLevel: terrain.zoomLevel,
+    splineHeight: terrain.splineHeight,
+  };
 }
 
-// ================================================================
-// 1. Bruit de valeur (pour generateParklandGrid legacy)
-// ================================================================
-
-// (les mêmes fonctions de hash/noise sont partagées ci-dessus)
-
-// ================================================================
-// 2. Zones de fairway (serpentins Bresenham) — legacy
-// ================================================================
+// ─── GÉNÉRATION PARKLAND COMPLÈTE ───
 
 function generateFairwayZones(w: number, h: number): boolean[] {
   const z = new Array(w * h).fill(false);
-
   for (let i = 0; i < 9; i++) {
     let x = 3 + ((i * 7 + 3) % (w - 6));
     let y = h - 5 - i * 4;
@@ -650,7 +118,6 @@ function generateFairwayZones(w: number, h: number): boolean[] {
     const sx = x < gx ? 1 : -1;
     const sy = y < gy ? 1 : -1;
     let err = dx - dy;
-
     while (x !== gx || y !== gy) {
       for (let wy = -2; wy <= 2; wy++)
         for (let wx = -2; wx <= 2; wx++) {
@@ -667,98 +134,45 @@ function generateFairwayZones(w: number, h: number): boolean[] {
   return z;
 }
 
-// ================================================================
-// 3. Distribution Parkland — legacy
-// ================================================================
-
-function applyDistribution(
-  tiles: ITile[],
-  w: number,
-  h: number,
-  noise: Float32Array,
-  fairway: boolean[],
-): void {
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const idx = y * w + x;
-      const n = noise[idx];
-      const t = tiles[idx];
-
-      if (fairway[idx]) {
-        t.type = n < 0.3
-          ? TileType.Fairway
-          : n < 0.5
-            ? TileType.Tee
-            : n < 0.85
-              ? TileType.Fairway
-              : n < 0.92
-                ? TileType.SandBunker
-                : TileType.Rough;
-      } else if (n < 0.10) {
-        t.type = TileType.WaterShallow;
-      } else if (n < 0.14) {
-        t.type = TileType.SandBunker;
-      } else if (n < 0.18) {
-        t.type = TileType.DeepRough;
-      } else if (n < 0.85) {
-        t.type = TileType.Rough;
-      } else if (n < 0.90) {
-        t.type = TileType.Tree;
-      } else {
-        t.type = TileType.Flower;
-      }
-      // Attribuer un sous-type aléatoire aux SandBunker (0=A, 1=1A..4=4A)
-      if (t.type === TileType.SandBunker) {
-        t.subType = ((t.x * 7 + t.y * 13) % 5);
-      }
-    }
-}
-
-// ================================================================
-// 4. Placement des trous (Tee + Green) — legacy
-// ================================================================
-
 function placeHoles(tiles: ITile[], w: number, h: number): void {
+  const terrain = Terrain.getInstance();
   for (let i = 0; i < 9; i++) {
     const teeY = h - 5 - i * 4;
     const teeX = 3 + ((i * 7 + 3) % (w - 6));
     const greenY = Math.max(3, teeY - 15 + (i % 3));
     const greenX = Math.min(w - 4, Math.max(3, teeX + ((i * 3 + 1) % 5 - 2)));
 
-    // Tee 3×3
     for (let dy = -1; dy <= 1; dy++)
       for (let dx = -1; dx <= 1; dx++) {
         const tx = teeX + dx;
         const ty = teeY + dy;
         if (tx >= 0 && tx < w && ty >= 0 && ty < h) {
-          tiles[ty * w + tx].type = TileType.Tee;
-          tiles[ty * w + tx].elevation = [0, 0, 0, 0];
+          const tile = tiles[ty * w + tx];
+          terrain.setType(tile, TileType.Tee, 0);
+          tile.elevation = [0, 0, 0, 0];
         }
       }
 
-    // Green 5×5
     for (let dy = -2; dy <= 2; dy++)
       for (let dx = -2; dx <= 2; dx++) {
         const gx = greenX + dx;
         const gy = greenY + dy;
-        if (gx >= 0 && gx < w && gy >= 0 && gy < h)
-          tiles[gy * w + gx].type =
+        if (gx >= 0 && gx < w && gy >= 0 && gy < h) {
+          const tile = tiles[gy * w + gx];
+          terrain.setType(tile,
             Math.abs(dx) <= 1 && Math.abs(dy) <= 1
               ? TileType.PuttingGreen
-              : TileType.Fairway;
+              : TileType.Fairway, 0);
+        }
       }
   }
 }
-
-// ================================================================
-// 5. Variations cosmétiques (déterministes par position) — legacy
-// ================================================================
 
 function applyVariations(tiles: ITile[], w: number, h: number): void {
   for (let y = 0; y < h; y++)
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
-      const maxVar = maxVariationForType(tiles[idx].type);
+      const maxVar = MAX_VARIATION[tiles[idx].type] ?? 1;
       tiles[idx].variation = maxVar > 1
         ? ((x * 31 + y * 17) % maxVar)
         : 0;
@@ -768,7 +182,7 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
     for (let x = 0; x < w; x++) {
       const idx = y * w + x;
       const tile = tiles[idx];
-      const maxVar = maxVariationForType(tile.type);
+      const maxVar = MAX_VARIATION[tile.type] ?? 1;
       if (maxVar <= 1) continue;
 
       const used = new Set<number>();
@@ -782,65 +196,71 @@ function applyVariations(tiles: ITile[], w: number, h: number): void {
     }
 }
 
-// ================================================================
-// 6. API publique — Génération legacy (complète)
-// ================================================================
-
 /**
- * Génère une carte Parkland complète (IMapState) en suivant
- * l'algorithme du jeu original (resetTerrain + distribution + holes).
+ * Génère une carte Parkland complète.
  */
 export function generateParklandGrid(
   width: number = 40,
   height: number = 40,
 ): IMapState {
-  // 1. resetTerrain : tout en eau plate
-  const tiles: ITile[] = [];
-  for (let y = 0; y < height; y++)
-    for (let x = 0; x < width; x++)
-      tiles.push({
-        x,
-        y,
-        type: TileType.WaterShallow,
-        elevation: [0, 0, 0, 0],
-        variation: 0,
-        tileFlags: 0,
-        renderPasses: [],
-      });
+  const terrain = Terrain.getInstance();
+  terrain.initSystem(width, height, null, false);
+  terrain.theme = CourseTheme.Parkland;
+  terrain.resetTerrain();
 
-  // 2. Distribution Parkland
+  const { tiles } = terrain;
   const noise = generateNoise(width, height, 8);
   const fairway = generateFairwayZones(width, height);
-  applyDistribution(tiles, width, height, noise, fairway);
 
-  // 3. Trous
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const n = noise[idx];
+
+      if (fairway[idx]) {
+        terrain.setType(tiles[idx],
+          n < 0.3 ? TileType.Fairway
+          : n < 0.5 ? TileType.Tee
+          : n < 0.85 ? TileType.Fairway
+          : n < 0.92 ? TileType.SandBunker
+          : TileType.Rough, 0);
+      } else if (n < 0.10) {
+        terrain.setType(tiles[idx], TileType.WaterShallow, 0);
+      } else if (n < 0.14) {
+        terrain.setType(tiles[idx], TileType.SandBunker,
+          ((x * 7 + y * 13) % 5));
+      } else if (n < 0.18) {
+        terrain.setType(tiles[idx], TileType.DeepRough, 0);
+      } else if (n < 0.85) {
+        terrain.setType(tiles[idx], TileType.Rough, 0);
+      } else if (n < 0.90) {
+        terrain.setType(tiles[idx], TileType.Tree, 0);
+      } else {
+        terrain.setType(tiles[idx], TileType.Flower, 0);
+      }
+    }
+
   placeHoles(tiles, width, height);
-
-  // 4. Variations cosmétiques
   applyVariations(tiles, width, height);
+  terrain.computeAllRenderPasses();
 
-  // 5. Render passes
-  computeAllRenderPasses(tiles, width, height);
-
-  return { width, height, theme: CourseTheme.Parkland, tiles };
+  return {
+    width, height,
+    theme: CourseTheme.Parkland,
+    tiles,
+    lighting: terrain.lighting,
+    zoomLevel: terrain.zoomLevel,
+    splineHeight: terrain.splineHeight,
+  };
 }
 
-// ================================================================
-// 7. Mapping passe de rendu → chemin de texture
-// ================================================================
+// ─── MAPPING PASSE → CHEMIN DE TEXTURE ───
 
-/**
- * Types qui utilisent la géométrie d'élévation (A-E) pour leur
- * suffixe de texture, même en tant que base non-grass.
- */
 const GEOM_TYPES: Set<TileType> = new Set([
   TileType.Rough, TileType.DeepRough, TileType.Cliff, TileType.Tree,
   TileType.Flower, TileType.Rock,
 ]);
 
-/**
- * Convertit le dossier de texture pour un type donné.
- */
 function textureFolderForType(type: TileType): string {
   switch (type) {
     case TileType.Rough:        return 'rough';
@@ -865,18 +285,11 @@ function textureFolderForType(type: TileType): string {
     case TileType.FirmFairway:  return 'firmfairway';
     case TileType.ZenSand:      return 'zensand';
     case TileType.TrickyGreen:  return 'trickygreen';
-    case TileType.PotSandBunker:return 'sandbunker';  // même dossier que SandBunker
+    case TileType.PotSandBunker:return 'sandbunker';
     default:                    return 'rough';
   }
 }
 
-/**
- * Convertit le type en préfixe de nom de fichier texture.
- */
-/**
- * Convertit le type en préfixe de nom de fichier texture.
- * @param subType Sous-type optionnel (ex: SandBunker 1A-4A → 1..4)
- */
 function texturePrefixForType(type: TileType, subType?: number): string {
   switch (type) {
     case TileType.Rough:        return 'ROUGH';
@@ -908,70 +321,34 @@ function texturePrefixForType(type: TileType, subType?: number): string {
 }
 
 /**
- * Retourne le chemin de la texture WebP pour une passe de rendu donnée.
- *
- * Format : /assets/textures/parkland/{folder}/{PREFIX}{suffix}{variation}.webp
- *
- * Exemples :
- *   - texturePathForPass({type: Rough, variation: 3, suffix: 'A'})
- *     → /assets/textures/parkland/rough/ROUGHA0003.webp
- *   - texturePathForPass({type: GrassBunker, variation: 5, suffix: 'B'})
- *     → /assets/textures/parkland/grassbunker/GRASSBUNKERB0005.webp
+ * Retourne le chemin de la texture WebP pour une passe de rendu.
  */
 export function texturePathForPass(pass: IRenderPass): string {
   const folder = textureFolderForType(pass.type);
   const prefix = texturePrefixForType(pass.type, pass.subType);
-  // La variation est stockée 0-indexed dans le code mais 1-indexed dans les fichiers
   const var4 = String(pass.variation + 1).padStart(4, '0');
   return `/assets/textures/parkland/${folder}/${prefix}${pass.suffix}${var4}.webp`;
 }
 
 /**
- * Retourne le chemin de la texture WebP pour une tuile donnée.
- *
- * Version legacy utilisant la première passe de renderPasses.
- * Pour le rendu multi-pass, utiliser texturePathForPass().
- *
+ * Retourne le chemin de texture pour une tuile (passe 0 uniquement).
  * @deprecated Utiliser texturePathForPass() avec les renderPasses[]
  */
-export function texturePathForTile(
-  tile: ITile,
-  tiles?: ITile[],
-  width?: number,
-  height?: number,
-): string | null {
-  // Si renderPasses est disponible, utiliser la passe 0
+export function texturePathForTile(tile: ITile): string | null {
   if (tile.renderPasses && tile.renderPasses.length > 0) {
     return texturePathForPass(tile.renderPasses[0]);
   }
-
-  // Fallback legacy
-  const geom = GEOM_TYPES.has(tile.type) ? getGeometryType(tile.elevation) : 'A';
-  const var4 = String(tile.variation + 1).padStart(4, '0');
-  const prefix = texturePrefixForType(tile.type, tile.subType);
-  const folder = textureFolderForType(tile.type);
-
-  return `/assets/textures/parkland/${folder}/${prefix}${geom}${var4}.webp`;
+  return null;
 }
 
-// ================================================================
-// 8. Construction des maillages Three.js (groupés par texture)
-// ================================================================
+// ─── MAILLAGE THREE.JS ───
 
-/**
- * Résultat d'une construction de maillage : un BufferGeometry prêt
- * à être utilisé avec un material, et le chemin texture associé.
- */
 export interface MeshGroup {
   geometry: THREE.BufferGeometry;
   texturePath: string | null;
-  /** Couleur dominante du groupe (pour chute texture non chargée) */
   fallbackColor: [number, number, number];
 }
 
-/**
- * Palette de couleurs par type (utilisée comme fallback).
- */
 const palette: Record<number, [number, number, number]> = {
   [TileType.Rough]:        [0.227, 0.490, 0.227],
   [TileType.Fairway]:      [0.306, 0.651, 0.306],
@@ -999,30 +376,18 @@ const palette: Record<number, [number, number, number]> = {
 };
 
 /**
- * Construit un ou plusieurs BufferGeometry à partir de l'état de la carte.
- *
- * Les tuiles sont groupées par texture (même TileType + variation + suffix).
- * Chaque groupe produit un BufferGeometry séparé avec :
- *   - Positions 3D calculées par tileVertexPosition()
- *   - Coordonnées UV (si texture) ou vertex colors (si pas de texture)
- *   - Normales pour l'éclairage
- *
- * @param mapState   L'état de la carte à mailler
- * @returns          Un tableau de MeshGroup (geometry + texturePath)
+ * Construit des BufferGeometry Three.js groupés par texture.
  */
-export function buildParklandMesh(
-  mapState: IMapState,
-): MeshGroup[] {
+export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
-
-  // ---- Grouper les tuiles par texture (multi-pass) ----
-  // Chaque renderPass génère un groupe de maillage séparé
   const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType }>();
   const NO_TEXTURE = '';
 
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
-    const passes = tile.renderPasses.length > 0 ? tile.renderPasses : [{ type: tile.type, variation: tile.variation, suffix: 'A' }];
+    const passes = tile.renderPasses.length > 0
+      ? tile.renderPasses
+      : [{ type: tile.type, variation: tile.variation, suffix: 'A' } as IRenderPass];
 
     for (const pass of passes) {
       const path = texturePathForPass(pass);
@@ -1034,7 +399,6 @@ export function buildParklandMesh(
     }
   }
 
-  // ---- Pour chaque groupe, construire un BufferGeometry ----
   const results: MeshGroup[] = [];
 
   for (const [, group] of groups) {
@@ -1048,7 +412,7 @@ export function buildParklandMesh(
     const colors = hasTexture ? null : new Float32Array(totalVerts * 3);
     const normals = new Float32Array(totalVerts * 3);
 
-    let vi = 0; // vertex index global pour ce groupe
+    let vi = 0;
     const setVertex = (x: number, y: number, z: number, u: number, vtx: number) => {
       positions[vi * 3]     = x;
       positions[vi * 3 + 1] = y;
@@ -1063,23 +427,17 @@ export function buildParklandMesh(
       vi++;
     };
 
-    // Couleur de fallback pour ce groupe
     const firstTile = tiles[group.tileIdx[0]];
     const baseColor = palette[firstTile.type] ?? [0.227, 0.490, 0.227];
 
     for (const tileIdx of group.tileIdx) {
       const tile = tiles[tileIdx];
       const [hTL, hTR, hBR, hBL] = tile.elevation;
-
       const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
       const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
       const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
       const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
 
-      // Couleur de fallback
-      const c: [number, number, number] = baseColor;
-
-      // Règle de la diagonale
       const d1 = Math.abs(hTL - hBR);
       const d2 = Math.abs(hTR - hBL);
       const diagTLBR = d1 < d2;
@@ -1102,29 +460,23 @@ export function buildParklandMesh(
         setVertex(pBL.x, pBL.y, pBL.z, 0, 1);
       }
 
-      // Couleurs vertex si mode vertex-color
       if (colors) {
         for (let k = 0; k < 6; k++) {
           const idx = (baseVi + k) * 3;
-          colors[idx]     = c[0];
-          colors[idx + 1] = c[1];
-          colors[idx + 2] = c[2];
+          colors[idx]     = baseColor[0];
+          colors[idx + 1] = baseColor[1];
+          colors[idx + 2] = baseColor[2];
         }
       }
     }
 
-    // ---- Assemblage de la géométrie ----
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     if (uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     if (colors) geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.computeVertexNormals();
 
-    results.push({
-      geometry,
-      texturePath: group.path,
-      fallbackColor: baseColor,
-    });
+    results.push({ geometry, texturePath: group.path, fallbackColor: baseColor });
   }
 
   return results;

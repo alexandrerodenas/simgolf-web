@@ -17,11 +17,10 @@
  *   D  →  Debug overlay (lettre passe + nombre de passes)
  */
 
-import { generateVegetationGrid, texturePathForPass,
-         getGeometryType, maxVariationForType } from './world/terrain';
+import { generateVegetationGrid, texturePathForPass } from './world/terrain';
 import { createCamera2D, Camera2D } from './render/camera';
 import { renderMap } from './render/TileRenderer';
-import { IRenderPass } from './core/types';
+import { IRenderPass, Terrain, TERRAIN_FAMILY, getGeometryType } from 'terrain-ts';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;

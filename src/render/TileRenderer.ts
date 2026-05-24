@@ -15,7 +15,7 @@
  * Ordre de rendu : painter's algorithm par (mapX + mapY) croissant.
  */
 
-import { IMapState, IRenderPass } from '../core/types';
+import { IMapState, IRenderPass } from 'terrain-ts';
 
 const TEX_SIZE = 64;
 const QUAD_SIZE = 32;
