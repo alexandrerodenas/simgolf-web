@@ -753,10 +753,10 @@ export class Terrain {
     const geomSuffix = getGeometryType(tile.elevation);
     const baseSuffix = family === 0 ? geomSuffix : 'A';
 
-    // Pass 0 : fond
+    // Pass 0 : fond — utilise la variation cosmétique de la tuile
     passes.push({
       type: tile.type,
-      variation: 0,
+      variation: tile.variation,    // variation cosmétique réelle (0001-00XX)
       suffix: baseSuffix,
       subType: tile.subType,
     });
@@ -824,8 +824,8 @@ export class Terrain {
     for (const [edge, group] of Object.entries(stripGroups)) {
       passes.push({
         type: group.overrideType,
-        variation: 1,
-        suffix: 'A',
+        variation: 0,        // 0001 — overlay strip
+      suffix: 'A',
         subType: tile.subType,
         quadrants: group.quads,
         stripEdge: edge as 'N' | 'E' | 'S' | 'W',
@@ -835,9 +835,9 @@ export class Terrain {
     for (const op of qOps) {
       if (op.kind === 'corner') {
         passes.push({
-          type: op.overrideType,
-          variation: 3,
-          suffix: 'A',
+      type: op.overrideType,
+          variation: 0,        // 0001 — overlay corner
+      suffix: 'A',
           subType: tile.subType,
           quadrants: [op.quad],
         });
@@ -847,9 +847,9 @@ export class Terrain {
     for (const op of qOps) {
       if (op.kind === 'diagonal') {
         passes.push({
-          type: op.overrideType,
-          variation: 2,
-          suffix: 'A',
+      type: op.overrideType,
+          variation: 0,        // 0001 — overlay corner
+      suffix: 'A',
           subType: tile.subType,
           quadrants: [op.quad],
         });
@@ -861,7 +861,7 @@ export class Terrain {
       passes.length = 1;
       passes.push({
         type: qOps[0].overrideType,
-        variation: 4,
+        variation: 0,        // 0001 — overlay island
         suffix: 'A',
         subType: tile.subType,
       });
