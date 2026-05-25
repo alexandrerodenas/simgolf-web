@@ -628,57 +628,20 @@ function computeTileNormal(
  * Construit des BufferGeometry Three.js groupés par texture.
  *
  * Chaque tuile = 2 triangles (quad complet).
- * Les couleurs des vertex sont assombries aux jointures entre
- * familles de terrain différentes, créant l'effet de bordure
- * (copie du comportement original via glColorPointer).
+ * Les bordures entre familles de terrain différentes sont rendues par
+ * composite canvas : base texture 0001 + extraction des bordures 0002/0004.
+ * Le borderMask encode les 4 directions (N=1, S=2, E=4, W=8).
  *
- * Plus aucun strip overlay — tout se fait par per-vertex coloring.
+ * Plus aucun per-vertex darkening — tout se fait par texture composite.
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ── 1. Pré-calcul des facteurs d'ombre par coin de tuile ──
-  // coinDarkness[tileIdx][corner] = 0.0..1.0 (1.0 = pleine lumière)
-  // corner: 0=TL, 1=TR, 2=BR, 3=BL
-  const coinDarkness: number[][] = [];
-
-  for (const tile of tiles) {
-    const fam = (t: ITile | null) => t ? (TERRAIN_FAMILY[t.type] ?? 0) : -1;
-    const myFam = fam(tile);
-
-    // Voisins cardinaux
-    const nFam = fam(tile.neighborN);
-    const sFam = fam(tile.neighborS);
-    const eFam = fam(tile.neighborE);
-    const wFam = fam(tile.neighborW);
-
-    // Pour chaque coin, compter combien de voisins partageant ce coin
-    // sont d'une famille différente
-    const diff = (a: number, b: number) => (a !== b && a >= 0 && b >= 0) ? 1 : 0;
-
-    // TL : partagé avec voisin N et W
-    const tlDiff = diff(myFam, nFam) + diff(myFam, wFam);
-    // TR : partagé avec voisin N et E
-    const trDiff = diff(myFam, nFam) + diff(myFam, eFam);
-    // BR : partagé avec voisin S et E
-    const brDiff = diff(myFam, sFam) + diff(myFam, eFam);
-    // BL : partagé avec voisin S et W
-    const blDiff = diff(myFam, sFam) + diff(myFam, wFam);
-
-    // Facteur d'ombre : 0 diff → 1.0, 1 diff → 0.7, 2 diff → 0.5
-    const shade = (d: number) => d === 0 ? 1.0 : d === 1 ? 0.70 : 0.50;
-
-    coinDarkness.push([
-      shade(tlDiff),
-      shade(trDiff),
-      shade(brDiff),
-      shade(blDiff),
-    ]);
-  }
-
-  // ── 2. Grouper les triangles par textureKey ──
-  interface TriGroup { positions: number[]; uvs: number[]; colors: number[]; type: TileType }
+  // ── 1. Grouper les triangles par textureKey ──
+  interface TriGroup { positions: number[]; uvs: number[]; type: TileType }
   const groups = new Map<string, TriGroup>();
+
+  const fam = (t: ITile | null) => t ? (TERRAIN_FAMILY[t.type] ?? 0) : -1;
 
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti];
@@ -686,6 +649,14 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     const family = TERRAIN_FAMILY[tile.type] ?? 0;
     const geomSuffix = getGeometryType(tile.elevation);
     const baseSuffix = family === 0 ? geomSuffix : 'A';
+
+    // Calcul du borderMask : quels voisins sont d'une famille différente
+    const myFam = fam(tile);
+    let borderMask = 0;
+    if (tile.neighborN && fam(tile.neighborN) !== myFam) borderMask |= 1;  // N
+    if (tile.neighborS && fam(tile.neighborS) !== myFam) borderMask |= 2;  // S
+    if (tile.neighborE && fam(tile.neighborE) !== myFam) borderMask |= 4;  // E
+    if (tile.neighborW && fam(tile.neighborW) !== myFam) borderMask |= 8;  // W
 
     const p = (gx: number, gy: number, elev: number): [number, number, number] => [
       (gx - gy) * 64, elev * 32, (gx + gy) * 32,
@@ -697,50 +668,44 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       BR: p(tile.x + 1, tile.y + 1, hBR),
       BL: p(tile.x,     tile.y + 1, hBL),
     };
-    const dark = coinDarkness[ti];
 
-    // Helper : ajoute un triangle avec positions, UV et couleurs
+    // Helper : ajoute un triangle avec positions, UV et couleurs pleines
     const addTri = (
       key: string,
-      v0: [number, number, number], dark0: number,
-      v1: [number, number, number], dark1: number,
-      v2: [number, number, number], dark2: number,
+      v0: [number, number, number],
+      v1: [number, number, number],
+      v2: [number, number, number],
       uvs: [number, number, number, number, number, number],
     ) => {
-      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], colors: [], type: tile.type });
+      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: tile.type });
       const g = groups.get(key)!;
       g.positions.push(...v0, ...v1, ...v2);
       g.uvs.push(...uvs);
-      const pColor = palette[tile.type] ?? [0.227, 0.490, 0.227];
-      g.colors.push(
-        pColor[0] * dark0, pColor[1] * dark0, pColor[2] * dark0,
-        pColor[0] * dark1, pColor[1] * dark1, pColor[2] * dark1,
-        pColor[0] * dark2, pColor[1] * dark2, pColor[2] * dark2,
-      );
     };
 
     // 2 triangles = quad complet, split par la diagonale la plus courte
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
-    const key = `${tile.type}:${tile.variation}:${baseSuffix}`;
+    // Variation 0 = toujours 0001 (plein sans bordure), borderMask pour les composites
+    const key = `${tile.type}:0:${baseSuffix}:${borderMask}`;
 
     if (diagTLBR) {
       // Tri0: TL-TR-BL
-      addTri(key, C.TL, dark[0], C.TR, dark[1], C.BL, dark[3],
+      addTri(key, C.TL, C.TR, C.BL,
         [0, 0, 1, 0, 0, 1] as any);
       // Tri1: TR-BR-BL
-      addTri(key, C.TR, dark[1], C.BR, dark[2], C.BL, dark[3],
+      addTri(key, C.TR, C.BR, C.BL,
         [1, 0, 1, 1, 0, 1] as any);
     } else {
       // Tri0: TL-TR-BR
-      addTri(key, C.TL, dark[0], C.TR, dark[1], C.BR, dark[2],
+      addTri(key, C.TL, C.TR, C.BR,
         [0, 0, 1, 0, 1, 1] as any);
       // Tri1: TL-BR-BL
-      addTri(key, C.TL, dark[0], C.BR, dark[2], C.BL, dark[3],
+      addTri(key, C.TL, C.BR, C.BL,
         [0, 0, 1, 1, 0, 1] as any);
     }
   }
 
-  // ── 3. Construire les MeshGroup ──
+  // ── 2. Construire les MeshGroup ──
   const results: MeshGroup[] = [];
   for (const [key, group] of groups) {
     const n = group.positions.length / 3;
@@ -749,13 +714,12 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(group.positions), 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(group.uvs), 2));
-    geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(group.colors), 3));
 
     const c = palette[group.type] ?? [0.227, 0.490, 0.227];
     results.push({ geometry, textureKey: key, fallbackColor: c });
   }
 
-  // ── 4. Chemins (post-process paths) ──
+  // ── 3. Chemins (post-process paths) ──
   // (same as before, keep)
   const pv: number[] = [];
   for (const tile of tiles) {

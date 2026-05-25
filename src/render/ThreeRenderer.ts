@@ -95,26 +95,28 @@ export class ThreeRenderer {
           const slot = group.textureKey === 'special:path' ? 0x21 : 0x20;
           texture = this.textureTable.getSpecialTexture(slot);
         } else {
-          // Texture normale — charger depuis le cache ou la table
-          texture = this.getOrLoadTexture(group.textureKey);
+          // Texture normale ou avec bordure — traité par le cache composite
+          texture = this.getOrLoadBorderTexture(group.textureKey);
         }
       }
 
       if (texture) {
         const material = new THREE.MeshBasicMaterial({
           map: texture,
-          vertexColors: true,
           side: THREE.DoubleSide,
         });
-
         const mesh = new THREE.Mesh(group.geometry, material);
         mesh.frustumCulled = false;
         this.meshes.push(mesh);
         this.scene.add(mesh);
       } else {
-        // Pas de texture : vertex colors seuls
+        // Pas de texture : fallback couleur unie
         const material = new THREE.MeshBasicMaterial({
-          vertexColors: true,
+          color: new THREE.Color(
+            group.fallbackColor[0],
+            group.fallbackColor[1],
+            group.fallbackColor[2],
+          ),
           side: THREE.DoubleSide,
         });
         const mesh = new THREE.Mesh(group.geometry, material);
@@ -126,28 +128,88 @@ export class ThreeRenderer {
   }
 
   /**
-   * getOrLoadTexture — Charge ou retourne une texture depuis le cache.
-   * La textureKey a le format "type:variation:suffix".
-   * On utilise buildPath de TextureTable3D pour obtenir le fichier.
+   * getOrLoadBorderTexture — Charge une texture, avec composite canvas
+   * si borderMask > 0.
+   *
+   * Format textureKey : "type:variation:suffix:borderMask"
+   *   - borderMask=0 : texture 0001 normale
+   *   - borderMask>0 : composite base 0001 + bordures extraites de 0002
+   *
+   * Bits borderMask : N=1, S=2, E=4, W=8
    */
-  private getOrLoadTexture(textureKey: string): THREE.Texture | null {
+  private getOrLoadBorderTexture(textureKey: string): THREE.Texture | null {
     if (this.loadedTextures.has(textureKey)) {
       return this.loadedTextures.get(textureKey)!;
     }
 
-    // Parser la clé : "type:variation:suffix"
+    // Parser la clé : "type:variation:suffix:borderMask"
     const parts = textureKey.split(':');
-    if (parts.length !== 3) return null;
+    if (parts.length !== 4) return null;
     const type = parseInt(parts[0], 10) as TileType;
     const variation = parseInt(parts[1], 10);
     const suffix = parts[2];
+    const borderMask = parseInt(parts[3], 10);
 
-    // Construire le chemin via TextureTable3D
-    const path = this.textureTable.buildPath(type, variation, suffix);
-    if (!path) return null;
+    if (borderMask === 0) {
+      // Pas de bordure — texture 0001 normale
+      const path = this.textureTable.buildPath(type, variation, suffix);
+      if (!path) return null;
+      const tex = this.loadTexture(path);
+      this.loadedTextures.set(textureKey, tex);
+      return tex;
+    }
 
-    const tex = this.loadTexture(path);
+    // Texture composite avec bordures extraites de 0002
+    const basePath = this.textureTable.buildPath(type, 0, suffix);      // 0001
+    const borderPath = this.textureTable.buildPath(type, 1, suffix);     // 0002
+    if (!basePath || !borderPath) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d')!;
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
     this.loadedTextures.set(textureKey, tex);
+
+    // Charger les 2 images, puis composer
+    const baseImg = new Image();
+    const borderImg = new Image();
+    let loaded = 0;
+    const onLoad = () => {
+      loaded++;
+      if (loaded < 2) return;
+
+      // 1. Base texture 0001
+      ctx.drawImage(baseImg, 0, 0);
+
+      // 2. Extraire les bandes de bordure de 0002 selon borderMask
+      const BW = 10; // épaisseur de la bordure en pixels
+
+      if (borderMask & 1) { // N — bande haute
+        ctx.drawImage(borderImg, 0, 0, 64, BW, 0, 0, 64, BW);
+      }
+      if (borderMask & 2) { // S — bande basse
+        ctx.drawImage(borderImg, 0, 64 - BW, 64, BW, 0, 64 - BW, 64, BW);
+      }
+      if (borderMask & 4) { // E — bande droite
+        ctx.drawImage(borderImg, 64 - BW, 0, BW, 64, 64 - BW, 0, BW, 64);
+      }
+      if (borderMask & 8) { // W — bande gauche
+        ctx.drawImage(borderImg, 0, 0, BW, 64, 0, 0, BW, 64);
+      }
+
+      tex.needsUpdate = true;
+    };
+
+    baseImg.onload = onLoad;
+    borderImg.onload = onLoad;
+    baseImg.src = basePath;
+    borderImg.src = borderPath;
+
     return tex;
   }
 
