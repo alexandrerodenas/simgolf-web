@@ -46,14 +46,12 @@ export interface IRenderPass {
   variation: number;
   suffix: string;
   subType?: number;
-  /** Vertex indices dans le pool global (3 sommets) */
-  vertexIndices?: [number, number, number];
-  /** TexCoord indices (6 ints: U0,V0, U1,V1, U2,V2) */
-  texCoordIndices?: [number, number, number, number, number, number];
+  /** 9 floats: x0,y0,z0, x1,y1,z1, x2,y2,z2 — positions 3D du triangle */
+  vertexPositions: [number, number, number, number, number, number, number, number, number];
+  /** 6 floats: U0,V0, U1,V1, U2,V2 — coordonnées UV */
+  texCoordIndices: [number, number, number, number, number, number];
   /** Clé de texture pré-calculée */
   textureKey?: string;
-  /** Terrain type byte */
-  terrainTypeByte?: number;
   /** Passe de bordure (rendue par-dessus la base) */
   isOverlay?: boolean;
 }

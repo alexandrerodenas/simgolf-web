@@ -23,8 +23,6 @@ import {
   TERRAIN_FAMILY,
   MAX_VARIATION,
 } from '../terrain-lib/index.js';
-import { tileVertexPosition } from '../render/camera';
-import { ELEVATION_LEVELS } from '../core/types';
 
 // ─── CONSTANTES DE GÉNÉRATION ───
 
@@ -630,65 +628,57 @@ function computeTileNormal(
 /**
  * Construit des BufferGeometry Three.js groupés par texture.
  *
- * Chaque tuile est rendue comme 2 triangles avec la diagonale
- * la plus courte comme coupe (TL-BR ou TR-BL).
+ * Chaque tuile a 1+ renderPasses. Chaque passe stocke ses 3 vertex
+ * positions directement (vertexPositions: 9 floats).
  *
- * Toutes les passes de rendu sont incluses (pas seulement la passe 0).
- * Les passes 1+ sont marquées isOverlay=true pour le rendu transparent.
- *
- * Pas de normales 3D (MeshBasicMaterial, pas d'éclairage — comme le jeu original).
+ * Plus de vertex pool global — chaque passe a ses propres coordonnées.
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ── 1. Vertex pool global (8 sommets par tile) ──
-  // Chaque tile a 8 sommets :
-  //   0=TL, 1=TR, 2=BR, 3=BL  (coins)
-  //   4=N-mid, 5=E-mid, 6=S-mid, 7=W-mid  (à 1/3 du bord vers l'intérieur)
-  // Index = (y * width + x) * 8 + offset
-  const vertexPool: Array<{ x: number; y: number; z: number }> = [];
-  for (let i = 0; i < tiles.length; i++) {
-    const tile = tiles[i];
-    const [hTL, hTR, hBR, hBL] = tile.elevation;
-    // Coins
-    vertexPool.push(tileVertexPosition(tile.x, tile.y, hTL));                   // 0: TL
-    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y, hTR));               // 1: TR
-    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y + 1, hBR));           // 2: BR
-    vertexPool.push(tileVertexPosition(tile.x, tile.y + 1, hBL));               // 3: BL
-    // Midpoints d'arête (à 1/3 du bord vers l'intérieur)
-    vertexPool.push(tileVertexPosition(tile.x + 0.5, tile.y, (hTL + hTR) / 2));       // 4: N
-    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y + 0.5, (hTR + hBR) / 2));   // 5: E
-    vertexPool.push(tileVertexPosition(tile.x + 0.5, tile.y + 1, (hBL + hBR) / 2));   // 6: S
-    vertexPool.push(tileVertexPosition(tile.x, tile.y + 0.5, (hTL + hBL) / 2));       // 7: W
-  }
-
-  // ── 2. Grouper les triangles (passes) par textureKey ──
+  // ── 1. Grouper les triangles par textureKey ──
   interface TriGroup { positions: number[]; uvs: number[]; type: TileType; isOverlay: boolean }
   const groups = new Map<string, TriGroup>();
 
-  for (let i = 0; i < tiles.length; i++) {
-    const tile = tiles[i];
+  for (const tile of tiles) {
     const passes = tile.renderPasses.length > 0 ? tile.renderPasses
-      : [{ type: tile.type, variation: tile.variation, suffix: 'A', textureKey: `${tile.type}:${tile.variation}:A`, vertexIndices: [0, 0, 0] as const, texCoordIndices: [0, 0, 0, 0, 0, 0] as const } as IRenderPass];
+      : (() => {
+          // Fallback si pas de passes calculées
+          const [hTL, hTR, hBR, hBL] = tile.elevation;
+          const p = (x: number, y: number, z: number) => [(x - y) * 64, (x + y) * 32, -z * 16];
+          const C = {
+            TL: p(tile.x, tile.y, hTL),
+            TR: p(tile.x + 1, tile.y, hTR),
+            BR: p(tile.x + 1, tile.y + 1, hBR),
+            BL: p(tile.x, tile.y + 1, hBL),
+          };
+          const d = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
+          const tri = (a: number[], b: number[], c: number[]) => [...a, ...b, ...c];
+          return [
+            { type: tile.type, variation: tile.variation, suffix: 'A',
+              vertexPositions: d ? tri(C.TL, C.TR, C.BL) as any : tri(C.TL, C.TR, C.BR) as any,
+              texCoordIndices: d ? [0,0,1,0,0,1] as any : [0,0,1,0,1,1] as any,
+              textureKey: `${tile.type}:${tile.variation}:A`, isOverlay: false } as IRenderPass,
+            { type: tile.type, variation: tile.variation, suffix: 'A',
+              vertexPositions: d ? tri(C.TR, C.BR, C.BL) as any : tri(C.TL, C.BR, C.BL) as any,
+              texCoordIndices: d ? [1,0,1,1,0,1] as any : [0,0,1,1,0,1] as any,
+              textureKey: `${tile.type}:${tile.variation}:A`, isOverlay: false } as IRenderPass,
+          ];
+        })();
 
     for (const pass of passes) {
       const key = pass.textureKey ?? `${pass.type}:${pass.variation}:${pass.suffix}`;
       if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: pass.type, isOverlay: pass.isOverlay ?? false });
       const g = groups.get(key)!;
 
-      // 3 sommets depuis le vertex pool
-      const vi = pass.vertexIndices;
-      if (vi) for (let k = 0; k < 3; k++) {
-        const v = vertexPool[vi[k]] ?? { x: 0, y: 0, z: 0 };
-        g.positions.push(v.x, v.y, v.z);
-      }
-      // 6 UV coords (U0,V0, U1,V1, U2,V2)
-      const uv = pass.texCoordIndices;
-      if (uv) for (let k = 0; k < 6; k++) g.uvs.push(uv[k]);
+      // Positions : 9 floats (x0,y0,z0, x1,y1,z1, x2,y2,z2)
+      g.positions.push(...pass.vertexPositions);
+      // UVs : 6 floats (U0,V0, U1,V1, U2,V2)
+      g.uvs.push(...pass.texCoordIndices);
     }
   }
 
-  // ── 3. Construire les MeshGroup ──
+  // ── 2. Construire les MeshGroup ──
   const results: MeshGroup[] = [];
   for (const [key, group] of groups) {
     const n = group.positions.length / 3;
@@ -714,14 +704,13 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     results.push({ geometry, textureKey: key, fallbackColor: c, isOverlay: group.isOverlay });
   }
 
-  // ── 4. Chemins (post-process paths) ──
+  // ── 3. Chemins (post-process paths) ──
   const pv: number[] = [];
-  for (let i = 0; i < tiles.length; i++) {
-    const t = tiles[i];
-    if (t.pathN && t.neighborN) addPathQuad(i, 'N', tiles, width, pv);
-    if (t.pathS && t.neighborS) addPathQuad(i, 'S', tiles, width, pv);
-    if (t.pathE && t.neighborE) addPathQuad(i, 'E', tiles, width, pv);
-    if (t.pathW && t.neighborW) addPathQuad(i, 'W', tiles, width, pv);
+  for (const tile of tiles) {
+    if (tile.pathN && tile.neighborN) addPathQuad(tile, 'N', pv);
+    if (tile.pathS && tile.neighborS) addPathQuad(tile, 'S', pv);
+    if (tile.pathE && tile.neighborE) addPathQuad(tile, 'E', pv);
+    if (tile.pathW && tile.neighborW) addPathQuad(tile, 'W', pv);
   }
   if (pv.length > 0) {
     const geo = new THREE.BufferGeometry();
@@ -733,40 +722,45 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 }
 
 function addPathQuad(
-  tileIdx: number,
+  tile: ITile,
   dir: 'N' | 'S' | 'E' | 'W',
-  tiles: ITile[],
-  gridW: number,
   out: number[],
 ): void {
-  const tile = tiles[tileIdx];
   const neighbor = dir === 'N' ? tile.neighborN
     : dir === 'S' ? tile.neighborS
     : dir === 'E' ? tile.neighborE
     : tile.neighborW;
   if (!neighbor) return;
 
-  const hSelf = tile.elevation[0];
-  const hNei = neighbor.elevation[0];
+  const [hTL, hTR, hBR, hBL] = tile.elevation;
+  const p = (x: number, y: number, z: number) => [(x - y) * 64, (x + y) * 32, -z * 16];
+
   const mx = (tile.x + neighbor.x) / 2;
   const my = (tile.y + neighbor.y) / 2;
   const W = 0.3;
 
-  let q: { x: number; y: number; z: number }[];
+  let q: number[][];
   if (dir === 'N' || dir === 'S') {
+    const hSelf = (hTL + hTR) / 2;
+    const hNei = (neighbor.elevation[0] + neighbor.elevation[1]) / 2;
+    const sign = dir === 'S' ? 1 : -1;
     q = [
-      tileVertexPosition(mx - W, my, hSelf),
-      tileVertexPosition(mx + W, my, hSelf),
-      tileVertexPosition(mx + W, my + W * 2 * (dir === 'S' ? 1 : -1), hNei),
-      tileVertexPosition(mx - W, my + W * 2 * (dir === 'S' ? 1 : -1), hNei),
+      p(mx - W, my, hSelf),
+      p(mx + W, my, hSelf),
+      p(mx + W, my + W * 2 * sign, hNei),
+      p(mx - W, my + W * 2 * sign, hNei),
     ];
   } else {
+    const hSelf = (hTL + hBL) / 2;
+    const hNei = (neighbor.elevation[0] + neighbor.elevation[3]) / 2;
+    const sign = dir === 'E' ? 1 : -1;
     q = [
-      tileVertexPosition(mx, my - W, hSelf),
-      tileVertexPosition(mx, my + W, hSelf),
-      tileVertexPosition(mx + W * 2 * (dir === 'E' ? 1 : -1), my + W, hNei),
-      tileVertexPosition(mx + W * 2 * (dir === 'E' ? 1 : -1), my - W, hNei),
+      p(mx, my - W, hSelf),
+      p(mx, my + W, hSelf),
+      p(mx + W * 2 * sign, my + W, hNei),
+      p(mx + W * 2 * sign, my - W, hNei),
     ];
   }
-  for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]]) out.push(v.x, v.y, v.z);
+  for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]])
+    out.push(v[0], v[1], v[2]);
 }

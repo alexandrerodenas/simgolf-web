@@ -156,6 +156,17 @@ function needsBorder(currType: TileType, neiType: TileType): boolean {
   return TERRAIN_FAMILY[currType] !== TERRAIN_FAMILY[neiType];
 }
 
+// ─── Conversion grille → monde ───
+
+/** Projection dimétrique : (x - y) * 64, (x + y) * 32 - z * 16 */
+function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: number; z: number } {
+  return {
+    x: (gx - gy) * 64,
+    y: (gx + gy) * 32,
+    z: -elev * 16,
+  };
+}
+
 // ─────── Terrain class (Port du singleton original) ───────
 
 export class Terrain {
@@ -733,7 +744,7 @@ export class Terrain {
     return [[x1, y1], [x2, y2]];
   }
 
-  // ── Gestion des bordures (internes) ──
+// ─── Gestion des bordures (internes) ───
 
   private updateBorderFlags(tile: ITile): void {
     const neighbors = [
@@ -760,107 +771,142 @@ export class Terrain {
 
   /**
    * computeRenderPasses — Calcule les passes de rendu pour une tuile.
-   * Système multi-couches :
-   *   Pass 0 : Base (texture entière)
-   *   Pass 1+ : Overlays de bordure par quadrant
-   */
-  /**
-   * computeRenderPasses — Calcule les passes de rendu pour une tuile.
    *
-   * Architecture originale : FUN_1000e6c0
-   *   tile + pass*0x38 + 0x48 = vertexIndex[0]
-   *   tile + pass*0x38 + 0x4c = vertexIndex[1]
-   *   tile + pass*0x38 + 0x50 = vertexIndex[2]
+   * Architecture originale (FUN_1000e6c0) :
+   *   - Passe 0-1 : 2 triangles formant le quad complet (base texture)
+   *   - Passes 2+  : strips de bordure par côté (override type, A-D)
    *
-   * Vertex pool : 8 sommets par tile
-   *   0=TL, 1=TR, 2=BR, 3=BL  (coins)
-   *   4=N, 5=E, 6=S, 7=W     (milieux d'arêtes à 1/3 du bord)
+   * Les bordures sont des quads de strip (2 triangles) à 1/3 du bord,
+   * avec la texture du type override (ex: WaterShallow_A, GrassBunker_C).
    */
   private computeRenderPasses(tile: ITile): IRenderPass[] {
     const passes: IRenderPass[] = [];
+    const [hTL, hTR, hBR, hBL] = tile.elevation;
     const family = TERRAIN_FAMILY[tile.type] ?? 0;
     const geomSuffix = getGeometryType(tile.elevation);
+
+    // Suffixe de base : géométrie A-E pour grass, A pour les autres
     const baseSuffix = family === 0 ? geomSuffix : 'A';
 
-    const orient = tile.orientation & 3;
-    tile.flags = (tile.flags & ~TileFlags.OrientMask) | orient;
+    // Positions des 4 coins en 3D
+    const C = {
+      TL: gridToWorld(tile.x,     tile.y,     hTL),
+      TR: gridToWorld(tile.x + 1, tile.y,     hTR),
+      BR: gridToWorld(tile.x + 1, tile.y + 1, hBR),
+      BL: gridToWorld(tile.x,     tile.y + 1, hBL),
+    };
 
-    // Vertex pool indexing — 8 verts par tile
-    const baseIdx = (tile.y * this.width + tile.x) * 8;
-    const TL = baseIdx, TR = baseIdx + 1, BR = baseIdx + 2, BL = baseIdx + 3;
-    const N = baseIdx + 4, E = baseIdx + 5, S = baseIdx + 6, W = baseIdx + 7;
+    // Helper : construit 9 floats pour 3 vertex
+    const tri = (a: {x:number;y:number;z:number},
+                  b: {x:number;y:number;z:number},
+                  c: {x:number;y:number;z:number}): [number,number,number,number,number,number,number,number,number] =>
+      [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
-    // Diagonale de split pour les 2 passes de base
-    const diagTLBR = Math.abs(tile.elevation[0] - tile.elevation[2]) <
-                     Math.abs(tile.elevation[1] - tile.elevation[3]);
+    // Diagonale de split (2 triangles = quad complet)
+    const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
 
+    // Passe 0-1 : 2 triangles du quad
     if (diagTLBR) {
-      passes.push(this.makePass(tile, baseSuffix, [TL, TR, BL], [0, 0, 1, 0, 0, 1]));
-      passes.push(this.makePass(tile, baseSuffix, [TR, BR, BL], [1, 0, 1, 1, 0, 1]));
+      passes.push(this._pass(tile, baseSuffix,
+        tri(C.TL, C.TR, C.BL),
+        [0, 0, 1, 0, 0, 1] as any));
+      passes.push(this._pass(tile, baseSuffix,
+        tri(C.TR, C.BR, C.BL),
+        [1, 0, 1, 1, 0, 1] as any));
     } else {
-      passes.push(this.makePass(tile, baseSuffix, [TL, TR, BR], [0, 0, 1, 0, 1, 1]));
-      passes.push(this.makePass(tile, baseSuffix, [TL, BR, BL], [0, 0, 1, 1, 0, 1]));
+      passes.push(this._pass(tile, baseSuffix,
+        tri(C.TL, C.TR, C.BR),
+        [0, 0, 1, 0, 1, 1] as any));
+      passes.push(this._pass(tile, baseSuffix,
+        tri(C.TL, C.BR, C.BL),
+        [0, 0, 1, 1, 0, 1] as any));
     }
 
-    // ── Bordures : strips d'arête entre familles différentes ──
-    // Pour chaque direction cardinale avec un voisin de famille différente,
-    // on ajoute 2 triangles formant un quad de strip à 1/3 du bord.
-    const neighborInfo: Array<{
-      edge: 'N'|'E'|'S'|'W';
-      dx: number; dy: number;
-      suffix: string;
-      edgeVerts: [number, number];          // 2 sommets du bord
-      midVerts: [number, number];           // 2 sommets à 1/3 vers intérieur
-      uvTri0: [number, number, number, number, number, number];
-      uvTri1: [number, number, number, number, number, number];
-    }> = [
-      { edge: 'N', dx: 0, dy: -1, suffix: 'A',
-        edgeVerts: [TL, TR], midVerts: [N, E],  // strip N: TL-TR → N-E
-        uvTri0: [0, 0, 1, 0, 0.5, 1], uvTri1: [1, 0, 1, 1, 0.5, 1] },
-      { edge: 'E', dx: 1, dy: 0,  suffix: 'B',
-        edgeVerts: [TR, BR], midVerts: [E, S],
-        uvTri0: [1, 0, 1, 1, 0, 0.5], uvTri1: [1, 1, 0, 1, 0, 0.5] },
-      { edge: 'S', dx: 0, dy: 1,  suffix: 'C',
-        edgeVerts: [BR, BL], midVerts: [S, W],
-        uvTri0: [1, 1, 0, 1, 0.5, 0], uvTri1: [0, 1, 0, 0, 0.5, 0] },
-      { edge: 'W', dx: -1, dy: 0, suffix: 'D',
-        edgeVerts: [BL, TL], midVerts: [W, N],
-        uvTri0: [0, 1, 0, 0, 1, 0.5], uvTri1: [0, 0, 1, 0, 1, 0.5] },
+    // ── Strips de bordure ──
+    // Pour chaque côté avec un voisin de famille différente, on ajoute
+    // 2 triangles formant un strip à 1/3 du bord.
+    // Le strip utilise le type override (borderOverride) avec le suffixe
+    // directionnel A(N)-B(E)-C(S)-D(O).
+
+    interface StripDef {
+      dx: number; dy: number;              // déplacement vers le voisin
+      suffix: string;                       // A-D
+      // Les 4 coins du strip (edge corners + interior points)
+      e0: {x:number;y:number;z:number};    // edge corner 0
+      e1: {x:number;y:number;z:number};    // edge corner 1
+      i0: {x:number;y:number;z:number};    // interior 0 (à 1/3 du bord)
+      i1: {x:number;y:number;z:number};    // interior 1
+      // UV mapping: tri0=e0,e1,i0, tri1=e0,i0,i1
+      uvEdge: [number,number,number,number,number,number];
+      uvInt:  [number,number,number,number,number,number];
+    }
+
+    // Calcul d'un point intérieur à 1/3 du bord
+    const third = 1 / 3;
+    const at = (gx: number, gy: number, elev: number) => gridToWorld(gx, gy, elev);
+
+    const strips: StripDef[] = [
+      // NORD (A) : strip en haut, de TL à TR, vers l'intérieur
+      { dx: 0, dy: -1, suffix: 'A',
+        e0: C.TL, e1: C.TR,
+        i0: at(tile.x,       tile.y + third, hTL + (hBL - hTL) * third),
+        i1: at(tile.x + 1,   tile.y + third, hTR + (hBR - hTR) * third),
+        uvEdge: [0,0, 1,0, 1,third] as any,
+        uvInt:  [0,0, 1,third, 0,third] as any },
+      // EST (B) : strip à droite, de TR à BR
+      { dx: 1, dy: 0, suffix: 'B',
+        e0: C.TR, e1: C.BR,
+        i0: at(tile.x + 1 - third, tile.y,     hTR + (hTL - hTR) * third),
+        i1: at(tile.x + 1 - third, tile.y + 1, hBR + (hBL - hBR) * third),
+        uvEdge: [1,0, 1,1, 1-third,1] as any,
+        uvInt:  [1,0, 1-third,1, 1-third,0] as any },
+      // SUD (C) : strip en bas, de BR à BL
+      { dx: 0, dy: 1, suffix: 'C',
+        e0: C.BR, e1: C.BL,
+        i0: at(tile.x + 1, tile.y + 1 - third, hBR + (hTR - hBR) * third),
+        i1: at(tile.x,     tile.y + 1 - third, hBL + (hTL - hBL) * third),
+        uvEdge: [1,1, 0,1, 0,1-third] as any,
+        uvInt:  [1,1, 0,1-third, 1,1-third] as any },
+      // OUEST (D) : strip à gauche, de BL à TL
+      { dx: -1, dy: 0, suffix: 'D',
+        e0: C.BL, e1: C.TL,
+        i0: at(tile.x + third,     tile.y + 1, hBL + (hBR - hBL) * third),
+        i1: at(tile.x + third,     tile.y,     hTL + (hTR - hTL) * third),
+        uvEdge: [0,1, 0,0, third,0] as any,
+        uvInt:  [0,1, third,0, third,1] as any },
     ];
 
-    for (const ni of neighborInfo) {
-      const neighbor = this.tileAt(tile.x + ni.dx, tile.y + ni.dy);
+    for (const s of strips) {
+      const neighbor = this.tileAt(tile.x + s.dx, tile.y + s.dy);
       if (!neighbor) continue;
-      const nType = neighbor.type;
-      if (!needsBorder(tile.type, nType)) continue;
+      if (!needsBorder(tile.type, neighbor.type)) continue;
 
-      // Type de texture de bordure
-      const borderType = borderOverride(tile.type, nType) ?? tile.type;
-      // Seulement si ce type a des textures de bordure
+      const borderType = borderOverride(tile.type, neighbor.type) ?? tile.type;
       if (!TYPES_WITH_BORDER.has(borderType)) continue;
 
-      // Variation forcée à 0 pour la bordure
-      // 2 triangles : A-B-C et A-C-D
-      const [e0, e1] = ni.edgeVerts;
-      const [m0, m1] = ni.midVerts;
-      passes.push(this.makePass(
-        { ...tile, type: borderType },
-        ni.suffix, [e0, e1, m0], ni.uvTri0, 0, true));
-      passes.push(this.makePass(
-        { ...tile, type: borderType },
-        ni.suffix, [e1, m1, m0], ni.uvTri1, 0, true));
+      const tileForBorder = { ...tile, type: borderType };
+      // Tri0 : bord extérieur (edge)
+      passes.push(this._pass(
+        tileForBorder, s.suffix,
+        tri(s.e0, s.e1, s.i0),
+        s.uvEdge, 0, true));
+      // Tri1 : intérieur (remplit le quad)
+      passes.push(this._pass(
+        tileForBorder, s.suffix,
+        tri(s.e0, s.i0, s.i1),
+        s.uvInt, 0, true));
     }
 
     return passes;
   }
 
   /**
-   * makePass — Construit une IRenderPass pour un triangle donné.
+   * _pass — Construit une IRenderPass.
    */
-  private makePass(
+  private _pass(
     tile: ITile, suffix: string,
-    vertexIndices: [number, number, number],
-    uvs: [number, number, number, number, number, number],
+    positions: [number,number,number,number,number,number,number,number,number],
+    uvs: [number,number,number,number,number,number],
     variationOverride?: number,
     isBorder?: boolean,
   ): IRenderPass {
@@ -870,10 +916,9 @@ export class Terrain {
       variation: v,
       suffix,
       subType: tile.subType,
-      textureKey: this.computeTextureKey(tile.type, v, suffix),
-      terrainTypeByte: tile.type,
-      vertexIndices,
+      vertexPositions: positions,
       texCoordIndices: uvs,
+      textureKey: this.computeTextureKey(tile.type, v, suffix),
       isOverlay: isBorder ?? false,
     };
   }
@@ -882,7 +927,6 @@ export class Terrain {
 
   /**
    * computeTextureKey — Génère la clé de texture pour une passe de rendu.
-   * Équivalent du pré-calcul de textureID dans tile+pass*0x38+0x6c.
    */
   private computeTextureKey(type: TileType, variation: number, suffix: string): string {
     return `${type}:${variation}:${suffix}`;
