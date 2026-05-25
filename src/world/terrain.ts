@@ -628,11 +628,11 @@ function computeTileNormal(
  * Construit des BufferGeometry Three.js groupés par texture.
  *
  * Chaque tuile = 2 triangles (quad complet).
- * Les bordures entre familles de terrain différentes sont rendues par
- * composite canvas : base texture 0001 + extraction des bordures 0002/0004.
- * Le borderMask encode les 4 directions (N=1, S=2, E=4, W=8).
+ * Les séparations entre familles de terrain sont rendues par les
+ * variantes de texture 0002-0005 qui ont des bordures pré-dessinées.
+ * Les tuiles intérieures utilisent 0001/0003 (pleine, sans bordure).
  *
- * Plus aucun per-vertex darkening — tout se fait par texture composite.
+ * Plus aucun per-vertex darkening — les bordures sont dans les textures 0002-0005.
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
@@ -650,13 +650,23 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     const geomSuffix = getGeometryType(tile.elevation);
     const baseSuffix = family === 0 ? geomSuffix : 'A';
 
-    // Calcul du borderMask : quels voisins sont d'une famille différente
+    // Calcul du borderMask : toutes les tuiles en bordure utilisent
+    // les variantes 0002-0005 (bordures pré-dessinées) comme séparateur.
+    // Les tuiles intérieures utilisent 0001 ou 0003 (pleines, sans bordure).
     const myFam = fam(tile);
-    let borderMask = 0;
-    if (tile.neighborN && fam(tile.neighborN) !== myFam) borderMask |= 1;  // N
-    if (tile.neighborS && fam(tile.neighborS) !== myFam) borderMask |= 2;  // S
-    if (tile.neighborE && fam(tile.neighborE) !== myFam) borderMask |= 4;  // E
-    if (tile.neighborW && fam(tile.neighborW) !== myFam) borderMask |= 8;  // W
+    let isBorder = 0;
+    if (tile.neighborN && fam(tile.neighborN) !== myFam) isBorder = 1;
+    if (tile.neighborS && fam(tile.neighborS) !== myFam) isBorder = 1;
+    if (tile.neighborE && fam(tile.neighborE) !== myFam) isBorder = 1;
+    if (tile.neighborW && fam(tile.neighborW) !== myFam) isBorder = 1;
+
+    // borderMask = 0→0001 (plein), 1→0002 (bordure droite), 3→0004 (arrondi), 4→0005 (alternatif)
+    // On alterne entre les bordures pour variété visuelle
+    const borderVar = isBorder ? ((Math.abs(tile.x * 31 + tile.y * 17) % 3) + 1) : 0;
+    // borderVar: 0=0001, 1=0002, 2=0003 (non utilisé), 3=0004, 4=0005
+    // On skip 0003 (similaire à 0001), on utilise 1, 3, 4 pour les bordures
+    const borderVariants = [0, 1, 3, 4]; // 0001, 0002, 0004, 0005
+    const effectiveVar = borderVariants[borderVar];
 
     const p = (gx: number, gy: number, elev: number): [number, number, number] => [
       (gx - gy) * 64, elev * 32, (gx + gy) * 32,
@@ -685,8 +695,8 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 
     // 2 triangles = quad complet, split par la diagonale la plus courte
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
-    // Variation 0 = toujours 0001 (plein sans bordure), borderMask pour les composites
-    const key = `${tile.type}:0:${baseSuffix}:${borderMask}`;
+    // Variation pour la texture : 0→0001 (plein), 1→0002, 3→0004, 4→0005 (bordures)
+    const key = `${tile.type}:${effectiveVar}:${baseSuffix}:${isBorder}`;
 
     if (diagTLBR) {
       // Tri0: TL-TR-BL

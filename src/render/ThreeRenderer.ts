@@ -128,88 +128,31 @@ export class ThreeRenderer {
   }
 
   /**
-   * getOrLoadBorderTexture — Charge une texture, avec composite canvas
-   * si borderMask > 0.
+   * getOrLoadBorderTexture — Charge une texture depuis le cache.
    *
-   * Format textureKey : "type:variation:suffix:borderMask"
-   *   - borderMask=0 : texture 0001 normale
-   *   - borderMask>0 : composite base 0001 + bordures extraites de 0002
+   * Format textureKey : "type:variation:suffix:isBorder"
+   *   - isBorder=0 : texture 0001/0003 (pleine, sans bordure)
+   *   - isBorder=1 : texture 0002/0004/0005 (avec bordure pré-dessinée)
    *
-   * Bits borderMask : N=1, S=2, E=4, W=8
+   * La variation encode directement le numéro 4-digit (0001-0005).
    */
   private getOrLoadBorderTexture(textureKey: string): THREE.Texture | null {
     if (this.loadedTextures.has(textureKey)) {
       return this.loadedTextures.get(textureKey)!;
     }
 
-    // Parser la clé : "type:variation:suffix:borderMask"
+    // Parser la clé : "type:variation:suffix:isBorder"
     const parts = textureKey.split(':');
     if (parts.length !== 4) return null;
     const type = parseInt(parts[0], 10) as TileType;
     const variation = parseInt(parts[1], 10);
     const suffix = parts[2];
-    const borderMask = parseInt(parts[3], 10);
 
-    if (borderMask === 0) {
-      // Pas de bordure — texture 0001 normale
-      const path = this.textureTable.buildPath(type, variation, suffix);
-      if (!path) return null;
-      const tex = this.loadTexture(path);
-      this.loadedTextures.set(textureKey, tex);
-      return tex;
-    }
+    const path = this.textureTable.buildPath(type, variation, suffix);
+    if (!path) return null;
 
-    // Texture composite avec bordures extraites de 0002
-    const basePath = this.textureTable.buildPath(type, 0, suffix);      // 0001
-    const borderPath = this.textureTable.buildPath(type, 1, suffix);     // 0002
-    if (!basePath || !borderPath) return null;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
-    const ctx = canvas.getContext('2d')!;
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
+    const tex = this.loadTexture(path);
     this.loadedTextures.set(textureKey, tex);
-
-    // Charger les 2 images, puis composer
-    const baseImg = new Image();
-    const borderImg = new Image();
-    let loaded = 0;
-    const onLoad = () => {
-      loaded++;
-      if (loaded < 2) return;
-
-      // 1. Base texture 0001
-      ctx.drawImage(baseImg, 0, 0);
-
-      // 2. Extraire les bandes de bordure de 0002 selon borderMask
-      const BW = 10; // épaisseur de la bordure en pixels
-
-      if (borderMask & 1) { // N — bande haute
-        ctx.drawImage(borderImg, 0, 0, 64, BW, 0, 0, 64, BW);
-      }
-      if (borderMask & 2) { // S — bande basse
-        ctx.drawImage(borderImg, 0, 64 - BW, 64, BW, 0, 64 - BW, 64, BW);
-      }
-      if (borderMask & 4) { // E — bande droite
-        ctx.drawImage(borderImg, 64 - BW, 0, BW, 64, 64 - BW, 0, BW, 64);
-      }
-      if (borderMask & 8) { // W — bande gauche
-        ctx.drawImage(borderImg, 0, 0, BW, 64, 0, 0, BW, 64);
-      }
-
-      tex.needsUpdate = true;
-    };
-
-    baseImg.onload = onLoad;
-    borderImg.onload = onLoad;
-    baseImg.src = basePath;
-    borderImg.src = borderPath;
-
     return tex;
   }
 
