@@ -885,15 +885,16 @@ export class Terrain {
       if (!TYPES_WITH_BORDER.has(borderType)) continue;
 
       const tileForBorder = { ...tile, type: borderType };
-      // Tri0 : bord extérieur (edge)
+      // Split quad e0-e1-i1-i0 le long de la diagonale e0-i1
+      // Tri0 : e0, e1, i1  (triangle supérieur)
       passes.push(this._pass(
         tileForBorder, s.suffix,
-        tri(s.e0, s.e1, s.i0),
+        tri(s.e0, s.e1, s.i1),
         s.uvEdge, 0, true));
-      // Tri1 : intérieur (remplit le quad)
+      // Tri1 : e0, i1, i0  (triangle inférieur, comble le quad)
       passes.push(this._pass(
         tileForBorder, s.suffix,
-        tri(s.e0, s.i0, s.i1),
+        tri(s.e0, s.i1, s.i0),
         s.uvInt, 0, true));
     }
 
