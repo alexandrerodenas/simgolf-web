@@ -645,7 +645,7 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       : (() => {
           // Fallback si pas de passes calculées
           const [hTL, hTR, hBR, hBL] = tile.elevation;
-          const p = (x: number, y: number, z: number) => [(x - y) * 64, (x + y) * 32, -z * 16];
+          const p = (x: number, y: number, z: number) => [(x - y) * 64, z * 32, (x + y) * 32];
           const C = {
             TL: p(tile.x, tile.y, hTL),
             TR: p(tile.x + 1, tile.y, hTR),
@@ -733,7 +733,7 @@ function addPathQuad(
   if (!neighbor) return;
 
   const [hTL, hTR, hBR, hBL] = tile.elevation;
-  const p = (x: number, y: number, z: number) => [(x - y) * 64, (x + y) * 32, -z * 16];
+  const p = (x: number, y: number, z: number) => [(x - y) * 64, z * 32, (x + y) * 32];
 
   const mx = (tile.x + neighbor.x) / 2;
   const my = (tile.y + neighbor.y) / 2;

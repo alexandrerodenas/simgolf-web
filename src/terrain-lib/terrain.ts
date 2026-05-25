@@ -158,12 +158,12 @@ function needsBorder(currType: TileType, neiType: TileType): boolean {
 
 // ─── Conversion grille → monde ───
 
-/** Projection dimétrique : (x - y) * 64, (x + y) * 32 - z * 16 */
+/** Projection dimétrique : worldX = (gx-gy)*64, worldZ = (gx+gy)*32, worldY = elev*32 */
 function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: number; z: number } {
   return {
     x: (gx - gy) * 64,
-    y: (gx + gy) * 32,
-    z: -elev * 16,
+    y: elev * 32,
+    z: (gx + gy) * 32,
   };
 }
 
