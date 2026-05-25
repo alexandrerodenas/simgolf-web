@@ -569,8 +569,8 @@ export interface MeshGroup {
   geometry: THREE.BufferGeometry;
   texturePath: string | null;
   fallbackColor: [number, number, number];
-  /** Valeur uniforme de brillance pour ce groupe (optionnel) */
-  shininess?: number;
+  /** Vrai si c'est une passe d'overlay (transparent, renderOrder=1) */
+  isOverlay?: boolean;
 }
 
 const palette: Record<number, [number, number, number]> = {
@@ -630,32 +630,37 @@ function computeTileNormal(
  *
  * Chaque tuile est rendue comme 2 triangles avec la diagonale
  * la plus courte comme coupe (TL-BR ou TR-BL).
- * Les normales sont calculées par tile via computeTileNormal().
+ *
+ * Toutes les passes de rendu sont incluses (pas seulement la passe 0).
+ * Les passes 1+ sont marquées isOverlay=true pour le rendu transparent.
+ *
+ * Pas de normales 3D (MeshBasicMaterial, pas d'éclairage — comme le jeu original).
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
-  const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType }>();
+  const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType; isOverlay: boolean }>();
   const NO_TEXTURE = '';
 
   const TILE_W = 128; // RENDER_TILE_W
   const TILE_H = 64;  // RENDER_TILE_H
   const ELEV_SCALE = 32; // RENDER_ELEVATION_SCALE
 
+  // Générer une entrée par passe (pas seulement passe 0)
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
     const passes = tile.renderPasses.length > 0
       ? tile.renderPasses
       : [{ type: tile.type, variation: tile.variation, suffix: 'A' } as IRenderPass];
 
-    // On ne prend que la passe 0 pour le maillage de base
-    // Les passes suivantes seront des overlays (à implémenter)
-    const pass = passes[0];
-    const path = texturePathForPass(pass);
-    const key = path ?? NO_TEXTURE;
-    if (!groups.has(key)) {
-      groups.set(key, { tileIdx: [], path, type: pass.type });
+    for (let p = 0; p < passes.length; p++) {
+      const pass = passes[p];
+      const path = texturePathForPass(pass);
+      const key = path ?? NO_TEXTURE;
+      if (!groups.has(key)) {
+        groups.set(key, { tileIdx: [], path, type: pass.type, isOverlay: p > 0 });
+      }
+      groups.get(key)!.tileIdx.push(i);
     }
-    groups.get(key)!.tileIdx.push(i);
   }
 
   const results: MeshGroup[] = [];
@@ -667,26 +672,26 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     const hasTexture = group.path !== null;
 
     const positions = new Float32Array(totalVerts * 3);
-    const normals = new Float32Array(totalVerts * 3);
-    // UV toujours alloués (même pour fallback, pour la cohérence shader)
     const uvs = new Float32Array(totalVerts * 2);
-    // Vertex colors TOUJOURS alloués (fallback si texture absente)
+    // Vertex colors toujours alloués (fallback si texture absente)
     const colors = new Float32Array(totalVerts * 3);
+    // Normales flat — pas utilisées par MeshBasicMaterial mais requises par Three.js
+    const normals = new Float32Array(totalVerts * 3);
 
     let vi = 0;
     const appendVertex = (
       x: number, y: number, z: number,
       u: number, v: number,
-      nx: number, ny: number, nz: number,
     ) => {
       positions[vi * 3]     = x;
       positions[vi * 3 + 1] = y;
       positions[vi * 3 + 2] = z;
       uvs[vi * 2]     = u;
       uvs[vi * 2 + 1] = v;
-      normals[vi * 3]     = nx;
-      normals[vi * 3 + 1] = ny;
-      normals[vi * 3 + 2] = nz;
+      // Normale fixe pointant vers le haut (comme glNormal3f(0,1,0) du jeu original)
+      normals[vi * 3]     = 0;
+      normals[vi * 3 + 1] = 1;
+      normals[vi * 3 + 2] = 0;
       vi++;
     };
 
@@ -703,9 +708,6 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
       const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
 
-      // Normale de la tuile calculée depuis l'élévation
-      const n = computeTileNormal(hTL, hTR, hBR, hBL, TILE_W, TILE_H, ELEV_SCALE);
-
       // Choisir la diagonale la plus courte pour le split
       const d1 = Math.abs(hTL - hBR);
       const d2 = Math.abs(hTR - hBL);
@@ -715,29 +717,27 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 
       if (diagTLBR) {
         // Triangles: TL-TR-BL et TR-BR-BL
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
       } else {
         // Triangles: TL-TR-BR et TL-BR-BL
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0, n.x, n.y, n.z);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0, n.x, n.y, n.z);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1, n.x, n.y, n.z);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1, n.x, n.y, n.z);
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
+        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
+        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
+        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
       }
 
-      if (colors) {
-        for (let k = 0; k < 6; k++) {
-          const idx = (baseVi + k) * 3;
-          colors[idx]     = baseColor[0];
-          colors[idx + 1] = baseColor[1];
-          colors[idx + 2] = baseColor[2];
-        }
+      for (let k = 0; k < 6; k++) {
+        const idx = (baseVi + k) * 3;
+        colors[idx]     = baseColor[0];
+        colors[idx + 1] = baseColor[1];
+        colors[idx + 2] = baseColor[2];
       }
     }
 
@@ -745,206 +745,14 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    // NOTE: on n'utilise PAS computeVertexNormals() car on définit
-    // déjà les normales par tuile (plus proche du rendu original)
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
 
-    results.push({ geometry, texturePath: group.path, fallbackColor: baseColor });
-  }
-
-  return results;
-}
-
-// ─── OVERLAYS DE BORDURE (STRIPS 3D) ───
-
-/** Interface pour une géométrie d'overlay */
-export interface OverlayGroup {
-  geometry: THREE.BufferGeometry;
-  texturePath: string;
-}
-
-/**
- * Calcule le vecteur normal sortant pour un bord de tuile,
- * dans le plan XZ (perpendiculaire à l'arête).
- */
-function edgeOutward(
-  edge: 'N' | 'E' | 'S' | 'W',
-): [number, number, number] {
-  // Les arêtes de la tuile (TL→TR, TR→BR, BR→BL, BL→TL)
-  // Vecteurs dans le plan XZ uniquement
-  switch (edge) {
-    case 'N': return [ 32, 0, -64]; // perpendiculaire à (64, 32)
-    case 'E': return [ 32, 0,  64]; // perpendiculaire à (-64, 32)
-    case 'S': return [-32, 0,  64]; // perpendiculaire à (-64, -32)
-    case 'W': return [-32, 0, -64]; // perpendiculaire à (64, -32)
-  }
-}
-
-/**
- * Construit les géométries 3D pour les strips de bordure.
- *
- * Chaque strip est un quadrilatère (2 triangles) positionné
- * le long de l'arête extérieure de la tuile, décalé vers
- * l'extérieur pour recouvrir le joint entre 2 types de terrain.
- *
- * Regroupés par chemin de texture pour minimiser les draw calls.
- */
-export function buildOverlayGeometry(
-  mapState: IMapState,
-): OverlayGroup[] {
-  const { width, height, tiles } = mapState;
-  const groups = new Map<string, {
-    positions: number[];
-    uvs: number[];
-  }>();
-
-  // Constantes de rendu (identique buildParklandMesh)
-  const TILE_W = 128;
-  const TILE_H = 64;
-  const ELEV_SCALE = 32;
-
-  // Largeurs des strips en unités 3D
-  const STRIP_NW = 8;   // BORDER_STRIP = 6px → ~8 en 3D
-  const STRIP_ES = 16;  // compS = 12px → ~16 en 3D
-
-  // Profondeur d'écrasement pour corriger les seams inter-quadrants
-  const OVERDRAW = 1;
-
-  for (let i = 0; i < tiles.length; i++) {
-    const tile = tiles[i];
-    const passes = tile.renderPasses;
-
-    // Pass 0 est la base, passes 1+ sont les overlays
-    for (let p = 1; p < passes.length; p++) {
-      const pass = passes[p];
-      if (!pass.stripEdge) continue; // skip si pas d'edge défini
-
-      const edge = pass.stripEdge;
-      const [hTL, hTR, hBR, hBL] = tile.elevation;
-
-      // Positions 3D des 4 coins de la tuile
-      const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
-      const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
-      const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
-      const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
-
-      // Vecteur normal sortant (non normalisé, plan XZ)
-      const outward = edgeOutward(edge);
-      const isES = (edge === 'E' || edge === 'S');
-      const depth = isES ? STRIP_ES : STRIP_NW;
-
-      // Normaliser le vecteur outward
-      const len = Math.sqrt(outward[0] * outward[0] + outward[2] * outward[2]);
-      const nx = outward[0] / len * depth;
-      const nz = outward[2] / len * depth;
-
-      // 4 sommets du strip en fonction de l'arête
-      let innerA, innerB: typeof pTL;
-      let outerA, outerB: typeof pTL;
-
-      switch (edge) {
-        case 'N':
-          innerA = pTL; innerB = pTR;
-          outerA = { x: pTL.x + nx, y: pTL.y, z: pTL.z + nz };
-          outerB = { x: pTR.x + nx, y: pTR.y, z: pTR.z + nz };
-          break;
-        case 'E':
-          innerA = pTR; innerB = pBR;
-          outerA = { x: pTR.x + nx, y: pTR.y, z: pTR.z + nz };
-          outerB = { x: pBR.x + nx, y: pBR.y, z: pBR.z + nz };
-          break;
-        case 'S':
-          innerA = pBR; innerB = pBL;
-          outerA = { x: pBR.x + nx, y: pBR.y, z: pBR.z + nz };
-          outerB = { x: pBL.x + nx, y: pBL.y, z: pBL.z + nz };
-          break;
-        case 'W':
-          innerA = pBL; innerB = pTL;
-          outerA = { x: pBL.x + nx, y: pBL.y, z: pBL.z + nz };
-          outerB = { x: pTL.x + nx, y: pTL.y, z: pTL.z + nz };
-          break;
-      }
-
-      // UV : pour la texture complète 64×64
-      // Le strip prend BORDER_STRIP pixels depuis l'arête de la texture
-      const texW = 64; // TEX_SIZE
-      const stripPx = isES ? 12 : 6; // BORDER_STRIP ou compS
-      const uvStrip = stripPx / texW; // fraction UV
-
-      // UV dépend de l'orientation : 
-      // N = haut de texture (v=0 à uvStrip)
-      // E = droite de texture (u=1-uvStrip à 1)
-      // S = bas de texture (v=1-uvStrip à 1)
-      // W = gauche de texture (u=0 à uvStrip)
-      let ua, va, ub, vb, uc, vc, ud, vd: number;
-
-      switch (edge) {
-        case 'N':
-          ua = 0; va = 0; ub = 1; vb = 0;
-          uc = 1; vc = uvStrip; ud = 0; vd = uvStrip;
-          break;
-        case 'E':
-          ua = 1; va = 0; ub = 1; vb = 1;
-          uc = 1 - uvStrip; vc = 1; ud = 1 - uvStrip; vd = 0;
-          break;
-        case 'S':
-          ua = 0; va = 1; ub = 1; vb = 1;
-          uc = 1; vc = 1 - uvStrip; ud = 0; vd = 1 - uvStrip;
-          break;
-        case 'W':
-          ua = 0; va = 0; ub = 0; vb = 1;
-          uc = uvStrip; vc = 1; ud = uvStrip; vd = 0;
-          break;
-      }
-
-      // Clé de groupement = chemin de texture (réutilise texturePathForPass)
-      const texPath = texturePathForPass(pass);
-      if (!texPath) continue;
-
-      if (!groups.has(texPath)) {
-        groups.set(texPath, { positions: [], uvs: [] });
-      }
-      const g = groups.get(texPath)!;
-
-      // 2 triangles = 6 sommets : innerA, innerB, outerA / innerB, outerB, outerA
-      const verts = [
-        innerA, innerB, outerA,
-        innerB, outerB, outerA,
-      ];
-      const uvVerts = [
-        [ua, va], [ub, vb], [ud, vd],
-        [ub, vb], [uc, vc], [ud, vd],
-      ];
-
-      for (let v = 0; v < 6; v++) {
-        g.positions.push(verts[v].x, verts[v].y, verts[v].z);
-        g.uvs.push(uvVerts[v][0], uvVerts[v][1]);
-      }
-    }
-  }
-
-  // Construire les BufferGeometry
-  const results: OverlayGroup[] = [];
-  for (const [path, data] of groups) {
-    const pos = new Float32Array(data.positions);
-    const uv = new Float32Array(data.uvs);
-    const nVerts = pos.length / 3;
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-
-    // Normales simplifiées (pointées vers le haut, l'éclairage est fait
-    // sur la géométrie de base)
-    const norms = new Float32Array(nVerts * 3);
-    for (let i = 0; i < nVerts; i++) {
-      norms[i * 3] = 0;
-      norms[i * 3 + 1] = 1;
-      norms[i * 3 + 2] = 0;
-    }
-    geometry.setAttribute('normal', new THREE.BufferAttribute(norms, 3));
-
-    results.push({ geometry, texturePath: path });
+    results.push({
+      geometry,
+      texturePath: group.path,
+      fallbackColor: baseColor,
+      isOverlay: group.isOverlay,
+    });
   }
 
   return results;
