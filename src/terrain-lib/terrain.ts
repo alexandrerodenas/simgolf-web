@@ -68,7 +68,6 @@ export const TERRAIN_FAMILY: Record<TileType, number> = {
   [TileType.Brush]:         0,
   [TileType.Natural]:       0,
   [TileType.Vegetation]:    0,
-  [TileType.Flowerbed]:     0,
 };
 
 // ─── Configuration des textures par type ───
@@ -247,6 +246,24 @@ export class Terrain {
       const y = Math.floor(i / this.width);
       const x = i % this.width;
       this.tiles[i] = this.createTile(x, y, TileType.WaterDeep, [0, 0, 0, 0]);
+    }
+    // Lier les voisins après création
+    this.linkNeighbors();
+  }
+
+  /**
+   * linkNeighbors — Établit les pointeurs voisins pour toutes les tuiles.
+   * Équivalent des pointeurs à tile+0x34/0x38/0x3c/0x40.
+   */
+  private linkNeighbors(): void {
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const tile = this.tiles[y * this.width + x];
+        tile.neighborN = this.tileAt(x, y - 1);
+        tile.neighborS = this.tileAt(x, y + 1);
+        tile.neighborW = this.tileAt(x - 1, y);
+        tile.neighborE = this.tileAt(x + 1, y);
+      }
     }
   }
 
@@ -753,12 +770,21 @@ export class Terrain {
     const geomSuffix = getGeometryType(tile.elevation);
     const baseSuffix = family === 0 ? geomSuffix : 'A';
 
-    // Pass 0 : fond — utilise la variation cosmétique de la tuile
+    // Stocker l'orientation dans les bits 0-1 de flags
+    // Orientation par défaut : N=0 (suffixe A)
+    // Voir FUN_1000e6c0 : tileFlags & 3
+    const orient = tile.orientation & 3;
+    tile.flags = (tile.flags & ~TileFlags.OrientMask) | orient;
+
+    // Pass 0 : fond
+    const suffix0 = baseSuffix;
     passes.push({
       type: tile.type,
-      variation: tile.variation,    // variation cosmétique réelle (0001-00XX)
-      suffix: baseSuffix,
+      variation: tile.variation,
+      suffix: suffix0,
       subType: tile.subType,
+      textureKey: this.computeTextureKey(tile.type, tile.variation, suffix0),
+      terrainTypeByte: tile.type,
     });
 
     // Voisins
@@ -835,6 +861,8 @@ export class Terrain {
         subType: tile.subType,
         quadrants: EDGE_QUADS[edge],
         stripEdge: edge as 'N' | 'E' | 'S' | 'W',
+        textureKey: this.computeTextureKey(ov, 0, suffix),
+        terrainTypeByte: ov,
       });
     }
 
@@ -842,6 +870,14 @@ export class Terrain {
   }
 
   // ── Helpers ──
+
+  /**
+   * computeTextureKey — Génère la clé de texture pour une passe de rendu.
+   * Équivalent du pré-calcul de textureID dans tile+pass*0x38+0x6c.
+   */
+  private computeTextureKey(type: TileType, variation: number, suffix: string): string {
+    return `${type}:${variation}:${suffix}`;
+  }
 
   private createTile(x: number, y: number, type: TileType, elevation: [number, number, number, number]): ITile {
     return {
@@ -853,6 +889,18 @@ export class Terrain {
       walls: [false, false, false, false],
       subType: 0,
       renderPasses: [],
+      // Nouveaux champs
+      orientation: 0,
+      neighborN: null,
+      neighborS: null,
+      neighborE: null,
+      neighborW: null,
+      overlayPrev: 0,
+      overlayNext: 0,
+      pathN: false,
+      pathE: false,
+      pathS: false,
+      pathW: false,
     };
   }
 

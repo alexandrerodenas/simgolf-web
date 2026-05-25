@@ -321,6 +321,7 @@ export function generateVegetationGrid(
     lighting: terrain.lighting,
     zoomLevel: terrain.zoomLevel,
     splineHeight: terrain.splineHeight,
+    viewMode: 0,
   };
 }
 
@@ -478,6 +479,7 @@ export function generateParklandGrid(
     lighting: terrain.lighting,
     zoomLevel: terrain.zoomLevel,
     splineHeight: terrain.splineHeight,
+    viewMode: 0,
   };
 }
 
@@ -567,7 +569,7 @@ export function texturePathForTile(tile: ITile): string | null {
 
 export interface MeshGroup {
   geometry: THREE.BufferGeometry;
-  texturePath: string | null;
+  textureKey: string | null;
   fallbackColor: [number, number, number];
   /** Vrai si c'est une passe d'overlay (transparent, renderOrder=1) */
   isOverlay?: boolean;
@@ -638,122 +640,208 @@ function computeTileNormal(
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
-  const groups = new Map<string, { tileIdx: number[]; path: string | null; type: TileType; isOverlay: boolean }>();
-  const NO_TEXTURE = '';
+  // Groupe de géométrie par textureKey
+  const baseGroups = new Map<string, { tileIdx: number[]; textureKey: string; type: TileType; isOverlay: boolean }>();
+  const overlayGroups = new Map<string, { tileIdx: number[]; textureKey: string; type: TileType; isOverlay: boolean }>();
+  const pathGroups: MeshGroup[] = [];
 
-  const TILE_W = 128; // RENDER_TILE_W
-  const TILE_H = 64;  // RENDER_TILE_H
-  const ELEV_SCALE = 32; // RENDER_ELEVATION_SCALE
+  const TILE_W = 128;
+  const TILE_H = 64;
+  const ELEV_SCALE = 32;
 
-  // Générer une entrée par passe (pas seulement passe 0)
+  // ── 1. Grouper les passes par textureKey ──
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
     const passes = tile.renderPasses.length > 0
       ? tile.renderPasses
-      : [{ type: tile.type, variation: tile.variation, suffix: 'A' } as IRenderPass];
+      : [{ type: tile.type, variation: tile.variation, suffix: 'A', textureKey: `${tile.type}:${tile.variation}:A`, terrainTypeByte: tile.type } as IRenderPass];
 
     for (let p = 0; p < passes.length; p++) {
       const pass = passes[p];
-      const path = texturePathForPass(pass);
-      const key = path ?? NO_TEXTURE;
-      if (!groups.has(key)) {
-        groups.set(key, { tileIdx: [], path, type: pass.type, isOverlay: p > 0 });
+      const key = pass.textureKey ?? `${pass.type}:${pass.variation}:${pass.suffix}`;
+      const target = p === 0 ? baseGroups : overlayGroups;
+      if (!target.has(key)) {
+        target.set(key, { tileIdx: [], textureKey: key, type: pass.type, isOverlay: p > 0 });
       }
-      groups.get(key)!.tileIdx.push(i);
+      target.get(key)!.tileIdx.push(i);
     }
   }
+
 
   const results: MeshGroup[] = [];
 
-  for (const [, group] of groups) {
-    const nTiles = group.tileIdx.length;
-    const vertsPerTile = 6; // 2 triangles = 6 sommets
-    const totalVerts = nTiles * vertsPerTile;
-    const hasTexture = group.path !== null;
+  // ── 2. Construire la géométrie pour chaque groupe de passe de base ──
+  for (const [, group] of baseGroups) {
+    const mesh = buildGeometryForGroup(group, tiles, TILE_W, TILE_H, ELEV_SCALE);
+    if (mesh) results.push(mesh);
+  }
 
-    const positions = new Float32Array(totalVerts * 3);
-    const uvs = new Float32Array(totalVerts * 2);
-    // Vertex colors toujours alloués (fallback si texture absente)
-    const colors = new Float32Array(totalVerts * 3);
-    // Normales flat — pas utilisées par MeshBasicMaterial mais requises par Three.js
-    const normals = new Float32Array(totalVerts * 3);
+  // ── 3. Construire la géométrie pour chaque groupe d'overlay ──
+  for (const [, group] of overlayGroups) {
+    const mesh = buildGeometryForGroup(group, tiles, TILE_W, TILE_H, ELEV_SCALE);
+    if (mesh) results.push(mesh);
+  }
 
-    let vi = 0;
-    const appendVertex = (
-      x: number, y: number, z: number,
-      u: number, v: number,
-    ) => {
-      positions[vi * 3]     = x;
-      positions[vi * 3 + 1] = y;
-      positions[vi * 3 + 2] = z;
-      uvs[vi * 2]     = u;
-      uvs[vi * 2 + 1] = v;
-      // Normale fixe pointant vers le haut (comme glNormal3f(0,1,0) du jeu original)
-      normals[vi * 3]     = 0;
-      normals[vi * 3 + 1] = 1;
-      normals[vi * 3 + 2] = 0;
-      vi++;
-    };
-
-    const firstTile = tiles[group.tileIdx[0]];
-    const baseColor = palette[firstTile.type] ?? [0.227, 0.490, 0.227];
-
-    for (const tileIdx of group.tileIdx) {
-      const tile = tiles[tileIdx];
-      const [hTL, hTR, hBR, hBL] = tile.elevation;
-
-      // Positions 3D dans l'espace Three.js
-      const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
-      const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
-      const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
-      const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
-
-      // Choisir la diagonale la plus courte pour le split
-      const d1 = Math.abs(hTL - hBR);
-      const d2 = Math.abs(hTR - hBL);
-      const diagTLBR = d1 < d2;
-
-      const baseVi = vi;
-
-      if (diagTLBR) {
-        // Triangles: TL-TR-BL et TR-BR-BL
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
-      } else {
-        // Triangles: TL-TR-BR et TL-BR-BL
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
-        appendVertex(pTR.x, pTR.y, pTR.z,  1, 0);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
-        appendVertex(pTL.x, pTL.y, pTL.z,  0, 0);
-        appendVertex(pBR.x, pBR.y, pBR.z,  1, 1);
-        appendVertex(pBL.x, pBL.y, pBL.z,  0, 1);
-      }
-
-      for (let k = 0; k < 6; k++) {
-        const idx = (baseVi + k) * 3;
-        colors[idx]     = baseColor[0];
-        colors[idx + 1] = baseColor[1];
-        colors[idx + 2] = baseColor[2];
-      }
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-
-    results.push({
-      geometry,
-      texturePath: group.path,
-      fallbackColor: baseColor,
-      isOverlay: group.isOverlay,
-    });
+  // ── 4. Générer les quads de chemins (post-process paths) ──
+  const pathVerts: number[] = [];
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    // Chemins N/S/E/W — quads de connexion entre tiles voisines
+    if (tile.pathN && tile.neighborN) addPathQuad(i, 'N', tiles, width, pathVerts, TILE_W, TILE_H, ELEV_SCALE);
+    if (tile.pathS && tile.neighborS) addPathQuad(i, 'S', tiles, width, pathVerts, TILE_W, TILE_H, ELEV_SCALE);
+    if (tile.pathE && tile.neighborE) addPathQuad(i, 'E', tiles, width, pathVerts, TILE_W, TILE_H, ELEV_SCALE);
+    if (tile.pathW && tile.neighborW) addPathQuad(i, 'W', tiles, width, pathVerts, TILE_W, TILE_H, ELEV_SCALE);
+  }
+  if (pathVerts.length > 0) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pathVerts), 3));
+    results.push({ geometry: geo, textureKey: 'special:path', fallbackColor: [0.6, 0.5, 0.4], isOverlay: true });
   }
 
   return results;
+}
+
+// ── Helper pour construire la géométrie d'un groupe ──
+
+function buildGeometryForGroup(
+  group: { tileIdx: number[]; textureKey: string; type: TileType; isOverlay: boolean },
+  tiles: ITile[],
+  TILE_W: number, TILE_H: number, ELEV_SCALE: number,
+): MeshGroup | null {
+  const nTiles = group.tileIdx.length;
+  const vertsPerTile = 6;
+  const totalVerts = nTiles * vertsPerTile;
+
+  const positions = new Float32Array(totalVerts * 3);
+  const uvs = new Float32Array(totalVerts * 2);
+  const colors = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+
+  const baseColor = palette[group.type] ?? [0.227, 0.490, 0.227];
+  let vi = 0;
+
+  const appendVertex = (x: number, y: number, z: number, u: number, v: number) => {
+    const i3 = vi * 3;
+    positions[i3] = x;
+    positions[i3 + 1] = y;
+    positions[i3 + 2] = z;
+    uvs[vi * 2] = u;
+    uvs[vi * 2 + 1] = v;
+    normals[i3] = 0;
+    normals[i3 + 1] = 1;
+    normals[i3 + 2] = 0;
+    vi++;
+  };
+
+  for (const tileIdx of group.tileIdx) {
+    const tile = tiles[tileIdx];
+    const [hTL, hTR, hBR, hBL] = tile.elevation;
+
+    const pTL = tileVertexPosition(tile.x, tile.y, hTL);
+    const pTR = tileVertexPosition(tile.x + 1, tile.y, hTR);
+    const pBL = tileVertexPosition(tile.x, tile.y + 1, hBL);
+    const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
+
+    const d1 = Math.abs(hTL - hBR);
+    const d2 = Math.abs(hTR - hBL);
+    const diagTLBR = d1 < d2;
+
+    const baseVi = vi;
+
+    if (diagTLBR) {
+      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+    } else {
+      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+    }
+
+    for (let k = 0; k < 6; k++) {
+      const idx = (baseVi + k) * 3;
+      colors[idx] = baseColor[0];
+      colors[idx + 1] = baseColor[1];
+      colors[idx + 2] = baseColor[2];
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+
+  return {
+    geometry,
+    textureKey: group.textureKey,
+    fallbackColor: baseColor,
+    isOverlay: group.isOverlay,
+  };
+}
+
+// ── Helper pour générer les quads de chemin (post-process paths) ──
+
+function addPathQuad(
+  tileIdx: number,
+  dir: 'N' | 'S' | 'E' | 'W',
+  tiles: ITile[],
+  gridW: number,
+  out: number[],
+  TILE_W: number, TILE_H: number, ELEV_SCALE: number,
+): void {
+  const tile = tiles[tileIdx];
+  const neighbor = tile.neighborN ?? tile.neighborS ?? tile.neighborE ?? tile.neighborW;
+  if (!neighbor) return;
+
+  // Chemin = petit quad entre les deux tiles
+  // On crée 2 triangles centrés sur la bordure
+  const hSelf = tile.elevation[0]; // approximation
+  const hNei = neighbor.elevation[0];
+
+  // Positions le long de la bordure entre les deux tiles
+  const ax = tile.x;
+  const ay = tile.y;
+  const bx = neighbor.x;
+  const by = neighbor.y;
+
+  // Milieu de la bordure
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+
+  // Points du quad
+  const p0 = tileVertexPosition(ax, ay, hSelf);
+  const p1 = tileVertexPosition(bx, by, hNei);
+
+  // Petit quad de 0.3 tile de large
+  const W = 0.3;
+  let q: { x: number; y: number; z: number }[];
+  if (dir === 'N' || dir === 'S') {
+    // Bordure horizontale dans la grille → quads décalés en Z
+    q = [
+      tileVertexPosition(mx - W, my, hSelf),
+      tileVertexPosition(mx + W, my, hSelf),
+      tileVertexPosition(mx + W, my + W * 2 * (dir === 'S' ? 1 : -1), hNei),
+      tileVertexPosition(mx - W, my + W * 2 * (dir === 'S' ? 1 : -1), hNei),
+    ];
+  } else {
+    // Bordure verticale → décalés en X
+    q = [
+      tileVertexPosition(mx, my - W, hSelf),
+      tileVertexPosition(mx, my + W, hSelf),
+      tileVertexPosition(mx + W * 2 * (dir === 'E' ? 1 : -1), my + W, hNei),
+      tileVertexPosition(mx + W * 2 * (dir === 'E' ? 1 : -1), my - W, hNei),
+    ];
+  }
+
+  // 2 triangles
+  for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]]) {
+    out.push(v.x, v.y, v.z);
+  }
 }

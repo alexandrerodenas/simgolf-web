@@ -1,0 +1,214 @@
+/* ─── SimGolf Toolbar Overlay ───
+ * Inspiré du layout original : toolbar au bas de l'écran
+ * avec 5 panels (Terrain, Building, Elevation, Amenities, Employees)
+ */
+
+/* ─── Toolbar Overlay Container ─── */
+#toolbar-overlay {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  background: linear-gradient(180deg, rgba(30,40,20,0.92) 0%, rgba(20,30,10,0.95) 100%);
+  border-top: 2px solid #5a7a3a;
+  display: flex;
+  align-items: stretch;
+  z-index: 1000;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+}
+
+/* ─── Panel Tabs (left side) ─── */
+#panel-tabs {
+  display: flex;
+  flex-direction: column;
+  width: 48px;
+  min-width: 48px;
+  background: rgba(0,0,0,0.3);
+  border-right: 1px solid #3a5a2a;
+  padding: 4px 0;
+  gap: 2px;
+}
+
+.panel-tab {
+  width: 40px;
+  height: 20px;
+  margin: 0 4px;
+  border: 1px solid transparent;
+  background: rgba(60,80,40,0.4);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #8a9a7a;
+  transition: all 0.15s;
+}
+
+.panel-tab:hover {
+  background: rgba(80,100,60,0.6);
+  border-color: #6a8a4a;
+  color: #c0d0b0;
+}
+
+.panel-tab.active {
+  background: rgba(70,110,40,0.6);
+  border-color: #8ab84a;
+  color: #e0f0d0;
+}
+
+.panel-tab img {
+  width: 32px;
+  height: 14px;
+  object-fit: contain;
+}
+
+/* ─── Panel Content ─── */
+#panel-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  padding: 6px 8px;
+}
+
+.panel {
+  display: none;
+  width: 100%;
+  height: 100%;
+}
+
+.panel.active {
+  display: block;
+}
+
+/* ─── Tool Grid ─── */
+.tool-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-content: flex-start;
+  height: 100%;
+}
+
+.tool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 50px;
+  border: 1px solid #4a5a3a;
+  background: rgba(40,55,30,0.6);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: #b0c0a0;
+  font-size: 9px;
+  gap: 2px;
+}
+
+.tool-btn:hover {
+  background: rgba(60,80,45,0.7);
+  border-color: #7aa84a;
+  color: #e0f0d0;
+}
+
+.tool-btn.active {
+  background: rgba(70,120,40,0.6);
+  border-color: #8ad84a;
+  color: #fff;
+  box-shadow: 0 0 6px rgba(100,200,60,0.3);
+}
+
+.tool-icon {
+  width: 24px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+/* ─── Right Side ─── */
+#toolbar-right {
+  display: flex;
+  flex-direction: column;
+  width: 36px;
+  min-width: 36px;
+  background: rgba(0,0,0,0.3);
+  border-left: 1px solid #3a5a2a;
+  padding: 4px 2px;
+  gap: 2px;
+  align-items: center;
+}
+
+.toolbar-action {
+  width: 30px;
+  height: 24px;
+  border: 1px solid #4a5a3a;
+  background: rgba(40,55,30,0.6);
+  border-radius: 3px;
+  cursor: pointer;
+  color: #8a9a7a;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.toolbar-action:hover {
+  background: rgba(60,80,45,0.7);
+  border-color: #7aa84a;
+  color: #e0f0d0;
+}
+
+/* ─── Tile Info ─── */
+#tile-info {
+  position: fixed;
+  bottom: 124px;
+  left: 8px;
+  background: rgba(0,0,0,0.85);
+  color: #ff0;
+  padding: 4px 10px;
+  font: 12px monospace;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 999;
+  white-space: pre;
+  display: none;
+}
+
+/* ─── Game Container ─── */
+#game-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+#game-container canvas {
+  display: block;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 600px) {
+  #toolbar-overlay {
+    height: 100px;
+  }
+  #panel-tabs {
+    width: 40px;
+    min-width: 40px;
+  }
+  .tool-btn {
+    width: 48px;
+    height: 40px;
+    font-size: 8px;
+  }
+  #toolbar-right {
+    width: 30px;
+    min-width: 30px;
+  }
+}

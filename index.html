@@ -6,6 +6,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>SimGolf</title>
+  <link rel="stylesheet" href="/src/ui/toolbar.css" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
@@ -13,6 +14,126 @@
   </style>
 </head>
 <body>
+  <div id="game-container">
+    <!-- Three.js canvas will be appended here -->
+  </div>
+  
+  <!-- SimGolf Toolbar Overlay -->
+  <div id="toolbar-overlay">
+    <!-- Panel tabs (left side) -->
+    <div id="panel-tabs">
+      <button class="panel-tab active" data-panel="terrain" title="Terrain">
+        <img src="/assets/ui/toolbar/terrain_tab.webp" alt="Terrain" />
+      </button>
+      <button class="panel-tab" data-panel="building" title="Buildings">
+        <img src="/assets/ui/toolbar/building_tab.webp" alt="Buildings" />
+      </button>
+      <button class="panel-tab" data-panel="elevation" title="Elevation">
+        <img src="/assets/ui/toolbar/elevation_tab.webp" alt="Elevation" />
+      </button>
+      <button class="panel-tab" data-panel="amenities" title="Amenities">
+        <img src="/assets/ui/toolbar/amenities_tab.webp" alt="Amenities" />
+      </button>
+      <button class="panel-tab" data-panel="employees" title="Employees">
+        <img src="/assets/ui/toolbar/employees_tab.webp" alt="Employees" />
+      </button>
+    </div>
+
+    <!-- Panel content area -->
+    <div id="panel-content">
+      <!-- TERRAIN PANEL -->
+      <div class="panel active" id="panel-terrain">
+        <div class="tool-grid" id="terrain-tools">
+          <button class="tool-btn" data-tool="rough" title="Rough">
+            <div class="tool-icon" style="background:#3a7d3a"></div>
+            <span>Rough</span>
+          </button>
+          <button class="tool-btn" data-tool="fairway" title="Fairway">
+            <div class="tool-icon" style="background:#4ea64e"></div>
+            <span>Fairway</span>
+          </button>
+          <button class="tool-btn" data-tool="green" title="Putting Green">
+            <div class="tool-icon" style="background:#2ecc71"></div>
+            <span>Green</span>
+          </button>
+          <button class="tool-btn" data-tool="tee" title="Tee">
+            <div class="tool-icon" style="background:#5cb85c"></div>
+            <span>Tee</span>
+          </button>
+          <button class="tool-btn" data-tool="deeprough" title="Deep Rough">
+            <div class="tool-icon" style="background:#2d5a2d"></div>
+            <span>Deep Rgh</span>
+          </button>
+          <button class="tool-btn" data-tool="bunker" title="Sand Bunker">
+            <div class="tool-icon" style="background:#e8d5a3"></div>
+            <span>Bunker</span>
+          </button>
+          <button class="tool-btn" data-tool="water" title="Water">
+            <div class="tool-icon" style="background:#3399cc"></div>
+            <span>Water</span>
+          </button>
+          <button class="tool-btn" data-tool="woods" title="Woods">
+            <div class="tool-icon" style="background:#2d4a2d"></div>
+            <span>Woods</span>
+          </button>
+          <button class="tool-btn" data-tool="brush" title="Brush">
+            <div class="tool-icon" style="background:#cc4477"></div>
+            <span>Brush</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- BUILDING PANEL -->
+      <div class="panel" id="panel-building">
+        <div class="tool-grid" id="building-tools">
+          <button class="tool-btn" data-tool="clubhouse" title="Clubhouse"><span>Clubhouse</span></button>
+          <button class="tool-btn" data-tool="proshop" title="Pro Shop"><span>Pro Shop</span></button>
+          <button class="tool-btn" data-tool="path" title="Path"><span>Path</span></button>
+          <button class="tool-btn" data-tool="bridge" title="Bridge"><span>Bridge</span></button>
+        </div>
+      </div>
+
+      <!-- ELEVATION PANEL -->
+      <div class="panel" id="panel-elevation">
+        <div class="tool-grid" id="elevation-tools">
+          <button class="tool-btn" data-tool="raise" title="Raise"><span>▲ Raise</span></button>
+          <button class="tool-btn" data-tool="lower" title="Lower"><span>▼ Lower</span></button>
+          <button class="tool-btn" data-tool="flatten" title="Flatten"><span>≡ Flatten</span></button>
+          <button class="tool-btn" data-tool="smooth" title="Smooth"><span>~ Smooth</span></button>
+        </div>
+      </div>
+
+      <!-- AMENITIES PANEL -->
+      <div class="panel" id="panel-amenities">
+        <div class="tool-grid" id="amenities-tools">
+          <button class="tool-btn" data-tool="flowers"><span>🌸 Flowers</span></button>
+          <button class="tool-btn" data-tool="rocks"><span>🪨 Rocks</span></button>
+          <button class="tool-btn" data-tool="bench"><span>🪑 Bench</span></button>
+          <button class="tool-btn" data-tool="lamp"><span>💡 Lamp</span></button>
+        </div>
+      </div>
+
+      <!-- EMPLOYEES PANEL -->
+      <div class="panel" id="panel-employees">
+        <div class="tool-grid" id="employees-tools">
+          <button class="tool-btn" data-tool="groundskeeper"><span>👤 Groundskeeper</span></button>
+          <button class="tool-btn" data-tool="pro"><span>👤 Pro</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar right buttons -->
+    <div id="toolbar-right">
+      <button class="toolbar-action" id="btn-undo" title="Undo">↩</button>
+      <button class="toolbar-action" id="btn-info" title="Course Info">ℹ</button>
+      <button class="toolbar-action" id="btn-zoom-in" title="Zoom In">+</button>
+      <button class="toolbar-action" id="btn-zoom-out" title="Zoom Out">−</button>
+    </div>
+  </div>
+
+  <!-- Info overlay (hover tile info) -->
+  <div id="tile-info"></div>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

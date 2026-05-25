@@ -2,28 +2,29 @@
  * render/ThreeRenderer.ts — Rendu Three.js du terrain SimGolf
  *
  * Conforme au pipeline original de Terrain.dll :
+ *   - TextureTable3D pour l'indexation (DAT_100687f8)
+ *   - View mode DAT_10070a14 pour la rotation des textures
+ *   - Overlays blendés (FUN_100108f0)
+ *   - Quads de chemins (FUN_1000f7f0)
  *   - Pas d'éclairage OpenGL (glDisable(GL_LIGHTING))
- *   - Pas de normales 3D
- *   - Matériau basique : texture × vertex colors
- *   - Chaque passe de rendu = 1 triangle (ou quad complet)
- *
- * Sources : analyse rizin de Terrain.dll
- *   renderTile @ 0x100080e0 : glDisable(GL_LIGHTING), glNormal3f(0,1,0)
- *   render_single_tile @ 0x1000e6c0 : multi-pass avec textures pré-calculées
+ *   - Normales fixes (glNormal3f(0,1,0))
  */
 
 import * as THREE from 'three';
-import { IMapState } from '../terrain-lib/index.js';
+import { IMapState, TileType } from '../terrain-lib/index.js';
 import { buildParklandMesh, MeshGroup } from '../world/terrain.js';
+import { TextureTable3D } from './TextureTable3D.js';
 
 export class ThreeRenderer {
   private scene: THREE.Scene;
-  /** Caméra orthographique (publique pour les contrôles) */
   camera: THREE.OrthographicCamera;
   private renderer: THREE.WebGLRenderer;
   private meshes: THREE.Mesh[] = [];
-  private textureLoader: THREE.TextureLoader;
-  private textureCache = new Map<string, THREE.Texture>();
+  private textureTable: TextureTable3D;
+  private mapState: IMapState | null = null;
+
+  // Cache de textures chargées
+  private loadedTextures = new Map<string, THREE.Texture>();
 
   currentZoom = 1;
 
@@ -32,6 +33,7 @@ export class ThreeRenderer {
     this.scene.background = new THREE.Color(0x1a3a1a);
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 5000);
+    this.textureTable = new TextureTable3D('parkland');
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -41,18 +43,35 @@ export class ThreeRenderer {
     this.renderer.setClearColor(0x1a3a1a, 1);
     container.appendChild(this.renderer.domElement);
 
-    this.textureLoader = new THREE.TextureLoader();
-
     window.addEventListener('resize', () => this.resize());
     this.resize();
   }
 
+  setViewMode(mode: number): void {
+    if (this.mapState) {
+      this.mapState.viewMode = mode;
+      // En mode réflexion, la texture est sélectionnée dynamiquement
+      // via TextureTable3D.resolveDynamicTexture()
+      // On doit re-générer les maillages
+      this.rebuild();
+    }
+  }
+
   loadMap(mapState: IMapState): void {
-    const meshGroups = buildParklandMesh(mapState);
+    this.mapState = mapState;
+    this.textureTable.setTheme(mapState.theme === 0 ? 'parkland' : 'parkland');
+    this.rebuild();
+  }
+
+  /** Reconstruit tous les maillages après modification du terrain */
+  rebuild(): void {
+    if (!this.mapState) return;
+    this.clearMeshes();
+    const meshGroups = buildParklandMesh(this.mapState);
     this.buildMeshesFromGroups(meshGroups);
   }
 
-  private buildMeshesFromGroups(groups: MeshGroup[]): void {
+  private clearMeshes(): void {
     for (const mesh of this.meshes) {
       this.scene.remove(mesh);
       mesh.geometry.dispose();
@@ -63,25 +82,25 @@ export class ThreeRenderer {
       }
     }
     this.meshes = [];
+  }
 
+  private buildMeshesFromGroups(groups: MeshGroup[]): void {
     for (const group of groups) {
-      const hasTexture = group.texturePath !== null;
+      // Résoudre la texture via TextureTable3D
       let texture: THREE.Texture | null = null;
 
-      if (hasTexture && group.texturePath) {
-        const cached = this.textureCache.get(group.texturePath);
-        texture = cached ?? null;
-        if (!texture) {
-          texture = this.textureLoader.load(group.texturePath) as THREE.Texture;
-          texture.wrapS = THREE.ClampToEdgeWrapping;
-          texture.wrapT = THREE.ClampToEdgeWrapping;
-          texture.minFilter = THREE.LinearFilter;
-          texture.magFilter = THREE.LinearFilter;
-          this.textureCache.set(group.texturePath, texture);
+      if (group.textureKey) {
+        if (group.textureKey.startsWith('special:')) {
+          // Texture spéciale (chemin/dirt)
+          const slot = group.textureKey === 'special:path' ? 0x21 : 0x20;
+          texture = this.textureTable.getSpecialTexture(slot);
+        } else {
+          // Texture normale — charger depuis le cache ou la table
+          texture = this.getOrLoadTexture(group.textureKey);
         }
       }
 
-      if (hasTexture && texture) {
+      if (texture) {
         // Forcer vertex colors → blanc pour laisser la texture visible
         const colorAttr = group.geometry.getAttribute('color');
         if (colorAttr) {
@@ -90,7 +109,6 @@ export class ThreeRenderer {
           colorAttr.needsUpdate = true;
         }
 
-        // Pas d'éclairage : MeshBasicMaterial (comme glDisable(GL_LIGHTING))
         const material = new THREE.MeshBasicMaterial({
           map: texture,
           vertexColors: true,
@@ -111,13 +129,47 @@ export class ThreeRenderer {
           vertexColors: true,
           side: THREE.DoubleSide,
         });
-
         const mesh = new THREE.Mesh(group.geometry, material);
         mesh.frustumCulled = false;
         this.meshes.push(mesh);
         this.scene.add(mesh);
       }
     }
+  }
+
+  /**
+   * getOrLoadTexture — Charge ou retourne une texture depuis le cache.
+   * La textureKey a le format "type:variation:suffix".
+   * On utilise buildPath de TextureTable3D pour obtenir le fichier.
+   */
+  private getOrLoadTexture(textureKey: string): THREE.Texture | null {
+    if (this.loadedTextures.has(textureKey)) {
+      return this.loadedTextures.get(textureKey)!;
+    }
+
+    // Parser la clé : "type:variation:suffix"
+    const parts = textureKey.split(':');
+    if (parts.length !== 3) return null;
+    const type = parseInt(parts[0], 10) as TileType;
+    const variation = parseInt(parts[1], 10);
+    const suffix = parts[2];
+
+    // Construire le chemin via TextureTable3D
+    const path = this.textureTable.buildPath(type, variation, suffix);
+    if (!path) return null;
+
+    const tex = this.loadTexture(path);
+    this.loadedTextures.set(textureKey, tex);
+    return tex;
+  }
+
+  private loadTexture(path: string): THREE.Texture {
+    const tex = new THREE.TextureLoader().load(path);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    return tex;
   }
 
   private resize(): void {
@@ -129,16 +181,8 @@ export class ThreeRenderer {
   }
 
   dispose(): void {
-    for (const mesh of this.meshes) {
-      this.scene.remove(mesh);
-      mesh.geometry.dispose();
-      if (Array.isArray(mesh.material)) {
-        mesh.material.forEach(m => m.dispose());
-      } else {
-        mesh.material.dispose();
-      }
-    }
-    this.meshes = [];
+    this.clearMeshes();
     this.renderer.dispose();
+    this.loadedTextures.clear();
   }
 }
