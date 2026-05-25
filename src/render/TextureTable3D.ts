@@ -150,20 +150,19 @@ export class TextureTable3D {
    * @param slot 0x20 = dirt, 0x21 = path
    */
   getSpecialTexture(slot: number): THREE.Texture | null {
-    const keys: Record<number, string> = {
-      [SPECIAL_SLOT_DIRT]: 'special:dirt',
-      [SPECIAL_SLOT_PATH]: 'special:path',
+    const specials: Record<number, string> = {
+      [SPECIAL_SLOT_DIRT]: 'path',
+      [SPECIAL_SLOT_PATH]: 'pathx',
     };
-    const key = keys[slot];
-    if (!key) return null;
+    const name = specials[slot];
+    if (!name) return null;
+    const key = `special:${name}`;
 
-    // Les textures spéciales sont dans assets/textures/special/
     if (!this.cache.has(key)) {
-      const path = `/assets/textures/special/${slot === SPECIAL_SLOT_DIRT ? 'dirt' : 'path'}.webp`;
-      // On met une texture placeholder 1x1 blanche si le fichier n'existe pas
+      const path = `/assets/textures/special/${name}.webp`;
       const tex = this.loader.load(path);
-      tex.wrapS = THREE.RepeatWrapping;
-      tex.wrapT = THREE.RepeatWrapping;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
       this.cache.set(key, tex);

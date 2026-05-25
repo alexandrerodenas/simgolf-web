@@ -709,6 +709,13 @@ function buildGeometryForGroup(
   TILE_W: number, TILE_H: number, ELEV_SCALE: number,
 ): MeshGroup | null {
   const nTiles = group.tileIdx.length;
+  const isOverlay = group.isOverlay;
+
+  // Pour les overlays, déterminer le bord depuis le suffixe du textureKey
+  // textureKey = "type:variation:suffix" → suffix A/B/C/D → N/E/S/O
+  const suffix = group.textureKey.split(':')[2] ?? 'A';
+  const overlayEdge = isOverlay ? suffix : null; // 'A'=N, 'B'=E, 'C'=S, 'D'=W
+
   const vertsPerTile = 6;
   const totalVerts = nTiles * vertsPerTile;
 
@@ -733,6 +740,29 @@ function buildGeometryForGroup(
     vi++;
   };
 
+  const appendQuad = (
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx: number, cy: number, cz: number,
+    dx: number, dy: number, dz: number,
+    u0: number, v0: number,
+    u1: number, v1: number,
+  ) => {
+    const bvi = vi;
+    appendVertex(ax, ay, az, u0, v0);
+    appendVertex(bx, by, bz, u1, v0);
+    appendVertex(cx, cy, cz, u1, v1);
+    appendVertex(ax, ay, az, u0, v0);
+    appendVertex(cx, cy, cz, u1, v1);
+    appendVertex(dx, dy, dz, u0, v1);
+    for (let k = 0; k < 6; k++) {
+      const idx = (bvi + k) * 3;
+      colors[idx] = 1.0;
+      colors[idx + 1] = 1.0;
+      colors[idx + 2] = 1.0;
+    }
+  };
+
   for (const tileIdx of group.tileIdx) {
     const tile = tiles[tileIdx];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
@@ -742,33 +772,94 @@ function buildGeometryForGroup(
     const pBL = tileVertexPosition(tile.x, tile.y + 1, hBL);
     const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
 
-    const d1 = Math.abs(hTL - hBR);
-    const d2 = Math.abs(hTR - hBL);
-    const diagTLBR = d1 < d2;
+    if (isOverlay && overlayEdge) {
+      // ── Overlay : strip d'arête (1/3 de la tuile) ──
+      // Basé sur FUN_100108f0 : quads avec offset 16.67, UV 0→0.333→0.666→1
 
-    const baseVi = vi;
-
-    if (diagTLBR) {
-      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      switch (overlayEdge) {
+        case 'A': { // N — bande haute
+          // Interpoler entre TL-TR et un point à 1/3 vers le bas
+          const f = 1 / 3; // fraction du bord
+          const mpL = tileVertexPosition(tile.x, tile.y + f, hTL + hBL * f);
+          const mpR = tileVertexPosition(tile.x + 1, tile.y + f, hTR + hBR * f);
+          appendQuad(
+            pTL.x, pTL.y, pTL.z,
+            pTR.x, pTR.y, pTR.z,
+            mpR.x, mpR.y, mpR.z,
+            mpL.x, mpL.y, mpL.z,
+            0, 0, 1, 1,
+          );
+          break;
+        }
+        case 'C': { // S — bande basse
+          const f = 2 / 3;
+          const mpL = tileVertexPosition(tile.x, tile.y + f, hTL + hBL * f);
+          const mpR = tileVertexPosition(tile.x + 1, tile.y + f, hTR + hBR * f);
+          appendQuad(
+            mpL.x, mpL.y, mpL.z,
+            mpR.x, mpR.y, mpR.z,
+            pBR.x, pBR.y, pBR.z,
+            pBL.x, pBL.y, pBL.z,
+            0, 0, 1, 1,
+          );
+          break;
+        }
+        case 'B': { // E — bande droite
+          const f = 2 / 3;
+          const mpT = tileVertexPosition(tile.x + f, tile.y, hTL + hTR * f);
+          const mpB = tileVertexPosition(tile.x + f, tile.y + 1, hBL + hBR * f);
+          appendQuad(
+            mpT.x, mpT.y, mpT.z,
+            pTR.x, pTR.y, pTR.z,
+            pBR.x, pBR.y, pBR.z,
+            mpB.x, mpB.y, mpB.z,
+            0, 0, 1, 1,
+          );
+          break;
+        }
+        case 'D': { // W — bande gauche
+          const f = 1 / 3;
+          const mpT = tileVertexPosition(tile.x + f, tile.y, hTL + hTR * f);
+          const mpB = tileVertexPosition(tile.x + f, tile.y + 1, hBL + hBR * f);
+          appendQuad(
+            pTL.x, pTL.y, pTL.z,
+            mpT.x, mpT.y, mpT.z,
+            mpB.x, mpB.y, mpB.z,
+            pBL.x, pBL.y, pBL.z,
+            0, 0, 1, 1,
+          );
+          break;
+        }
+      }
     } else {
-      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-      appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
-      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-      appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
-      appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
-      appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
-    }
+      // ── Passe de base : tuile entière (2 triangles) ──
+      const d1 = Math.abs(hTL - hBR);
+      const d2 = Math.abs(hTR - hBL);
+      const diagTLBR = d1 < d2;
 
-    for (let k = 0; k < 6; k++) {
-      const idx = (baseVi + k) * 3;
-      colors[idx] = baseColor[0];
-      colors[idx + 1] = baseColor[1];
-      colors[idx + 2] = baseColor[2];
+      const baseVi = vi;
+      if (diagTLBR) {
+        appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+        appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      } else {
+        appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        appendVertex(pTR.x, pTR.y, pTR.z, 1, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        appendVertex(pTL.x, pTL.y, pTL.z, 0, 0);
+        appendVertex(pBR.x, pBR.y, pBR.z, 1, 1);
+        appendVertex(pBL.x, pBL.y, pBL.z, 0, 1);
+      }
+
+      for (let k = 0; k < 6; k++) {
+        const idx = (baseVi + k) * 3;
+        colors[idx] = baseColor[0];
+        colors[idx + 1] = baseColor[1];
+        colors[idx + 2] = baseColor[2];
+      }
     }
   }
 
