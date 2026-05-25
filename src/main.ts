@@ -3,6 +3,7 @@
  *
  * Projection dimétrique 2:1, éclairage lambertien comme le jeu original.
  * Normales 3D calculées depuis l'élévation.
+ * Bordures entre types de terrain (strips overlay avec orientation A-D).
  *
  * Contrôles : pan tactile (1 doigt) / souris, pincement (2 doigts) /
  * molette pour le zoom.
@@ -10,12 +11,12 @@
  * Raccourcis :
  *   R  →  Reset vue
  *   T  →  Vue de dessus
- *   D  →  Debug overlay (type + géométrie + variation)
+ *   D  →  Debug overlay
  */
 
 import * as THREE from 'three';
 import { generateVegetationGrid } from './world/terrain';
-import { getGeometryType, TileType } from './terrain-lib/index.js';
+import { getGeometryType } from './terrain-lib/index.js';
 import { ThreeRenderer } from './render/ThreeRenderer';
 import { gridCenter } from './render/camera';
 
@@ -31,47 +32,55 @@ document.body.appendChild(container);
 // ---- 3. Initialisation du renderer Three.js ----
 const renderer = new ThreeRenderer(container);
 
-// ---- 4. Génération du terrain (avec élévation) ----
+// ---- 4. Génération du terrain ----
 const mapState = generateVegetationGrid(MAP_W, MAP_H);
 renderer.loadMap(mapState);
 
-console.log(`[SimGolf] Carte générée : ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
-console.log(`[SimGolf] Éclairage : ambient=${mapState.lighting.ambient}, diffuse=${mapState.lighting.diffuse}, dir=${mapState.lighting.lightDir}`);
+console.log(`[SimGolf] Carte ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
 
-// ---- 5. Point focal de la caméra (point que la caméra regarde) ----
+// ---- 5. Caméra — configuration unique ----
+const cam = renderer.camera;
 const center = gridCenter(MAP_W, MAP_H);
-const focusPoint = new THREE.Vector3(center.x, 0, center.z);
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 15;
 
-/**
- * Recalcule la position de la caméra en fonction du focusPoint + zoom.
- * La caméra reste à distance fixe du focus avec le même angle dimétrique.
- */
-function updateCameraFromFocus(): void {
-  const cam = renderer.camera;
-  const dist = Math.max(MAP_W, MAP_H) * 50 / cam.zoom;
-  const AZIMUTH = Math.PI / 4;
-  const ELEVATION = Math.atan(1 / Math.sqrt(2));
-
-  cam.position.set(
-    focusPoint.x + dist * Math.cos(ELEVATION) * Math.sin(AZIMUTH),
-    focusPoint.y + dist * Math.sin(ELEVATION),
-    focusPoint.z + dist * Math.cos(ELEVATION) * Math.cos(AZIMUTH),
-  );
-  cam.lookAt(focusPoint);
-
-  // Ajuster frustum si zoom change
+/** Met à jour le frustum de la caméra en fonction de la taille de la fenêtre */
+function resizeFrustum(): void {
   const aspect = window.innerWidth / window.innerHeight;
-  const baseDim = Math.max(MAP_W, MAP_H) * 60;
-  cam.left = -(baseDim * aspect) / 2;
-  cam.right = (baseDim * aspect) / 2;
-  cam.top = baseDim / 2;
-  cam.bottom = -baseDim / 2;
-  cam.zoom = 1; // On utilise la distance (dist) pour le zoom, pas la propriété zoom
+  const dim = Math.max(MAP_W, MAP_H) * 55;
+  cam.left   = -(dim * aspect) / 2;
+  cam.right  =  (dim * aspect) / 2;
+  cam.top    =   dim / 2;
+  cam.bottom =  -dim / 2;
   cam.updateProjectionMatrix();
 }
 
-// Initialisation de la vue
-updateCameraFromFocus();
+/** Positionne la caméra en vue dimétrique pointant vers (tx, ty, tz) */
+function setDimetricView(tx: number, ty: number, tz: number): void {
+  const dist = Math.max(MAP_W, MAP_H) * 55;
+  const AZ = Math.PI / 4;
+  const EL = Math.atan(1 / Math.sqrt(2));
+  cam.up.set(0, 1, 0);
+  cam.position.set(
+    tx + dist * Math.cos(EL) * Math.sin(AZ),
+    ty + dist * Math.sin(EL),
+    tz + dist * Math.cos(EL) * Math.cos(AZ),
+  );
+  cam.lookAt(tx, ty, tz);
+  resizeFrustum();
+}
+
+// Centre de la carte
+const CENTER_X = center.x;
+const CENTER_Z = center.z;
+
+// Point que la caméra regarde
+const lookTarget = new THREE.Vector3(CENTER_X, 0, CENTER_Z);
+
+// Vue initiale
+setDimetricView(CENTER_X, 0, CENTER_Z);
+cam.zoom = 1;
+cam.updateProjectionMatrix();
 
 // ---- 6. Contrôles tactiles ----
 let lastTouchDist = 0;
@@ -96,15 +105,9 @@ container.addEventListener('touchstart', (e: TouchEvent) => {
 container.addEventListener('touchmove', (e: TouchEvent) => {
   e.preventDefault();
   if (e.touches.length === 1 && isPanning) {
-    const dx = (e.touches[0].clientX - lastTouchX);
-    const dy = (e.touches[0].clientY - lastTouchY);
-
-    // Facteur d'échelle : au zoom max, on panne plus lentement
-    const zoomFactor = renderer.currentZoom;
-    focusPoint.x -= dx * zoomFactor * 0.5;
-    focusPoint.z -= dy * zoomFactor * 0.5;
-    updateCameraFromFocus();
-
+    const dx = e.touches[0].clientX - lastTouchX;
+    const dy = e.touches[0].clientY - lastTouchY;
+    panScreen(dx, dy);
     lastTouchX = e.touches[0].clientX;
     lastTouchY = e.touches[0].clientY;
   } else if (e.touches.length === 2) {
@@ -112,23 +115,10 @@ container.addEventListener('touchmove', (e: TouchEvent) => {
     const dy = e.touches[0].clientY - e.touches[1].clientY;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (lastTouchDist > 0) {
-      const scale = lastTouchDist / dist;
-      renderer.currentZoom = Math.max(0.3, Math.min(20, renderer.currentZoom * scale));
-      updateCameraFromFocus();
+      cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom * lastTouchDist / dist));
+      cam.updateProjectionMatrix();
     }
     lastTouchDist = dist;
-    const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-    const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    if (lastTouchX !== 0) {
-      const dx2 = mx - lastTouchX;
-      const dy2 = my - lastTouchY;
-      const zoomFactor = renderer.currentZoom;
-      focusPoint.x -= dx2 * zoomFactor;
-      focusPoint.z -= dy2 * zoomFactor;
-      updateCameraFromFocus();
-    }
-    lastTouchX = mx;
-    lastTouchY = my;
   }
 }, { passive: false });
 
@@ -142,6 +132,22 @@ let mouseDown = false;
 let mouseX = 0;
 let mouseY = 0;
 
+/** Pan en écran : déplace le lookTarget dans le plan horizontal */
+function panScreen(dx: number, dy: number): void {
+  // Facteur : un pixel à zoom=1 correspond à ~2 unités monde
+  const f = 2 / cam.zoom;
+  // Déplacement dans le plan de la caméra (XZ avec Y=0)
+  // En dimétrique, X écran ≈ (X monde × 0.7 + Z monde × 0.7) 
+  // On projette simplement le déplacement dans le repère monde
+  // Droite écran → +X monde (approximatif)
+  // Haut écran → -Z monde (nord)
+  lookTarget.x -= dx * f;
+  lookTarget.z -= dy * f;
+  setDimetricView(lookTarget.x, 0, lookTarget.z);
+  cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom));
+  cam.updateProjectionMatrix();
+}
+
 container.addEventListener('mousedown', (e: MouseEvent) => {
   mouseDown = true;
   mouseX = e.clientX;
@@ -151,12 +157,7 @@ container.addEventListener('mousedown', (e: MouseEvent) => {
 
 container.addEventListener('mousemove', (e: MouseEvent) => {
   if (mouseDown) {
-    const dx = e.clientX - mouseX;
-    const dy = e.clientY - mouseY;
-    const zoomFactor = renderer.currentZoom;
-    focusPoint.x -= dx * zoomFactor * 2;
-    focusPoint.z -= dy * zoomFactor * 2;
-    updateCameraFromFocus();
+    panScreen(e.clientX - mouseX, e.clientY - mouseY);
     mouseX = e.clientX;
     mouseY = e.clientY;
   }
@@ -169,9 +170,9 @@ container.addEventListener('mouseup', () => {
 
 container.addEventListener('wheel', (e: WheelEvent) => {
   e.preventDefault();
-  const delta = e.deltaY > 0 ? 1.15 : 0.85;
-  renderer.currentZoom = Math.max(0.3, Math.min(20, renderer.currentZoom * delta));
-  updateCameraFromFocus();
+  const factor = e.deltaY > 0 ? 1.12 : 0.88;
+  cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom * factor));
+  cam.updateProjectionMatrix();
 }, { passive: false });
 
 container.style.cursor = 'grab';
@@ -180,26 +181,21 @@ container.style.cursor = 'grab';
 let debugMode = false;
 
 function resetView(): void {
-  renderer.currentZoom = 1;
-  focusPoint.set(center.x, 0, center.z);
-  updateCameraFromFocus();
+  lookTarget.set(CENTER_X, 0, CENTER_Z);
+  cam.zoom = 1;
+  setDimetricView(CENTER_X, 0, CENTER_Z);
+  cam.updateProjectionMatrix();
 }
 
 function topDownView(): void {
-  const cam = renderer.camera;
-  renderer.currentZoom = 1.5;
-  const dist = Math.max(MAP_W, MAP_H) * 50 / renderer.currentZoom;
-  cam.position.set(focusPoint.x, dist, focusPoint.z);
+  lookTarget.set(CENTER_X, 0, CENTER_Z);
+  cam.zoom = 2;
+  const dist = Math.max(MAP_W, MAP_H) * 60 / cam.zoom;
+  cam.position.set(CENTER_X, dist * 2, CENTER_Z);
   cam.up.set(0, 0, -1);
-  cam.lookAt(focusPoint);
-
-  const aspect = window.innerWidth / window.innerHeight;
-  const baseDim = Math.max(MAP_W, MAP_H) * 60;
-  cam.left = -(baseDim * aspect) / 2;
-  cam.right = (baseDim * aspect) / 2;
-  cam.top = baseDim / 2;
-  cam.bottom = -baseDim / 2;
-  cam.zoom = 1;
+  cam.lookAt(CENTER_X, 0, CENTER_Z);
+  resizeFrustum();
+  cam.zoom = 2;
   cam.updateProjectionMatrix();
 }
 
@@ -213,7 +209,10 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
   }
 });
 
-// ---- 9. Debug overlay (Canvas 2D) ----
+// Resize
+window.addEventListener('resize', resizeFrustum);
+
+// ---- 9. Debug overlay ----
 const debugCanvas = document.createElement('canvas');
 debugCanvas.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:998';
 const debugCtx = debugCanvas.getContext('2d')!;
@@ -233,46 +232,35 @@ function drawDebug(): void {
   debugCtx.textAlign = 'center';
   debugCtx.textBaseline = 'middle';
 
-  // Vue centrée approximative
-  const cx = debugCanvas.width / 2;
-  const cy = debugCanvas.height / 2;
-  const zf = renderer.currentZoom;
+  const cw = debugCanvas.width / 2;
+  const ch = debugCanvas.height / 2;
+  const z = cam.zoom;
 
   for (const tile of mapState.tiles) {
-    // Projection grille → écran (simplifiée)
-    const ox = cx + (tile.x - tile.y) * 32 / zf;
-    const oy = cy + (tile.x + tile.y) * 16 / zf;
+    const ox = cw + (tile.x - tile.y) * 32 / z;
+    const oy = ch + (tile.x + tile.y) * 16 / z;
     if (ox < -50 || ox > debugCanvas.width + 50 || oy < -50 || oy > debugCanvas.height + 50) continue;
 
     const geom = getGeometryType(tile.elevation);
-    const typeNames: Record<number, string> = {
-      0: 'R', 7: 'DR', 14: 'W', 15: 'B',
-    };
+    const typeNames: Record<number, string> = { 0: 'R', 7: 'DR', 14: 'W', 15: 'B' };
     const label = typeNames[tile.type] ?? String(tile.type);
     debugCtx.fillStyle = 'rgba(255,255,0,0.85)';
     debugCtx.fillText(`${label}${geom}${tile.variation}`, ox, oy);
   }
 }
 
-// ---- 10. Boucle d'animation ----
-function animate(): void {
-  renderer.render();
-  drawDebug();
-  requestAnimationFrame(animate);
-}
-
-// ---- 11. Info tuile survolée ----
+// ---- 10. Info tuile survolée ----
 const infoEl = document.createElement('div');
 infoEl.style.cssText = 'position:fixed;bottom:74px;left:8px;background:rgba(0,0,0,0.85);color:#ff0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre;display:none';
 document.body.appendChild(infoEl);
 
 /** Convertit coordonnées écran → tile grille (approximatif) */
 function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
-  const cx = debugCanvas.width / 2;
-  const cy = debugCanvas.height / 2;
-  const zf = renderer.currentZoom;
-  const rx = (sx - cx) / (32 / zf);
-  const ry = (sy - cy) / (16 / zf);
+  const cw = debugCanvas.width / 2;
+  const ch = debugCanvas.height / 2;
+  const z = cam.zoom;
+  const rx = (sx - cw) / (32 / z);
+  const ry = (sy - ch) / (16 / z);
   const tx = (rx + ry) / 2;
   const ty = (ry - rx) / 2;
   const x = Math.round(tx);
@@ -282,6 +270,7 @@ function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
 }
 
 container.addEventListener('mousemove', (e: MouseEvent) => {
+  if (mouseDown) return; // pas de hover pendant le pan
   const tile = screenToTile(e.clientX, e.clientY);
   if (tile) {
     const idx = tile.y * MAP_W + tile.x;
@@ -289,22 +278,26 @@ container.addEventListener('mousemove', (e: MouseEvent) => {
     const typeNames: Record<number, string> = {
       0: 'Rough', 1: 'Fairway', 2: 'PuttingGreen', 3: 'SandBunker',
       4: 'WaterShallow', 5: 'WaterMiddle', 6: 'WaterDeep', 7: 'DeepRough',
-      8: 'GrassySand', 9: 'GrassBunker', 10: 'Tee', 11: 'Cliff',
-      12: 'Path', 13: 'Building', 14: 'Woods', 15: 'Brush',
     };
-    const elType = typeNames[t.type] ?? `Type${t.type}`;
     infoEl.style.display = 'block';
-    infoEl.textContent = `Tile [${t.x},${t.y}]  ${elType}  elev:[${t.elevation.join(',')}]  var:${t.variation}  passes:${t.renderPasses.length}`;
+    infoEl.textContent = `Tile [${t.x},${t.y}]  ${typeNames[t.type] ?? t.type}  elev:[${t.elevation.join(',')}]  var:${t.variation}`;
   } else {
     infoEl.style.display = 'none';
   }
 });
 
+// ---- 11. Boucle d'animation ----
+function animate(): void {
+  renderer.render();
+  drawDebug();
+  requestAnimationFrame(animate);
+}
+
 // ---- 12. Lancement ----
 animate();
 
-// ---- 13. Info DOM ----
+// Info DOM
 const el = document.createElement('div');
 el.style.cssText = 'position:fixed;bottom:8px;left:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
-el.textContent = `SimGolf 3D — ${MAP_W}×${MAP_H}  |  Touch: pan + pinch zoom  |  R=réinit  T=dessus  D=debug`;
+el.textContent = `SimGolf 3D — ${MAP_W}×${MAP_H}  |  Pan glisser  Zoom molette/pincée  R=réinit  T=dessus  D=debug`;
 document.body.appendChild(el);
