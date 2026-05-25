@@ -18,7 +18,7 @@ import * as THREE from 'three';
 import { generateVegetationGrid } from './world/terrain';
 import { getGeometryType } from './terrain-lib/index.js';
 import { ThreeRenderer } from './render/ThreeRenderer';
-import { gridCenter } from './render/camera';
+import { gridCenter, resizeCamera } from './render/camera';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;
@@ -38,49 +38,28 @@ renderer.loadMap(mapState);
 
 console.log(`[SimGolf] Carte ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
 
-// ---- 5. Caméra — configuration unique ----
+// ---- 5. Caméra — configuration originale SimGolf ----
 const cam = renderer.camera;
 const center = gridCenter(MAP_W, MAP_H);
-const ZOOM_MIN = 0.3;
-const ZOOM_MAX = 15;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 8;
 
-/** Met à jour le frustum de la caméra en fonction de la taille de la fenêtre */
-function resizeFrustum(): void {
-  const aspect = window.innerWidth / window.innerHeight;
-  const dim = Math.max(MAP_W, MAP_H) * 55;
-  cam.left   = -(dim * aspect) / 2;
-  cam.right  =  (dim * aspect) / 2;
-  cam.top    =   dim / 2;
-  cam.bottom =  -dim / 2;
-  cam.updateProjectionMatrix();
-}
+// Caméra verticale : regard vers le bas, pas d'inclinaison d'élévation
+// Le rendu dimétrique 2:1 vient de la géométrie 128×64 des tuiles
+const cx = center.x;
+const cz = center.z;
+const camDist = Math.max(MAP_W, MAP_H) * 64; // hauteur verticale
 
-/** Positionne la caméra en vue dimétrique pointant vers (tx, ty, tz) */
-function setDimetricView(tx: number, ty: number, tz: number): void {
-  const dist = Math.max(MAP_W, MAP_H) * 55;
-  const AZ = Math.PI / 4;
-  const EL = Math.atan(1 / Math.sqrt(2));
-  cam.up.set(0, 1, 0);
-  cam.position.set(
-    tx + dist * Math.cos(EL) * Math.sin(AZ),
-    ty + dist * Math.sin(EL),
-    tz + dist * Math.cos(EL) * Math.cos(AZ),
-  );
-  cam.lookAt(tx, ty, tz);
-  resizeFrustum();
-}
-
-// Centre de la carte
-const CENTER_X = center.x;
-const CENTER_Z = center.z;
-
-// Point que la caméra regarde
-const lookTarget = new THREE.Vector3(CENTER_X, 0, CENTER_Z);
-
-// Vue initiale
-setDimetricView(CENTER_X, 0, CENTER_Z);
+cam.position.set(cx, camDist, cz);
+cam.up.set(0, 0, -1);
+cam.lookAt(cx, 0, cz);
 cam.zoom = 1;
-cam.updateProjectionMatrix();
+
+// Point que la caméra regarde (pour le centrage du panoramique)
+const lookTarget = new THREE.Vector3(cx, 0, cz);
+
+// Redimensionnement initial du frustum
+resizeCamera(cam, MAP_W, MAP_H, cam.zoom);
 
 // ---- 6. Contrôles tactiles ----
 let lastTouchDist = 0;
@@ -132,19 +111,16 @@ let mouseDown = false;
 let mouseX = 0;
 let mouseY = 0;
 
-/** Pan en écran : déplace le lookTarget dans le plan horizontal */
+/** Pan en écran : déplace la caméra et son point visé dans le plan horizontal */
 function panScreen(dx: number, dy: number): void {
-  // Facteur : un pixel à zoom=1 correspond à ~2 unités monde
-  const f = 2 / cam.zoom;
-  // Déplacement dans le plan de la caméra (XZ avec Y=0)
-  // En dimétrique, X écran ≈ (X monde × 0.7 + Z monde × 0.7) 
-  // On projette simplement le déplacement dans le repère monde
-  // Droite écran → +X monde (approximatif)
-  // Haut écran → -Z monde (nord)
-  lookTarget.x -= dx * f;
-  lookTarget.z -= dy * f;
-  setDimetricView(lookTarget.x, 0, lookTarget.z);
-  cam.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoom));
+  // Facteur original : PAN_SCALE / zoom (Pan_scale = 100.0 du jeu original)
+  const f = 100 / cam.zoom;
+  // En vue verticale, X écran → X monde (droite), Y écran → -Z monde (nord)
+  lookTarget.x -= dx * f * 0.01;
+  lookTarget.z -= dy * f * 0.01;
+  cam.position.x = lookTarget.x;
+  cam.position.z = lookTarget.z;
+  cam.lookAt(lookTarget.x, 0, lookTarget.z);
   cam.updateProjectionMatrix();
 }
 
@@ -181,22 +157,21 @@ container.style.cursor = 'grab';
 let debugMode = false;
 
 function resetView(): void {
-  lookTarget.set(CENTER_X, 0, CENTER_Z);
+  lookTarget.set(cx, 0, cz);
   cam.zoom = 1;
-  setDimetricView(CENTER_X, 0, CENTER_Z);
-  cam.updateProjectionMatrix();
+  cam.position.set(cx, camDist, cz);
+  cam.up.set(0, 0, -1);
+  cam.lookAt(cx, 0, cz);
+  resizeCamera(cam, MAP_W, MAP_H, cam.zoom);
 }
 
 function topDownView(): void {
-  lookTarget.set(CENTER_X, 0, CENTER_Z);
+  lookTarget.set(cx, 0, cz);
   cam.zoom = 2;
-  const dist = Math.max(MAP_W, MAP_H) * 60 / cam.zoom;
-  cam.position.set(CENTER_X, dist * 2, CENTER_Z);
+  cam.position.set(cx, camDist, cz);
   cam.up.set(0, 0, -1);
-  cam.lookAt(CENTER_X, 0, CENTER_Z);
-  resizeFrustum();
-  cam.zoom = 2;
-  cam.updateProjectionMatrix();
+  cam.lookAt(cx, 0, cz);
+  resizeCamera(cam, MAP_W, MAP_H, cam.zoom);
 }
 
 window.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -210,7 +185,7 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 });
 
 // Resize
-window.addEventListener('resize', resizeFrustum);
+window.addEventListener('resize', () => resizeCamera(cam, MAP_W, MAP_H, cam.zoom));
 
 // ---- 9. Debug overlay ----
 const debugCanvas = document.createElement('canvas');
