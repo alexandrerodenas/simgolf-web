@@ -22,6 +22,7 @@ import {
   Terrain,
   TERRAIN_FAMILY,
   MAX_VARIATION,
+  getGeometryType,
 } from '../terrain-lib/index.js';
 
 // ─── CONSTANTES DE GÉNÉRATION ───
@@ -569,8 +570,6 @@ export interface MeshGroup {
   geometry: THREE.BufferGeometry;
   textureKey: string | null;
   fallbackColor: [number, number, number];
-  /** Vrai si c'est une passe d'overlay (transparent, renderOrder=1) */
-  isOverlay?: boolean;
 }
 
 const palette: Record<number, [number, number, number]> = {
@@ -628,83 +627,136 @@ function computeTileNormal(
 /**
  * Construit des BufferGeometry Three.js groupés par texture.
  *
- * Chaque tuile a 1+ renderPasses. Chaque passe stocke ses 3 vertex
- * positions directement (vertexPositions: 9 floats).
+ * Chaque tuile = 2 triangles (quad complet).
+ * Les couleurs des vertex sont assombries aux jointures entre
+ * familles de terrain différentes, créant l'effet de bordure
+ * (copie du comportement original via glColorPointer).
  *
- * Plus de vertex pool global — chaque passe a ses propres coordonnées.
+ * Plus aucun strip overlay — tout se fait par per-vertex coloring.
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ── 1. Grouper les triangles par textureKey ──
-  interface TriGroup { positions: number[]; uvs: number[]; type: TileType; isOverlay: boolean }
-  const groups = new Map<string, TriGroup>();
+  // ── 1. Pré-calcul des facteurs d'ombre par coin de tuile ──
+  // coinDarkness[tileIdx][corner] = 0.0..1.0 (1.0 = pleine lumière)
+  // corner: 0=TL, 1=TR, 2=BR, 3=BL
+  const coinDarkness: number[][] = [];
 
   for (const tile of tiles) {
-    const passes = tile.renderPasses.length > 0 ? tile.renderPasses
-      : (() => {
-          // Fallback si pas de passes calculées
-          const [hTL, hTR, hBR, hBL] = tile.elevation;
-          const p = (x: number, y: number, z: number) => [(x - y) * 64, z * 32, (x + y) * 32];
-          const C = {
-            TL: p(tile.x, tile.y, hTL),
-            TR: p(tile.x + 1, tile.y, hTR),
-            BR: p(tile.x + 1, tile.y + 1, hBR),
-            BL: p(tile.x, tile.y + 1, hBL),
-          };
-          const d = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
-          const tri = (a: number[], b: number[], c: number[]) => [...a, ...b, ...c];
-          return [
-            { type: tile.type, variation: tile.variation, suffix: 'A',
-              vertexPositions: d ? tri(C.TL, C.TR, C.BL) as any : tri(C.TL, C.TR, C.BR) as any,
-              texCoordIndices: d ? [0,0,1,0,0,1] as any : [0,0,1,0,1,1] as any,
-              textureKey: `${tile.type}:${tile.variation}:A`, isOverlay: false } as IRenderPass,
-            { type: tile.type, variation: tile.variation, suffix: 'A',
-              vertexPositions: d ? tri(C.TR, C.BR, C.BL) as any : tri(C.TL, C.BR, C.BL) as any,
-              texCoordIndices: d ? [1,0,1,1,0,1] as any : [0,0,1,1,0,1] as any,
-              textureKey: `${tile.type}:${tile.variation}:A`, isOverlay: false } as IRenderPass,
-          ];
-        })();
+    const fam = (t: ITile | null) => t ? (TERRAIN_FAMILY[t.type] ?? 0) : -1;
+    const myFam = fam(tile);
 
-    for (const pass of passes) {
-      const key = pass.textureKey ?? `${pass.type}:${pass.variation}:${pass.suffix}`;
-      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: pass.type, isOverlay: pass.isOverlay ?? false });
+    // Voisins cardinaux
+    const nFam = fam(tile.neighborN);
+    const sFam = fam(tile.neighborS);
+    const eFam = fam(tile.neighborE);
+    const wFam = fam(tile.neighborW);
+
+    // Pour chaque coin, compter combien de voisins partageant ce coin
+    // sont d'une famille différente
+    const diff = (a: number, b: number) => (a !== b && a >= 0 && b >= 0) ? 1 : 0;
+
+    // TL : partagé avec voisin N et W
+    const tlDiff = diff(myFam, nFam) + diff(myFam, wFam);
+    // TR : partagé avec voisin N et E
+    const trDiff = diff(myFam, nFam) + diff(myFam, eFam);
+    // BR : partagé avec voisin S et E
+    const brDiff = diff(myFam, sFam) + diff(myFam, eFam);
+    // BL : partagé avec voisin S et W
+    const blDiff = diff(myFam, sFam) + diff(myFam, wFam);
+
+    // Facteur d'ombre : 0 diff → 1.0, 1 diff → 0.7, 2 diff → 0.5
+    const shade = (d: number) => d === 0 ? 1.0 : d === 1 ? 0.70 : 0.50;
+
+    coinDarkness.push([
+      shade(tlDiff),
+      shade(trDiff),
+      shade(brDiff),
+      shade(blDiff),
+    ]);
+  }
+
+  // ── 2. Grouper les triangles par textureKey ──
+  interface TriGroup { positions: number[]; uvs: number[]; colors: number[]; type: TileType }
+  const groups = new Map<string, TriGroup>();
+
+  for (let ti = 0; ti < tiles.length; ti++) {
+    const tile = tiles[ti];
+    const [hTL, hTR, hBR, hBL] = tile.elevation;
+    const family = TERRAIN_FAMILY[tile.type] ?? 0;
+    const geomSuffix = getGeometryType(tile.elevation);
+    const baseSuffix = family === 0 ? geomSuffix : 'A';
+
+    const p = (gx: number, gy: number, elev: number): [number, number, number] => [
+      (gx - gy) * 64, elev * 32, (gx + gy) * 32,
+    ];
+
+    const C = {
+      TL: p(tile.x,     tile.y,     hTL),
+      TR: p(tile.x + 1, tile.y,     hTR),
+      BR: p(tile.x + 1, tile.y + 1, hBR),
+      BL: p(tile.x,     tile.y + 1, hBL),
+    };
+    const dark = coinDarkness[ti];
+
+    // Helper : ajoute un triangle avec positions, UV et couleurs
+    const addTri = (
+      key: string,
+      v0: [number, number, number], dark0: number,
+      v1: [number, number, number], dark1: number,
+      v2: [number, number, number], dark2: number,
+      uvs: [number, number, number, number, number, number],
+    ) => {
+      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], colors: [], type: tile.type });
       const g = groups.get(key)!;
+      g.positions.push(...v0, ...v1, ...v2);
+      g.uvs.push(...uvs);
+      const pColor = palette[tile.type] ?? [0.227, 0.490, 0.227];
+      g.colors.push(
+        pColor[0] * dark0, pColor[1] * dark0, pColor[2] * dark0,
+        pColor[0] * dark1, pColor[1] * dark1, pColor[2] * dark1,
+        pColor[0] * dark2, pColor[1] * dark2, pColor[2] * dark2,
+      );
+    };
 
-      // Positions : 9 floats (x0,y0,z0, x1,y1,z1, x2,y2,z2)
-      g.positions.push(...pass.vertexPositions);
-      // UVs : 6 floats (U0,V0, U1,V1, U2,V2)
-      g.uvs.push(...pass.texCoordIndices);
+    // 2 triangles = quad complet, split par la diagonale la plus courte
+    const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
+    const key = `${tile.type}:${tile.variation}:${baseSuffix}`;
+
+    if (diagTLBR) {
+      // Tri0: TL-TR-BL
+      addTri(key, C.TL, dark[0], C.TR, dark[1], C.BL, dark[3],
+        [0, 0, 1, 0, 0, 1] as any);
+      // Tri1: TR-BR-BL
+      addTri(key, C.TR, dark[1], C.BR, dark[2], C.BL, dark[3],
+        [1, 0, 1, 1, 0, 1] as any);
+    } else {
+      // Tri0: TL-TR-BR
+      addTri(key, C.TL, dark[0], C.TR, dark[1], C.BR, dark[2],
+        [0, 0, 1, 0, 1, 1] as any);
+      // Tri1: TL-BR-BL
+      addTri(key, C.TL, dark[0], C.BR, dark[2], C.BL, dark[3],
+        [0, 0, 1, 1, 0, 1] as any);
     }
   }
 
-  // ── 2. Construire les MeshGroup ──
+  // ── 3. Construire les MeshGroup ──
   const results: MeshGroup[] = [];
   for (const [key, group] of groups) {
     const n = group.positions.length / 3;
     if (n === 0) continue;
 
-    const positions = new Float32Array(group.positions);
-    const uvs = new Float32Array(group.uvs);
-    const colors = new Float32Array(n * 3);
-    const normals = new Float32Array(n * 3);
-    const c = palette[group.type] ?? [0.227, 0.490, 0.227];
-
-    for (let i = 0; i < n; i++) {
-      colors[i * 3] = c[0]; colors[i * 3 + 1] = c[1]; colors[i * 3 + 2] = c[2];
-      normals[i * 3] = 0; normals[i * 3 + 1] = 1; normals[i * 3 + 2] = 0;
-    }
-
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(group.positions), 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(group.uvs), 2));
+    geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(group.colors), 3));
 
-    results.push({ geometry, textureKey: key, fallbackColor: c, isOverlay: group.isOverlay });
+    const c = palette[group.type] ?? [0.227, 0.490, 0.227];
+    results.push({ geometry, textureKey: key, fallbackColor: c });
   }
 
-  // ── 3. Chemins (post-process paths) ──
+  // ── 4. Chemins (post-process paths) ──
+  // (same as before, keep)
   const pv: number[] = [];
   for (const tile of tiles) {
     if (tile.pathN && tile.neighborN) addPathQuad(tile, 'N', pv);
@@ -715,7 +767,7 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   if (pv.length > 0) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pv), 3));
-    results.push({ geometry: geo, textureKey: 'special:path', fallbackColor: [0.6, 0.5, 0.4], isOverlay: true });
+    results.push({ geometry: geo, textureKey: 'special:path', fallbackColor: [0.6, 0.5, 0.4] });
   }
 
   return results;

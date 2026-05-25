@@ -101,26 +101,14 @@ export class ThreeRenderer {
       }
 
       if (texture) {
-        // Forcer vertex colors → blanc pour laisser la texture visible
-        const colorAttr = group.geometry.getAttribute('color');
-        if (colorAttr) {
-          const arr = colorAttr.array as Float32Array;
-          for (let i = 0; i < arr.length; i++) arr[i] = 1.0;
-          colorAttr.needsUpdate = true;
-        }
-
         const material = new THREE.MeshBasicMaterial({
           map: texture,
           vertexColors: true,
           side: THREE.DoubleSide,
-          transparent: group.isOverlay ?? false,
-          opacity: group.isOverlay ? 1.0 : 1.0,
-          depthWrite: !group.isOverlay,
         });
 
         const mesh = new THREE.Mesh(group.geometry, material);
         mesh.frustumCulled = false;
-        if (group.isOverlay) mesh.renderOrder = 1;
         this.meshes.push(mesh);
         this.scene.add(mesh);
       } else {

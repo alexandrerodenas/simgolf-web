@@ -796,16 +796,16 @@ export class Terrain {
       BL: gridToWorld(tile.x,     tile.y + 1, hBL),
     };
 
-    // Helper : construit 9 floats pour 3 vertex
+    // Helper
     const tri = (a: {x:number;y:number;z:number},
                   b: {x:number;y:number;z:number},
                   c: {x:number;y:number;z:number}): [number,number,number,number,number,number,number,number,number] =>
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
-    // Diagonale de split (2 triangles = quad complet)
+    // Diagonale la plus courte pour le split du quad
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
 
-    // Passe 0-1 : 2 triangles du quad
+    // Seulement 2 passes : les 2 triangles du quad
     if (diagTLBR) {
       passes.push(this._pass(tile, baseSuffix,
         tri(C.TL, C.TR, C.BL),
@@ -820,82 +820,6 @@ export class Terrain {
       passes.push(this._pass(tile, baseSuffix,
         tri(C.TL, C.BR, C.BL),
         [0, 0, 1, 1, 0, 1] as any));
-    }
-
-    // ── Strips de bordure ──
-    // Pour chaque côté avec un voisin de famille différente, on ajoute
-    // 2 triangles formant un strip à 1/3 du bord.
-    // Le strip utilise le type override (borderOverride) avec le suffixe
-    // directionnel A(N)-B(E)-C(S)-D(O).
-
-    interface StripDef {
-      dx: number; dy: number;              // déplacement vers le voisin
-      suffix: string;                       // A-D
-      // Les 4 coins du strip (edge corners + interior points)
-      e0: {x:number;y:number;z:number};    // edge corner 0
-      e1: {x:number;y:number;z:number};    // edge corner 1
-      i0: {x:number;y:number;z:number};    // interior 0 (à 1/3 du bord)
-      i1: {x:number;y:number;z:number};    // interior 1
-      // UV mapping: tri0=e0,e1,i0, tri1=e0,i0,i1
-      uvEdge: [number,number,number,number,number,number];
-      uvInt:  [number,number,number,number,number,number];
-    }
-
-    // Calcul d'un point intérieur à 1/3 du bord
-    const third = 1 / 3;
-    const at = (gx: number, gy: number, elev: number) => gridToWorld(gx, gy, elev);
-
-    const strips: StripDef[] = [
-      // NORD (A) : strip en haut, de TL à TR, vers l'intérieur
-      { dx: 0, dy: -1, suffix: 'A',
-        e0: C.TL, e1: C.TR,
-        i0: at(tile.x,       tile.y + third, hTL + (hBL - hTL) * third),
-        i1: at(tile.x + 1,   tile.y + third, hTR + (hBR - hTR) * third),
-        uvEdge: [0,0, 1,0, 1,third] as any,
-        uvInt:  [0,0, 1,third, 0,third] as any },
-      // EST (B) : strip à droite, de TR à BR
-      { dx: 1, dy: 0, suffix: 'B',
-        e0: C.TR, e1: C.BR,
-        i0: at(tile.x + 1 - third, tile.y,     hTR + (hTL - hTR) * third),
-        i1: at(tile.x + 1 - third, tile.y + 1, hBR + (hBL - hBR) * third),
-        uvEdge: [1,0, 1,1, 1-third,1] as any,
-        uvInt:  [1,0, 1-third,1, 1-third,0] as any },
-      // SUD (C) : strip en bas, de BR à BL
-      { dx: 0, dy: 1, suffix: 'C',
-        e0: C.BR, e1: C.BL,
-        i0: at(tile.x + 1, tile.y + 1 - third, hBR + (hTR - hBR) * third),
-        i1: at(tile.x,     tile.y + 1 - third, hBL + (hTL - hBL) * third),
-        uvEdge: [1,1, 0,1, 0,1-third] as any,
-        uvInt:  [1,1, 0,1-third, 1,1-third] as any },
-      // OUEST (D) : strip à gauche, de BL à TL
-      { dx: -1, dy: 0, suffix: 'D',
-        e0: C.BL, e1: C.TL,
-        i0: at(tile.x + third,     tile.y + 1, hBL + (hBR - hBL) * third),
-        i1: at(tile.x + third,     tile.y,     hTL + (hTR - hTL) * third),
-        uvEdge: [0,1, 0,0, third,0] as any,
-        uvInt:  [0,1, third,0, third,1] as any },
-    ];
-
-    for (const s of strips) {
-      const neighbor = this.tileAt(tile.x + s.dx, tile.y + s.dy);
-      if (!neighbor) continue;
-      if (!needsBorder(tile.type, neighbor.type)) continue;
-
-      const borderType = borderOverride(tile.type, neighbor.type) ?? tile.type;
-      if (!TYPES_WITH_BORDER.has(borderType)) continue;
-
-      const tileForBorder = { ...tile, type: borderType };
-      // Split quad e0-e1-i1-i0 le long de la diagonale e0-i1
-      // Tri0 : e0, e1, i1  (triangle supérieur)
-      passes.push(this._pass(
-        tileForBorder, s.suffix,
-        tri(s.e0, s.e1, s.i1),
-        s.uvEdge, 0, true));
-      // Tri1 : e0, i1, i0  (triangle inférieur, comble le quad)
-      passes.push(this._pass(
-        tileForBorder, s.suffix,
-        tri(s.e0, s.i1, s.i0),
-        s.uvInt, 0, true));
     }
 
     return passes;
