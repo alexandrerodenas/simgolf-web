@@ -770,101 +770,19 @@ export class Terrain {
     const geomSuffix = getGeometryType(tile.elevation);
     const baseSuffix = family === 0 ? geomSuffix : 'A';
 
-    // Stocker l'orientation dans les bits 0-1 de flags
-    // Orientation par défaut : N=0 (suffixe A)
-    // Voir FUN_1000e6c0 : tileFlags & 3
+    // Orientation dans bits 0-1
     const orient = tile.orientation & 3;
     tile.flags = (tile.flags & ~TileFlags.OrientMask) | orient;
 
-    // Pass 0 : fond
-    const suffix0 = baseSuffix;
+    // UNE SEULE PASSE : texture de base — pas d'overlays
     passes.push({
       type: tile.type,
       variation: tile.variation,
-      suffix: suffix0,
+      suffix: baseSuffix,
       subType: tile.subType,
-      textureKey: this.computeTextureKey(tile.type, tile.variation, suffix0),
+      textureKey: this.computeTextureKey(tile.type, tile.variation, baseSuffix),
       terrainTypeByte: tile.type,
     });
-
-    // Voisins
-    const neighborAt = (dx: number, dy: number): TileType | undefined => {
-      const n = this.tileAt(tile.x + dx, tile.y + dy);
-      return n ? n.type : undefined;
-    };
-
-    const overrideFor = (nType: TileType | undefined): TileType | undefined => {
-      const t = nType ?? TileType.Rough;
-      if (!needsBorder(tile.type, t)) return undefined;
-      const ov = borderOverride(tile.type, t);
-      const bt = ov ?? tile.type;
-      return TYPES_WITH_BORDER.has(bt) ? bt : undefined;
-    };
-
-    // ── Détection des bords par voisin cardinal ──
-    // Chaque voisin (N/E/S/O) peut produire un strip overlay.
-    // Les coins sont automatiquement gérés par l'overlap des strips adjacents.
-    // Orientation : N→A, E→B, S→C, O→D (convention du jeu original)
-    const EDGE_TO_SUFFIX: Record<string, string> = {
-      'N': 'A', 'E': 'B', 'S': 'C', 'W': 'D',
-    };
-
-    // On utilise les quadrants pour savoir quels voisins cardinaux existent
-    // Chaque quadrant touche 2 voisins cardinaux
-    const CARDINAL_NEIGHBORS: Record<string, { dx: number; dy: number; edge: string }> = {
-      '0,-1': { dx: 0, dy: -1, edge: 'N' },
-      '1,0':  { dx: 1, dy: 0,  edge: 'E' },
-      '0,1':  { dx: 0, dy: 1,  edge: 'S' },
-      '-1,0': { dx: -1, dy: 0, edge: 'W' },
-    };
-
-    // Pour chaque voisin cardinal, vérifier s'il y a besoin d'un strip
-    // Un même voisin peut être touché par 2 quadrants → on déduplique
-    const edgesNeeded = new Set<string>();
-    for (const [, info] of Object.entries(CARDINAL_NEIGHBORS)) {
-      const nType = neighborAt(info.dx, info.dy);
-      const ov = overrideFor(nType);
-      if (ov) edgesNeeded.add(info.edge);
-    }
-
-    // Pour chaque bord, déterminer les quadrants à couvrir
-    // N → quadrants 0 (NW) et 1 (NE)
-    // E → quadrants 1 (NE) et 3 (SE)
-    // S → quadrants 2 (SW) et 3 (SE)
-    // W → quadrants 0 (NW) et 2 (SW)
-    const EDGE_QUADS: Record<string, number[]> = {
-      'N': [0, 1],
-      'E': [1, 3],
-      'S': [2, 3],
-      'W': [0, 2],
-    };
-
-    // Map edge name → delta dx/dy
-    const EDGE_TO_DELTA: Record<string, { dx: number; dy: number }> = {
-      'N': { dx: 0, dy: -1 },
-      'E': { dx: 1, dy: 0 },
-      'S': { dx: 0, dy: 1 },
-      'W': { dx: -1, dy: 0 },
-    };
-
-    for (const edge of edgesNeeded) {
-      const suffix = EDGE_TO_SUFFIX[edge];
-      const delta = EDGE_TO_DELTA[edge];
-      const nType = neighborAt(delta.dx, delta.dy);
-      const ov = overrideFor(nType);
-      if (!ov) continue;
-
-      passes.push({
-        type: ov,
-        variation: 0,        // 0001 — première variation
-        suffix: suffix,      // N→A, E→B, S→C, W→D
-        subType: tile.subType,
-        quadrants: EDGE_QUADS[edge],
-        stripEdge: edge as 'N' | 'E' | 'S' | 'W',
-        textureKey: this.computeTextureKey(ov, 0, suffix),
-        terrainTypeByte: ov,
-      });
-    }
 
     return passes;
   }
