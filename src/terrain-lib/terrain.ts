@@ -764,6 +764,19 @@ export class Terrain {
    *   Pass 0 : Base (texture entière)
    *   Pass 1+ : Overlays de bordure par quadrant
    */
+  /**
+   * computeRenderPasses — Calcule les passes de rendu pour une tuile.
+   *
+   * Chaque passe = UN triangle (3 vertex indexés).
+   *   Pass 0 : 1er triangle du quad (diagonale la plus courte)
+   *   Pass 1 : 2e triangle du quad
+   *   Pass 2+ : overlays de bordure (à venir)
+   *
+   * Architecture originale : FUN_1000e6c0
+   *   tile + pass*0x38 + 0x48 = vertexIndex[0]
+   *   tile + pass*0x38 + 0x4c = vertexIndex[1]
+   *   tile + pass*0x38 + 0x50 = vertexIndex[2]
+   */
   private computeRenderPasses(tile: ITile): IRenderPass[] {
     const passes: IRenderPass[] = [];
     const family = TERRAIN_FAMILY[tile.type] ?? 0;
@@ -774,17 +787,54 @@ export class Terrain {
     const orient = tile.orientation & 3;
     tile.flags = (tile.flags & ~TileFlags.OrientMask) | orient;
 
-    // UNE SEULE PASSE : texture de base — pas d'overlays
-    passes.push({
-      type: tile.type,
-      variation: tile.variation,
-      suffix: baseSuffix,
-      subType: tile.subType,
-      textureKey: this.computeTextureKey(tile.type, tile.variation, baseSuffix),
-      terrainTypeByte: tile.type,
-    });
+    // Déterminer la diagonale de split
+    const diagTLBR = Math.abs(tile.elevation[0] - tile.elevation[2]) <
+                     Math.abs(tile.elevation[1] - tile.elevation[3]);
+
+    // Chaque tile a 4 sommets de coin dans le vertex pool
+    const baseIdx = (tile.y * this.width + tile.x) * 4;
+    const vTL = baseIdx, vTR = baseIdx + 1, vBR = baseIdx + 2, vBL = baseIdx + 3;
+
+    if (diagTLBR) {
+      // Triangle 0: TL-TR-BL
+      passes.push(this.makePass(tile, baseSuffix, [vTL, vTR, vBL],
+        [0, 0, 1, 0, 0, 1]));
+      // Triangle 1: TR-BR-BL
+      passes.push(this.makePass(tile, baseSuffix, [vTR, vBR, vBL],
+        [1, 0, 1, 1, 0, 1]));
+    } else {
+      // Triangle 0: TL-TR-BR
+      passes.push(this.makePass(tile, baseSuffix, [vTL, vTR, vBR],
+        [0, 0, 1, 0, 1, 1]));
+      // Triangle 1: TL-BR-BL
+      passes.push(this.makePass(tile, baseSuffix, [vTL, vBR, vBL],
+        [0, 0, 1, 1, 0, 1]));
+    }
+
+    // TODO: Pass 2+ — overlays de bordure (nécessite accès aux vertex voisins)
+    // Les voisins sont accessibles via tile.neighbor{N,S,E,W}
 
     return passes;
+  }
+
+  /**
+   * makePass — Construit une IRenderPass pour un triangle donné.
+   */
+  private makePass(
+    tile: ITile, suffix: string,
+    vertexIndices: [number, number, number],
+    uvs: [number, number, number, number, number, number],
+  ): IRenderPass {
+    return {
+      type: tile.type,
+      variation: tile.variation,
+      suffix,
+      subType: tile.subType,
+      textureKey: this.computeTextureKey(tile.type, tile.variation, suffix),
+      terrainTypeByte: tile.type,
+      vertexIndices,
+      texCoordIndices: uvs,
+    };
   }
 
   // ── Helpers ──
