@@ -15,7 +15,7 @@
 
 import * as THREE from 'three';
 import { IMapState, ILightConfig, CourseTheme } from '../terrain-lib/index.js';
-import { buildParklandMesh, MeshGroup } from '../world/terrain.js';
+import { buildParklandMesh, MeshGroup, buildOverlayGeometry, OverlayGroup } from '../world/terrain.js';
 
 // ─── Constantes d'éclairage du jeu original ───
 // Sources : Terrain.dll + ParklandLighting.txt
@@ -54,6 +54,7 @@ export class ThreeRenderer {
   camera: THREE.OrthographicCamera;
   private renderer: THREE.WebGLRenderer;
   private meshes: THREE.Mesh[] = [];
+  private overlayMeshes: THREE.Mesh[] = [];
   private textureLoader: THREE.TextureLoader;
   private textureCache = new Map<string, THREE.Texture>();
   private mapState: IMapState | null = null;
@@ -82,6 +83,8 @@ export class ThreeRenderer {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x1a3a1a, 1);
+    // Ordre de rendu pour que les overlays apparaissent au-dessus de la base
+    this.renderer.sortObjects = true;
     container.appendChild(this.renderer.domElement);
 
     // Texture loader
@@ -116,6 +119,10 @@ export class ThreeRenderer {
     // Construire les meshes groupés par texture
     const meshGroups = buildParklandMesh(mapState);
     this.buildMeshesFromGroups(meshGroups);
+
+    // Overlays de bordure (strips multi-passes)
+    const overlayGroups = buildOverlayGeometry(mapState);
+    this.buildOverlayMeshes(overlayGroups);
   }
 
   private applyThemeLighting(theme: CourseTheme): void {
@@ -209,6 +216,54 @@ export class ThreeRenderer {
     }
   }
 
+  /**
+   * Construit les meshes d'overlay (strips de bordure) avec alpha blending.
+   */
+  private buildOverlayMeshes(groups: OverlayGroup[]): void {
+    // Nettoyer les anciens overlays
+    for (const mesh of this.overlayMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(m => m.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+    }
+    this.overlayMeshes = [];
+
+    for (const group of groups) {
+      const cached = this.textureCache.get(group.texturePath);
+      let texture = cached ?? null;
+      if (!texture) {
+        texture = this.textureLoader.load(group.texturePath) as THREE.Texture;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        this.textureCache.set(group.texturePath, texture);
+      }
+
+      // Matériau transparent pour superposition sur la base
+      const material = new THREE.MeshLambertMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        emissive: 0x000000,
+      });
+
+      const mesh = new THREE.Mesh(group.geometry, material);
+      mesh.frustumCulled = false;
+      // RenderOrder plus élevé pour être au-dessus de la base
+      mesh.renderOrder = 1;
+
+      this.overlayMeshes.push(mesh);
+      this.scene.add(mesh);
+    }
+  }
+
   private resize(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
@@ -252,6 +307,18 @@ export class ThreeRenderer {
       }
     }
     this.meshes = [];
+
+    for (const mesh of this.overlayMeshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach(m => m.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+    }
+    this.overlayMeshes = [];
+
     this.renderer.dispose();
   }
 }

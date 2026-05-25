@@ -754,3 +754,198 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 
   return results;
 }
+
+// ─── OVERLAYS DE BORDURE (STRIPS 3D) ───
+
+/** Interface pour une géométrie d'overlay */
+export interface OverlayGroup {
+  geometry: THREE.BufferGeometry;
+  texturePath: string;
+}
+
+/**
+ * Calcule le vecteur normal sortant pour un bord de tuile,
+ * dans le plan XZ (perpendiculaire à l'arête).
+ */
+function edgeOutward(
+  edge: 'N' | 'E' | 'S' | 'W',
+): [number, number, number] {
+  // Les arêtes de la tuile (TL→TR, TR→BR, BR→BL, BL→TL)
+  // Vecteurs dans le plan XZ uniquement
+  switch (edge) {
+    case 'N': return [ 32, 0, -64]; // perpendiculaire à (64, 32)
+    case 'E': return [ 32, 0,  64]; // perpendiculaire à (-64, 32)
+    case 'S': return [-32, 0,  64]; // perpendiculaire à (-64, -32)
+    case 'W': return [-32, 0, -64]; // perpendiculaire à (64, -32)
+  }
+}
+
+/**
+ * Construit les géométries 3D pour les strips de bordure.
+ *
+ * Chaque strip est un quadrilatère (2 triangles) positionné
+ * le long de l'arête extérieure de la tuile, décalé vers
+ * l'extérieur pour recouvrir le joint entre 2 types de terrain.
+ *
+ * Regroupés par chemin de texture pour minimiser les draw calls.
+ */
+export function buildOverlayGeometry(
+  mapState: IMapState,
+): OverlayGroup[] {
+  const { width, height, tiles } = mapState;
+  const groups = new Map<string, {
+    positions: number[];
+    uvs: number[];
+  }>();
+
+  // Constantes de rendu (identique buildParklandMesh)
+  const TILE_W = 128;
+  const TILE_H = 64;
+  const ELEV_SCALE = 32;
+
+  // Largeurs des strips en unités 3D
+  const STRIP_NW = 8;   // BORDER_STRIP = 6px → ~8 en 3D
+  const STRIP_ES = 16;  // compS = 12px → ~16 en 3D
+
+  // Profondeur d'écrasement pour corriger les seams inter-quadrants
+  const OVERDRAW = 1;
+
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    const passes = tile.renderPasses;
+
+    // Pass 0 est la base, passes 1+ sont les overlays
+    for (let p = 1; p < passes.length; p++) {
+      const pass = passes[p];
+      if (!pass.stripEdge) continue; // skip si pas d'edge défini
+
+      const edge = pass.stripEdge;
+      const [hTL, hTR, hBR, hBL] = tile.elevation;
+
+      // Positions 3D des 4 coins de la tuile
+      const pTL = tileVertexPosition(tile.x,     tile.y,     hTL);
+      const pTR = tileVertexPosition(tile.x + 1, tile.y,     hTR);
+      const pBL = tileVertexPosition(tile.x,     tile.y + 1, hBL);
+      const pBR = tileVertexPosition(tile.x + 1, tile.y + 1, hBR);
+
+      // Vecteur normal sortant (non normalisé, plan XZ)
+      const outward = edgeOutward(edge);
+      const isES = (edge === 'E' || edge === 'S');
+      const depth = isES ? STRIP_ES : STRIP_NW;
+
+      // Normaliser le vecteur outward
+      const len = Math.sqrt(outward[0] * outward[0] + outward[2] * outward[2]);
+      const nx = outward[0] / len * depth;
+      const nz = outward[2] / len * depth;
+
+      // 4 sommets du strip en fonction de l'arête
+      let innerA, innerB: typeof pTL;
+      let outerA, outerB: typeof pTL;
+
+      switch (edge) {
+        case 'N':
+          innerA = pTL; innerB = pTR;
+          outerA = { x: pTL.x + nx, y: pTL.y, z: pTL.z + nz };
+          outerB = { x: pTR.x + nx, y: pTR.y, z: pTR.z + nz };
+          break;
+        case 'E':
+          innerA = pTR; innerB = pBR;
+          outerA = { x: pTR.x + nx, y: pTR.y, z: pTR.z + nz };
+          outerB = { x: pBR.x + nx, y: pBR.y, z: pBR.z + nz };
+          break;
+        case 'S':
+          innerA = pBR; innerB = pBL;
+          outerA = { x: pBR.x + nx, y: pBR.y, z: pBR.z + nz };
+          outerB = { x: pBL.x + nx, y: pBL.y, z: pBL.z + nz };
+          break;
+        case 'W':
+          innerA = pBL; innerB = pTL;
+          outerA = { x: pBL.x + nx, y: pBL.y, z: pBL.z + nz };
+          outerB = { x: pTL.x + nx, y: pTL.y, z: pTL.z + nz };
+          break;
+      }
+
+      // UV : pour la texture complète 64×64
+      // Le strip prend BORDER_STRIP pixels depuis l'arête de la texture
+      const texW = 64; // TEX_SIZE
+      const stripPx = isES ? 12 : 6; // BORDER_STRIP ou compS
+      const uvStrip = stripPx / texW; // fraction UV
+
+      // UV dépend de l'orientation : 
+      // N = haut de texture (v=0 à uvStrip)
+      // E = droite de texture (u=1-uvStrip à 1)
+      // S = bas de texture (v=1-uvStrip à 1)
+      // W = gauche de texture (u=0 à uvStrip)
+      let ua, va, ub, vb, uc, vc, ud, vd: number;
+
+      switch (edge) {
+        case 'N':
+          ua = 0; va = 0; ub = 1; vb = 0;
+          uc = 1; vc = uvStrip; ud = 0; vd = uvStrip;
+          break;
+        case 'E':
+          ua = 1; va = 0; ub = 1; vb = 1;
+          uc = 1 - uvStrip; vc = 1; ud = 1 - uvStrip; vd = 0;
+          break;
+        case 'S':
+          ua = 0; va = 1; ub = 1; vb = 1;
+          uc = 1; vc = 1 - uvStrip; ud = 0; vd = 1 - uvStrip;
+          break;
+        case 'W':
+          ua = 0; va = 0; ub = 0; vb = 1;
+          uc = uvStrip; vc = 1; ud = uvStrip; vd = 0;
+          break;
+      }
+
+      // Clé de groupement = chemin de texture (réutilise texturePathForPass)
+      const texPath = texturePathForPass(pass);
+      if (!texPath) continue;
+
+      if (!groups.has(texPath)) {
+        groups.set(texPath, { positions: [], uvs: [] });
+      }
+      const g = groups.get(texPath)!;
+
+      // 2 triangles = 6 sommets : innerA, innerB, outerA / innerB, outerB, outerA
+      const verts = [
+        innerA, innerB, outerA,
+        innerB, outerB, outerA,
+      ];
+      const uvVerts = [
+        [ua, va], [ub, vb], [ud, vd],
+        [ub, vb], [uc, vc], [ud, vd],
+      ];
+
+      for (let v = 0; v < 6; v++) {
+        g.positions.push(verts[v].x, verts[v].y, verts[v].z);
+        g.uvs.push(uvVerts[v][0], uvVerts[v][1]);
+      }
+    }
+  }
+
+  // Construire les BufferGeometry
+  const results: OverlayGroup[] = [];
+  for (const [path, data] of groups) {
+    const pos = new Float32Array(data.positions);
+    const uv = new Float32Array(data.uvs);
+    const nVerts = pos.length / 3;
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+
+    // Normales simplifiées (pointées vers le haut, l'éclairage est fait
+    // sur la géométrie de base)
+    const norms = new Float32Array(nVerts * 3);
+    for (let i = 0; i < nVerts; i++) {
+      norms[i * 3] = 0;
+      norms[i * 3 + 1] = 1;
+      norms[i * 3 + 2] = 0;
+    }
+    geometry.setAttribute('normal', new THREE.BufferAttribute(norms, 3));
+
+    results.push({ geometry, texturePath: path });
+  }
+
+  return results;
+}
