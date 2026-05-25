@@ -46,17 +46,16 @@ export interface IRenderPass {
   variation: number;
   suffix: string;
   subType?: number;
-  /** Vertex indices dans le pool global (3 sommets) — copie fidèle de tile+0x48 */
+  /** Vertex indices dans le pool global (3 sommets) */
   vertexIndices?: [number, number, number];
-  /** TexCoord indices (6 ints: U0,V0, U1,V1, U2,V2) — indexés dans DAT_10063ca0 */
+  /** TexCoord indices (6 ints: U0,V0, U1,V1, U2,V2) */
   texCoordIndices?: [number, number, number, number, number, number];
-  /** Clé de texture pré-calculée pour cette passe */
+  /** Clé de texture pré-calculée */
   textureKey?: string;
-  /** Terrain type byte (uint8, stocké à tile+pass*0x38+0x70) */
+  /** Terrain type byte */
   terrainTypeByte?: number;
-  /** Quadrants [0-3] à rendre (N=0/1, E=1/3, S=2/3, W=0/2) */
-  quadrants?: number[];
-  stripEdge?: 'N' | 'E' | 'S' | 'W';
+  /** Passe de bordure (rendue par-dessus la base) */
+  isOverlay?: boolean;
 }
 
 export enum TileFlags {

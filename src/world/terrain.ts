@@ -641,17 +641,25 @@ function computeTileNormal(
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ── 1. Vertex pool global (tous les coins de tuiles) ──
-  // Chaque tile a 4 sommets : TL(0), TR(1), BR(2), BL(3)
-  // Index = (y * width + x) * 4 + corner
+  // ── 1. Vertex pool global (8 sommets par tile) ──
+  // Chaque tile a 8 sommets :
+  //   0=TL, 1=TR, 2=BR, 3=BL  (coins)
+  //   4=N-mid, 5=E-mid, 6=S-mid, 7=W-mid  (à 1/3 du bord vers l'intérieur)
+  // Index = (y * width + x) * 8 + offset
   const vertexPool: Array<{ x: number; y: number; z: number }> = [];
   for (let i = 0; i < tiles.length; i++) {
     const tile = tiles[i];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
-    vertexPool.push(tileVertexPosition(tile.x, tile.y, hTL));          // TL
-    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y, hTR));      // TR
-    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y + 1, hBR));  // BR
-    vertexPool.push(tileVertexPosition(tile.x, tile.y + 1, hBL));      // BL
+    // Coins
+    vertexPool.push(tileVertexPosition(tile.x, tile.y, hTL));                   // 0: TL
+    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y, hTR));               // 1: TR
+    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y + 1, hBR));           // 2: BR
+    vertexPool.push(tileVertexPosition(tile.x, tile.y + 1, hBL));               // 3: BL
+    // Midpoints d'arête (à 1/3 du bord vers l'intérieur)
+    vertexPool.push(tileVertexPosition(tile.x + 0.5, tile.y, (hTL + hTR) / 2));       // 4: N
+    vertexPool.push(tileVertexPosition(tile.x + 1, tile.y + 0.5, (hTR + hBR) / 2));   // 5: E
+    vertexPool.push(tileVertexPosition(tile.x + 0.5, tile.y + 1, (hBL + hBR) / 2));   // 6: S
+    vertexPool.push(tileVertexPosition(tile.x, tile.y + 0.5, (hTL + hBL) / 2));       // 7: W
   }
 
   // ── 2. Grouper les triangles (passes) par textureKey ──
@@ -665,7 +673,7 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
 
     for (const pass of passes) {
       const key = pass.textureKey ?? `${pass.type}:${pass.variation}:${pass.suffix}`;
-      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: pass.type, isOverlay: false });
+      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: pass.type, isOverlay: pass.isOverlay ?? false });
       const g = groups.get(key)!;
 
       // 3 sommets depuis le vertex pool
@@ -703,7 +711,7 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
 
-    results.push({ geometry, textureKey: key, fallbackColor: c, isOverlay: false });
+    results.push({ geometry, textureKey: key, fallbackColor: c, isOverlay: group.isOverlay });
   }
 
   // ── 4. Chemins (post-process paths) ──
