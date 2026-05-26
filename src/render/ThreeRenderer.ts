@@ -89,14 +89,17 @@ export class ThreeRenderer {
   private buildMeshesFromGroups(groups: MeshGroup[]): void {
     for (const group of groups) {
       let texture: THREE.Texture | null = null;
+      let isEdgeOverlay = false;
 
       if (group.textureKey) {
         if (group.textureKey.startsWith('special:')) {
-          // Texture spéciale (chemin/dirt)
           const slot = group.textureKey === 'special:path' ? 0x21 : 0x20;
           texture = this.textureTable.getSpecialTexture(slot);
+        } else if (group.textureKey.startsWith('edge:')) {
+          // Edge strip overlay — charge la variante 0002
+          isEdgeOverlay = true;
+          texture = this.getOrLoadEdgeTexture(group.textureKey);
         } else if (group.textureKey.startsWith('trans:')) {
-          // Transition spritesheet — charge la texture spritesheet
           texture = this.getOrCreateTransitionTexture(group.textureKey);
         } else {
           // Texture normale pleine (type:variation:geomSuffix)
@@ -108,13 +111,16 @@ export class ThreeRenderer {
         const material = new THREE.MeshBasicMaterial({
           map: texture,
           side: THREE.DoubleSide,
+          transparent: isEdgeOverlay,
+          depthWrite: !isEdgeOverlay,
+          opacity: isEdgeOverlay ? 0.85 : 1.0,
         });
         const mesh = new THREE.Mesh(group.geometry, material);
         mesh.frustumCulled = false;
+        mesh.renderOrder = isEdgeOverlay ? 1 : 0;
         this.meshes.push(mesh);
         this.scene.add(mesh);
       } else {
-        // Pas de texture : fallback couleur unie
         const material = new THREE.MeshBasicMaterial({
           color: new THREE.Color(
             group.fallbackColor[0],
@@ -129,6 +135,34 @@ export class ThreeRenderer {
         this.scene.add(mesh);
       }
     }
+  }
+
+  /**
+   * getOrLoadEdgeTexture — Charge la variante 0002 pour un edge strip.
+   *
+   * Format textureKey : "edge:type:geomSuffix:dir"
+   *   - type       : TileType (numérique)
+   *   - geomSuffix : A/B/C/D/E (avec optionnel sous-type, ex: 1A)
+   *   - dir        : N/E/S/W (direction de l'arête)
+   */
+  private getOrLoadEdgeTexture(textureKey: string): THREE.Texture | null {
+    if (this.loadedTextures.has(textureKey)) {
+      return this.loadedTextures.get(textureKey)!;
+    }
+
+    const parts = textureKey.split(':');
+    if (parts.length < 3) return null;
+
+    const type = parseInt(parts[1], 10) as TileType;
+    const geomSuffix = parts[2];
+
+    // Variante 0002 (variation=1 en 0-indexé)
+    const path = this.textureTable.buildPath(type, 1, geomSuffix);
+    if (!path) return null;
+
+    const tex = this.loadTexture(path);
+    this.loadedTextures.set(textureKey, tex);
+    return tex;
   }
 
   /**

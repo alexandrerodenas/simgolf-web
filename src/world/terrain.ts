@@ -368,10 +368,17 @@ export function generateGridRough(
   const { tiles } = terrain;
 
   for (let i = 0; i < tiles.length; i++) {
+    const x = i % width;
+    const y = Math.floor(i / width);
     tiles[i].type = TileType.Rough;
     tiles[i].elevation = [0, 0, 0, 0];
     tiles[i].variation = 0;
     tiles[i].subType = 0;
+
+    // Bande de Fairway horizontale au milieu
+    if (y >= Math.floor(height / 2) - 1 && y <= Math.floor(height / 2) + 1) {
+      tiles[i].type = TileType.Fairway;
+    }
   }
 
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)

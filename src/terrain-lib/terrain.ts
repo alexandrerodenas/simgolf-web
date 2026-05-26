@@ -35,15 +35,6 @@ import {
   TRANSITION_FULL,
 } from './autotile.js';
 
-import {
-  Quadrant,
-  QUADRANTS,
-  getQuadrantVariation,
-  buildQuadrantTextureKey,
-  type SubTileGrid,
-  type QuadrantResult,
-} from './sub-tile.js';
-
 // ─── Configuration des textures par type ───
 // Nombre max de variations cosmétiques par type
 export const MAX_VARIATION: Partial<Record<TileType, number>> = {
@@ -122,7 +113,7 @@ function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: numb
 
 // ─────── Terrain class (Port du singleton original) ───────
 
-export class Terrain implements AutotileGrid, SubTileGrid {
+export class Terrain implements AutotileGrid {
   private static _instance: Terrain | null = null;
 
   // Grille de terrain
@@ -710,24 +701,35 @@ export class Terrain implements AutotileGrid, SubTileGrid {
     }
   }
 
-  // ── Rendu quadrant-based (sub-tiling) ──
+  // ── Rendu edge-strip overlay ──
+
+  /** Ratio UV pour le strip de 6px (textures 64×64) */
+  private static readonly EDGE_STRIP_UV = 6 / 64; // ≈ 0.09375
 
   /**
-   * computeRenderPasses — Calcule les passes de rendu via le sub-tiling
-   * quadrant-based (système original SimGolf Terrain.dll).
+   * computeRenderPasses — Génère les passes de rendu avec edge-strip overlay.
    *
-   * Chaque tuile logique est divisée en 4 quadrants (TL, TR, BL, BR).
-   * Chaque quadrant sélectionne sa texture (variation 0001-0009) selon
-   * un bitmask 3-bits basé sur ses 3 voisins immédiats.
+   * Chaque tuile est rendue en 2 couches :
+   *   1. Base : la tuile pleine (variation 0001)
+   *   2. Edge strips : pour chaque voisin de type différent, un strip de 6px
+   *      de la variante 0002 est superposé sur le côté de la jointure.
    *
-   * Génére 8 passes par tuile (4 quadrants × 2 triangles).
+   * Les strips sont rendus avec blending (isOverlay=true) pour se fondre
+   * sur la tuile de base.
    */
   private computeRenderPasses(tile: ITile): IRenderPass[] {
     const passes: IRenderPass[] = [];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
     const geomSuffix = getGeometryType(tile.elevation);
+    const S = Terrain.EDGE_STRIP_UV;
 
-    // Positions des 4 coins en 3D isométrique
+    // SandBunker : encoder le sous-type dans le suffixe
+    const sbSubType = tile.type === TileType.SandBunker
+      ? Math.max(1, tile.subType || 1)
+      : 0;
+    const geomWithSub = sbSubType > 0 ? `${sbSubType}${geomSuffix}` : geomSuffix;
+
+    // Helper: gridToWorld simplifié
     const p = (gx: number, gy: number, elev: number) => gridToWorld(gx, gy, elev);
 
     const TL = p(tile.x,     tile.y,     hTL);
@@ -735,123 +737,154 @@ export class Terrain implements AutotileGrid, SubTileGrid {
     const BR = p(tile.x + 1, tile.y + 1, hBR);
     const BL = p(tile.x,     tile.y + 1, hBL);
 
-    // Points milieux des arêtes
-    const mid = (a: typeof TL, b: typeof TL) => ({
-      x: (a.x + b.x) / 2,
-      y: (a.y + b.y) / 2,
-      z: (a.z + b.z) / 2,
-    });
-
-    const M_T = mid(TL, TR); // milieu arête nord
-    const M_R = mid(TR, BR); // milieu arête est
-    const M_B = mid(BL, BR); // milieu arête sud
-    const M_L = mid(TL, BL); // milieu arête ouest
-
-    // Centre de la tuile (intersection des diagonales)
-    const C = {
-      x: (TL.x + TR.x + BR.x + BL.x) / 4,
-      y: (TL.y + TR.y + BR.y + BL.y) / 4,
-      z: (TL.z + TR.z + BR.z + BL.z) / 4,
-    };
-
     // Helper : 3 vertex → tuple 9-floats
     const tri = (a: typeof TL, b: typeof TL, c: typeof TL):
       [number,number,number,number,number,number,number,number,number] =>
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
-    // Pour chaque quadrant, calcule la variation et génère 2 triangles
-    const baseType = tile.type;
-    for (const quadrant of QUADRANTS) {
-      const { variation, mask } = getQuadrantVariation(
-        this, tile.x, tile.y, quadrant, geomSuffix,
-      );
+    // Helper : interpole entre 2 valeurs 3D
+    const lerp = (
+      a: typeof TL, b: typeof TL, t: number
+    ): typeof TL => ({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      z: a.z + (b.z - a.z) * t,
+    });
 
-      // SandBunker : encoder le sous-type dans le suffixe (defaut 1 si 0)
-      // ex: subtype=1, geom='A' → suffix='1A' → SANDBUNKER1A0001.webp
-      const sbSubType = baseType === TileType.SandBunker
-        ? Math.max(1, tile.subType || 1)
-        : 0;
-      const effectiveSuffix = sbSubType > 0
-        ? `${sbSubType}${geomSuffix}`
-        : geomSuffix;
+    // ─── 1. Passe de base : tuile pleine 0001 ───
+    const baseKey = `${tile.type}:0:${geomWithSub}`;
+    const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
 
-      const textureKey = buildQuadrantTextureKey(
-        baseType, variation, effectiveSuffix, mask,
-      );
+    // 2 triangles = quad complet, split par la diagonale la plus courte
+    if (diagTLBR) {
+      passes.push({
+        type: tile.type, variation: 0, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TL, TR, BL),
+        texCoordIndices: [0, 0, 1, 0, 0, 1],
+        textureKey: baseKey, isOverlay: false,
+      });
+      passes.push({
+        type: tile.type, variation: 0, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TR, BR, BL),
+        texCoordIndices: [1, 0, 1, 1, 0, 1],
+        textureKey: baseKey, isOverlay: false,
+      });
+    } else {
+      passes.push({
+        type: tile.type, variation: 0, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TL, TR, BR),
+        texCoordIndices: [0, 0, 1, 0, 1, 1],
+        textureKey: baseKey, isOverlay: false,
+      });
+      passes.push({
+        type: tile.type, variation: 0, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TL, BR, BL),
+        texCoordIndices: [0, 0, 1, 1, 0, 1],
+        textureKey: baseKey, isOverlay: false,
+      });
+    }
 
-      // UVs : chaque quadrant couvre 1/4 de la texture pleine
-      let uvs: [number,number,number,number,number,number][];
+    // ─── 2. Edge strips overlay (variation 0002) ───
+    // Vérifie les 4 voisins, pose un strip de 6px côté jointure
+    const edgeKey = `edge:${tile.type}:${geomWithSub}`;
 
-      switch (quadrant) {
-        case Quadrant.TL:
-          uvs = [
-            [0,   0,   0.5, 0,   0.5, 0.5], // Tri1: TL, M_T, C
-            [0,   0,   0.5, 0.5, 0,   0.5], // Tri2: TL, C,   M_L
-          ];
-          break;
-        case Quadrant.TR:
-          uvs = [
-            [1,   0,   0.5, 0.5, 0.5, 0  ], // Tri1: TR, C,   M_T
-            [1,   0,   1,   0.5, 0.5, 0.5], // Tri2: TR, M_R, C
-          ];
-          break;
-        case Quadrant.BL:
-          uvs = [
-            [0,   1,   0,   0.5, 0.5, 0.5], // Tri1: BL, M_L, C
-            [0,   1,   0.5, 0.5, 0.5, 1  ], // Tri2: BL, C,   M_B
-          ];
-          break;
-        case Quadrant.BR:
-          uvs = [
-            [1,   1,   0.5, 0.5, 1,   0.5], // Tri1: BR, C,   M_R
-            [1,   1,   0.5, 1,   0.5, 0.5], // Tri2: BR, M_B, C
-          ];
-          break;
-      }
+    // Voisins avec leur type, pour chaque direction
+    type EdgeDir = 'N' | 'E' | 'S' | 'W';
+    const edges: Array<{
+      dir: EdgeDir;
+      neighbor: ITile | null;
+      // Les 2 coins de l'arête (outer) et les 2 coins intérieurs
+      a: typeof TL; b: typeof TL;
+      innerA: typeof TL; innerB: typeof TL;
+      uv: [number,number,number,number,number,number][];
+    }> = [];
 
-      // Positions des 2 triangles
-      let positions: [typeof TL, typeof TL, typeof TL][];
+    // Nord
+    const nN = tile.neighborN;
+    if (nN && nN.type !== tile.type) {
+      const iTL = lerp(TL, BL, S);  // S vers le sud
+      const iTR = lerp(TR, BR, S);
+      edges.push({
+        dir: 'N', neighbor: nN, a: TL, b: TR, innerA: iTL, innerB: iTR,
+        uv: [
+          [0, 0, 1, 0, 1, S],   // Tri1: TL, TR, iTR
+          [0, 0, 1, S, 0, S],   // Tri2: TL, iTR, iTL
+        ],
+      });
+    }
 
-      switch (quadrant) {
-        case Quadrant.TL:
-          positions = [
-            [TL, M_T, C],
-            [TL, C,   M_L],
-          ];
-          break;
-        case Quadrant.TR:
-          positions = [
-            [TR, C,   M_T],
-            [TR, M_R, C],
-          ];
-          break;
-        case Quadrant.BL:
-          positions = [
-            [BL, M_L, C],
-            [BL, C,   M_B],
-          ];
-          break;
-        case Quadrant.BR:
-          positions = [
-            [BR, C,   M_R],
-            [BR, M_B, C],
-          ];
-          break;
-      }
+    // Est
+    const nE = tile.neighborE;
+    if (nE && nE.type !== tile.type) {
+      const iTR = lerp(TR, TL, S);  // S vers l'ouest
+      const iBR = lerp(BR, BL, S);
+      edges.push({
+        dir: 'E', neighbor: nE, a: TR, b: BR, innerA: iTR, innerB: iBR,
+        uv: [
+          [1, 0, 1, 1, 1-S, 1],  // Tri1: TR, BR, iBR
+          [1, 0, 1-S, 1, 1-S, 0], // Tri2: TR, iBR, iTR
+        ],
+      });
+    }
 
-      for (let i = 0; i < 2; i++) {
-        passes.push({
-          type: baseType,
-          variation: variation - 1, // 0-indexed pour compat texture loading
-          suffix: effectiveSuffix,
-          subType: tile.subType,
-          mask,
-          vertexPositions: tri(positions[i][0], positions[i][1], positions[i][2]),
-          texCoordIndices: uvs[i],
-          textureKey,
-          isOverlay: variation !== 1,
-        });
-      }
+    // Sud
+    const nS = tile.neighborS;
+    if (nS && nS.type !== tile.type) {
+      const iBL = lerp(BL, TL, S);  // S vers le nord
+      const iBR = lerp(BR, TR, S);
+      edges.push({
+        dir: 'S', neighbor: nS, a: BR, b: BL, innerA: iBR, innerB: iBL,
+        uv: [
+          [1, 1, 0, 1, 0, 1-S],  // Tri1: BR, BL, iBL
+          [1, 1, 0, 1-S, 1, 1-S], // Tri2: BR, iBL, iBR
+        ],
+      });
+    }
+
+    // Ouest
+    const nW = tile.neighborW;
+    if (nW && nW.type !== tile.type) {
+      const iTL = lerp(TL, TR, S);  // S vers l'est
+      const iBL = lerp(BL, BR, S);
+      edges.push({
+        dir: 'W', neighbor: nW, a: BL, b: TL, innerA: iBL, innerB: iTL,
+        uv: [
+          [0, 1, 0, 0, S, 0],    // Tri1: BL, TL, iTL
+          [0, 1, S, 0, S, 1],    // Tri2: BL, iTL, iBL
+        ],
+      });
+    }
+
+    for (const edge of edges) {
+      const key = `${edgeKey}:${edge.dir}`;
+      // Tri1: a → b → innerB
+      passes.push({
+        type: tile.type,
+        variation: 1,  // 0-indexed → 0002
+        suffix: geomWithSub,
+        subType: tile.subType,
+        mask: 0,
+        vertexPositions: tri(edge.a, edge.b, edge.innerB),
+        texCoordIndices: edge.uv[0],
+        textureKey: key,
+        isOverlay: true,
+      });
+      // Tri2: a → innerB → innerA
+      passes.push({
+        type: tile.type,
+        variation: 1,
+        suffix: geomWithSub,
+        subType: tile.subType,
+        mask: 0,
+        vertexPositions: tri(edge.a, edge.innerB, edge.innerA),
+        texCoordIndices: edge.uv[1],
+        textureKey: key,
+        isOverlay: true,
+      });
     }
 
     return passes;
