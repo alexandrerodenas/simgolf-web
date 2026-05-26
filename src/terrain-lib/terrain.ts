@@ -35,6 +35,15 @@ import {
   TRANSITION_FULL,
 } from './autotile.js';
 
+import {
+  Quadrant,
+  QUADRANTS,
+  getQuadrantVariation,
+  buildQuadrantTextureKey,
+  type SubTileGrid,
+  type QuadrantResult,
+} from './sub-tile.js';
+
 // ─── Configuration des textures par type ───
 // Nombre max de variations cosmétiques par type
 export const MAX_VARIATION: Partial<Record<TileType, number>> = {
@@ -113,7 +122,7 @@ function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: numb
 
 // ─────── Terrain class (Port du singleton original) ───────
 
-export class Terrain implements AutotileGrid {
+export class Terrain implements AutotileGrid, SubTileGrid {
   private static _instance: Terrain | null = null;
 
   // Grille de terrain
@@ -701,141 +710,143 @@ export class Terrain implements AutotileGrid {
     }
   }
 
-  // ── Rendu vertex-based (autotile) ──
+  // ── Rendu quadrant-based (sub-tiling) ──
 
   /**
-   * computeRenderPasses — Calcule les passes de rendu via l'autotiling
-   * vertex-based (TerrainTransitionManager).
+   * computeRenderPasses — Calcule les passes de rendu via le sub-tiling
+   * quadrant-based (système original SimGolf Terrain.dll).
    *
-   * Remplace l'ancien système de bordures par arêtes qui produisait
-   * des transitions en bloc en isométrique.
+   * Chaque tuile logique est divisée en 4 quadrants (TL, TR, BL, BR).
+   * Chaque quadrant sélectionne sa texture (variation 0001-0009) selon
+   * un bitmask 3-bits basé sur ses 3 voisins immédiats.
    *
-   * Chaque passe correspond à une couche de priorité avec un mask 4-bit
-   * qui détermine la frame de transition à afficher.
+   * Génére 8 passes par tuile (4 quadrants × 2 triangles).
    */
   private computeRenderPasses(tile: ITile): IRenderPass[] {
     const passes: IRenderPass[] = [];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
+    const geomSuffix = getGeometryType(tile.elevation);
 
-    // Positions des 4 coins en 3D
+    // Positions des 4 coins en 3D isométrique
+    const p = (gx: number, gy: number, elev: number) => gridToWorld(gx, gy, elev);
+
+    const TL = p(tile.x,     tile.y,     hTL);
+    const TR = p(tile.x + 1, tile.y,     hTR);
+    const BR = p(tile.x + 1, tile.y + 1, hBR);
+    const BL = p(tile.x,     tile.y + 1, hBL);
+
+    // Points milieux des arêtes
+    const mid = (a: typeof TL, b: typeof TL) => ({
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      z: (a.z + b.z) / 2,
+    });
+
+    const M_T = mid(TL, TR); // milieu arête nord
+    const M_R = mid(TR, BR); // milieu arête est
+    const M_B = mid(BL, BR); // milieu arête sud
+    const M_L = mid(TL, BL); // milieu arête ouest
+
+    // Centre de la tuile (intersection des diagonales)
     const C = {
-      TL: gridToWorld(tile.x,     tile.y,     hTL),
-      TR: gridToWorld(tile.x + 1, tile.y,     hTR),
-      BR: gridToWorld(tile.x + 1, tile.y + 1, hBR),
-      BL: gridToWorld(tile.x,     tile.y + 1, hBL),
+      x: (TL.x + TR.x + BR.x + BL.x) / 4,
+      y: (TL.y + TR.y + BR.y + BL.y) / 4,
+      z: (TL.z + TR.z + BR.z + BL.z) / 4,
     };
 
-    // Helper: crée les 3 vertex d'un triangle
-    const tri = (a: typeof C.TL, b: typeof C.TL, c: typeof C.TL):
+    // Helper : 3 vertex → tuple 9-floats
+    const tri = (a: typeof TL, b: typeof TL, c: typeof TL):
       [number,number,number,number,number,number,number,number,number] =>
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
-    // Diagonale la plus courte pour éviter l'artefact de split
-    const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
+    // Pour chaque quadrant, calcule la variation et génère 2 triangles
+    for (const quadrant of QUADRANTS) {
+      const { variation, mask } = getQuadrantVariation(
+        this, tile.x, tile.y, quadrant, geomSuffix,
+      );
 
-    // Récupère les passes d'autotiling depuis le TransitionManager
-    const autoPasses = this.autotile.getTileRenderPasses(tile.y, tile.x);
+      const baseType = tile.type;
+      const textureKey = buildQuadrantTextureKey(
+        baseType, variation, geomSuffix, mask,
+      );
 
-    for (const auto of autoPasses) {
-      const { priority, mask } = auto;
-      const variation = tile.variation;
+      // UVs : chaque quadrant couvre 1/4 de la texture pleine
+      let uvs: [number,number,number,number,number,number][];
 
-      // Résout le type de terrain à afficher pour cette priorité
-      const displayType = this.resolveDisplayType(tile.type, priority);
+      switch (quadrant) {
+        case Quadrant.TL:
+          uvs = [
+            [0,   0,   0.5, 0,   0.5, 0.5], // Tri1: TL, M_T, C
+            [0,   0,   0.5, 0.5, 0,   0.5], // Tri2: TL, C,   M_L
+          ];
+          break;
+        case Quadrant.TR:
+          uvs = [
+            [1,   0,   0.5, 0.5, 0.5, 0  ], // Tri1: TR, C,   M_T
+            [1,   0,   1,   0.5, 0.5, 0.5], // Tri2: TR, M_R, C
+          ];
+          break;
+        case Quadrant.BL:
+          uvs = [
+            [0,   1,   0,   0.5, 0.5, 0.5], // Tri1: BL, M_L, C
+            [0,   1,   0.5, 0.5, 0.5, 1  ], // Tri2: BL, C,   M_B
+          ];
+          break;
+        case Quadrant.BR:
+          uvs = [
+            [1,   1,   0.5, 0.5, 1,   0.5], // Tri1: BR, C,   M_R
+            [1,   1,   0.5, 1,   0.5, 0.5], // Tri2: BR, M_B, C
+          ];
+          break;
+      }
 
-      if (mask === TRANSITION_FULL) {
-        // Pleine tuile — 2 triangles formant le quad
-        const texUvs: [number,number,number,number,number,number] = diagTLBR
-          ? [0, 0, 1, 0, 0, 1]
-          : [0, 0, 1, 0, 1, 1];
+      // Positions des 2 triangles
+      let positions: [typeof TL, typeof TL, typeof TL][];
 
-        passes.push(this._pass(
-          displayType, variation,
-          diagTLBR ? tri(C.TL, C.TR, C.BL) : tri(C.TL, C.TR, C.BR),
-          texUvs, mask
-        ));
+      switch (quadrant) {
+        case Quadrant.TL:
+          positions = [
+            [TL, M_T, C],
+            [TL, C,   M_L],
+          ];
+          break;
+        case Quadrant.TR:
+          positions = [
+            [TR, C,   M_T],
+            [TR, M_R, C],
+          ];
+          break;
+        case Quadrant.BL:
+          positions = [
+            [BL, M_L, C],
+            [BL, C,   M_B],
+          ];
+          break;
+        case Quadrant.BR:
+          positions = [
+            [BR, C,   M_R],
+            [BR, M_B, C],
+          ];
+          break;
+      }
 
-        passes.push(this._pass(
-          displayType, variation,
-          diagTLBR ? tri(C.TR, C.BR, C.BL) : tri(C.TL, C.BR, C.BL),
-          diagTLBR ? [1, 0, 1, 1, 0, 1] : [0, 0, 1, 1, 0, 1] as any,
-          mask
-        ));
-      } else {
-        // Transition partielle — un seul quad avec UV mapping du mask
-        // On utilise un quad complet découpé par le fragment shader
-        // selon le mask 4-bit, OU on utilise une texture pré-découpée
-        // selon la spritesheet 4×4.
-        passes.push(this._pass(
-          displayType, variation,
-          tri(C.TL, C.TR, C.BL),
-          [0, 0, 1, 0, 0, 1] as any,
-          mask
-        ));
-        passes.push(this._pass(
-          displayType, variation,
-          tri(C.TR, C.BR, C.BL),
-          [1, 0, 1, 1, 0, 1] as any,
-          mask
-        ));
+      for (let i = 0; i < 2; i++) {
+        passes.push({
+          type: baseType,
+          variation: variation - 1, // 0-indexed pour compat texture loading
+          suffix: geomSuffix,
+          subType: quadrant,
+          mask,
+          vertexPositions: tri(positions[i][0], positions[i][1], positions[i][2]),
+          texCoordIndices: uvs[i],
+          textureKey,
+          isOverlay: variation !== 1,
+        });
       }
     }
 
     return passes;
   }
-
-  /**
-   * resolveDisplayType — Détermine le type de texture à utiliser
-   * pour une couche de priorité donnée.
-   */
-  private resolveDisplayType(tileType: TileType, priority: number): TileType {
-    const tilePri = getTerrainPriority(tileType);
-    if (tilePri === priority) return tileType;
-
-    // Mapping priorité → type par défaut
-    switch (priority) {
-      case 0: return TileType.WaterDeep;
-      case 1: return TileType.SandBunker;
-      case 2: return TileType.DeepRough;
-      case 3: return TileType.Rough;
-      case 4: return TileType.Fairway;
-      case 5: return TileType.PuttingGreen;
-      default: return tileType;
-    }
-  }
-
-  /**
-   * _pass — Construit une IRenderPass avec texture de transition.
-   */
-  private _pass(
-    type: TileType, variation: number,
-    positions: [number,number,number,number,number,number,number,number,number],
-    uvs: [number,number,number,number,number,number],
-    mask: TransitionMask,
-  ): IRenderPass {
-    const { row, col } = maskToSpriteCoords(mask);
-    return {
-      type,
-      variation,
-      mask,
-      suffix: `${type}_r${row}_c${col}`,
-      subType: 0,
-      vertexPositions: positions,
-      texCoordIndices: uvs,
-      textureKey: this.computeTextureKey(type, variation, mask),
-      isOverlay: mask !== TRANSITION_FULL,
-    };
-  }
-
-  /**
-   * computeTextureKey — Génère la clé pour la texture de transition.
-   * Format: "trans_{type}_r{row}_c{col}_v{var}"
-   */
-  private computeTextureKey(type: TileType, variation: number, mask: TransitionMask): string {
-    const { row, col } = maskToSpriteCoords(mask);
-    return `trans_${type}_r${row}_c${col}_v${variation}`;
-  }
-
 
   private createTile(x: number, y: number, type: TileType, elevation: [number, number, number, number]): ITile {
     return {

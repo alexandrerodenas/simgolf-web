@@ -17,15 +17,10 @@ import {
   TileType,
   CourseTheme,
   ITile,
-  IRenderPass,
   IMapState,
   Terrain,
   MAX_VARIATION,
   getGeometryType,
-  getTerrainPriority,
-  maskToSpriteCoords,
-  type TransitionMask,
-  TRANSITION_FULL,
 } from '../terrain-lib/index.js';
 
 // ─── CONSTANTES DE GÉNÉRATION ───
@@ -576,36 +571,36 @@ function texturePrefixForType(type: TileType, subType?: number): string {
 
 /**
  * Retourne le chemin de la texture WebP pour une passe de rendu
- * qui est une tuile PLEINE (mask 15 → texture de base existante).
+ * qui est une tuile PLEINE (texture de base existante).
+ * @deprecated Les passes utilisent maintenant textureKey directement
  */
-function texturePathForPass(pass: IRenderPass): string | null {
-  const folder = textureFolderForType(pass.type);
-  const prefix = texturePrefixForType(pass.type, pass.subType);
-  const var4 = String(pass.variation + 1).padStart(4, '0');
-  const suffix = pass.suffix || 'A';
-  return `/assets/textures/parkland/${folder}/${prefix}${suffix}${var4}.webp`;
+function texturePathForPass(type: TileType, variation: number, suffix: string, subType?: number): string | null {
+  const folder = textureFolderForType(type);
+  const prefix = texturePrefixForType(type, subType);
+  const var4 = String(variation + 1).padStart(4, '0');
+  return `/assets/textures/parkland/${folder}/${prefix}${suffix || 'A'}${var4}.webp`;
 }
 
 /**
- * Retourne le chemin de texture WebP pour une frame de transition
- * (mask != 15 → spritesheet 4×4 frame).
- * Format: {PREFIX}_trans_r{row}_c{col}_v{var4}.webp
+ * Retourne le chemin de texture WebP pour une variation de transition.
+ * Format: {PREFIX}{GEOM}{VAR4}.webp
+ * Exemple: DEEPROUGHA0004.webp (variation 4 = 0004)
  */
-function transitionPathForPass(type: TileType, mask: TransitionMask, variation: number): string {
+function transitionPathForVariation(type: TileType, variation: number, geomSuffix: string = 'A'): string {
   const folder = textureFolderForType(type);
   const prefix = texturePrefixForType(type);
-  const { row, col } = maskToSpriteCoords(mask);
-  const var4 = String(variation + 1).padStart(4, '0');
-  return `/assets/textures/parkland/${folder}/${prefix}_trans_r${row}_c${col}_v${var4}.webp`;
+  const var4 = String(variation).padStart(4, '0');
+  return `/assets/textures/parkland/${folder}/${prefix}${geomSuffix}${var4}.webp`;
 }
 
 /**
  * Retourne le chemin de texture pour une tuile (passe 0 uniquement).
- * @deprecated Utiliser texturePathForPass() avec les renderPasses[]
+ * @deprecated Les passes utilisent maintenant textureKey directement
  */
 export function texturePathForTile(tile: ITile): string | null {
   if (tile.renderPasses && tile.renderPasses.length > 0) {
-    return texturePathForPass(tile.renderPasses[0]);
+    const pass = tile.renderPasses[0];
+    return texturePathForPass(pass.type, pass.variation, pass.suffix || 'A', pass.subType);
   }
   return null;
 }
@@ -645,147 +640,45 @@ function computeTileNormal(
 }
 
 /**
- * Construit la texture key pour le ThreeRenderer.
- *
- * Deux formats selon le mask :
- *   mask == 15 (pleine) → "type:variation:geomSuffix"  → charge texture existante
- *   mask != 15 (transition) → "trans:type:mask:variation" → charge frame spritesheet
- */
-function buildTextureKey(
-  type: TileType,
-  variation: number,
-  geomSuffix: string,
-  mask: TransitionMask,
-): string {
-  if (mask === TRANSITION_FULL) {
-    return `${type}:${variation}:${geomSuffix}`;
-  }
-  return `trans:${type}:${mask}:${variation}`;
-}
-
-/**
  * Construit des BufferGeometry Three.js groupés par textureKey.
  *
- * Chaque tuile = N passes de rendu (autotile vertex-based).
- * Chaque passe = 2 triangles (quad complet) avec UV adaptés.
+ * Chaque tuile = 4 quadrants × 2 triangles = 8 passes.
+ * Chaque passe a déjà ses vertexPositions, texCoordIndices et
+ * textureKey pré-calculés par computeRenderPasses().
  *
- * Pour mask == 15 (pleine) :
- *   - La texture de base existante est chargée (ex: FAIRWAYA0001.webp)
- *   - Les UV couvrent [0,1]
- *
- * Pour mask != 15 (transition) :
- *   - Une texture de spritesheet 4×4 est attendue
- *   - Les UV sont décalés pour sélectionner la bonne frame
- *   - Si la texture n'existe pas, ThreeRenderer utilise la couleur fallback
+ * On groupe les triangles par textureKey pour minimiser les
+ * changements de texture (draw calls).
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
-  const { width, height, tiles } = mapState;
+  const { tiles } = mapState;
 
   // Groupe de triangles par textureKey
-  interface TriGroup { positions: number[]; uvs: number[]; type: TileType; mask: number }
+  interface TriGroup { positions: number[]; uvs: number[]; type: TileType }
   const groups = new Map<string, TriGroup>();
 
-  // Projection dimétrique 2:1
-  const p = (gx: number, gy: number, elev: number): [number, number, number] => [
-    (gx - gy) * 64, elev * 32, (gx + gy) * 32,
-  ];
-
-  // Calcule les UV d'un triangle pour une frame de spritesheet 4×4
-  const frameUVs = (mask: TransitionMask, diagTLBR: boolean): [number,number,number,number,number,number] => {
-    if (mask === TRANSITION_FULL) {
-      return diagTLBR
-        ? [0, 0, 1, 0, 0, 1]  // tri TL-TR-BL
-        : [0, 0, 1, 0, 1, 1]; // tri TL-TR-BR
-    }
-
-    const { row, col } = maskToSpriteCoords(mask);
-    const u0 = col * 0.25;
-    const v0 = row * 0.25;
-    const u1 = (col + 1) * 0.25;
-    const v1 = (row + 1) * 0.25;
-
-    // Pour un quad split par la diagonale TL-BR :
-    // Tri1: TL(u0,v0) TR(u1,v0) BL(u0,v1)
-    // Tri2: TR(u1,v0) BR(u1,v1) BL(u0,v1)
-    // Pour la diagonale TR-BL :
-    // Tri1: TL(u0,v0) TR(u1,v0) BR(u1,v1)
-    // Tri2: TL(u0,v0) BR(u1,v1) BL(u0,v1)
-    if (diagTLBR) {
-      return [u0, v0, u1, v0, u0, v1];
-    }
-    return [u0, v0, u1, v0, u1, v1];
-  };
-
-  // Helper : ajoute un triangle avec positions et UV
   const addTri = (
     key: string,
-    v0: [number, number, number],
-    v1: [number, number, number],
-    v2: [number, number, number],
-    uvs: [number, number, number, number, number, number],
+    positions: [number,number,number,number,number,number,number,number,number],
+    uvs: [number,number,number,number,number,number],
     type: TileType,
-    mask: number,
   ) => {
-    if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type, mask });
+    if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type });
     const g = groups.get(key)!;
-    g.positions.push(...v0, ...v1, ...v2);
+    g.positions.push(...positions);
     g.uvs.push(...uvs);
   };
 
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti];
-    const [hTL, hTR, hBR, hBL] = tile.elevation;
-    const geomSuffix = getGeometryType(tile.elevation);
+    const type = tile.type;
 
-    const C = {
-      TL: p(tile.x,     tile.y,     hTL),
-      TR: p(tile.x + 1, tile.y,     hTR),
-      BR: p(tile.x + 1, tile.y + 1, hBR),
-      BL: p(tile.x,     tile.y + 1, hBL),
-    };
-
-    // Diagonale la plus courte pour éviter l'artefact de split
-    const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
-
-    // Utiliser les passes de rendu de l'autotile vertex-based
     for (const pass of tile.renderPasses) {
-      const { mask, variation } = pass;
-
-      // Récupération du mask (15 = pleine tuile si non défini)
-      const passMask = mask ?? TRANSITION_FULL;
-
-      const key = buildTextureKey(
+      addTri(
+        pass.textureKey ?? `${type}:0:A`,
+        pass.vertexPositions,
+        pass.texCoordIndices,
         pass.type,
-        variation,
-        geomSuffix,
-        passMask,
       );
-
-      const triUVs = frameUVs(passMask, diagTLBR);
-
-      // Premier triangle
-      if (diagTLBR) {
-        addTri(key, C.TL, C.TR, C.BL,
-          [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]],
-          pass.type, passMask);
-        // Deuxième triangle
-        const uvs2 = passMask === TRANSITION_FULL
-          ? [1, 0, 1, 1, 0, 1]
-          : [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]];
-        addTri(key, C.TR, C.BR, C.BL,
-          [uvs2[0], uvs2[1], uvs2[2], uvs2[3], uvs2[4], uvs2[5]],
-          pass.type, passMask);
-      } else {
-        addTri(key, C.TL, C.TR, C.BR,
-          [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]],
-          pass.type, passMask);
-        const uvs2 = passMask === TRANSITION_FULL
-          ? [0, 0, 1, 1, 0, 1]
-          : [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]];
-        addTri(key, C.TL, C.BR, C.BL,
-          [uvs2[0], uvs2[1], uvs2[2], uvs2[3], uvs2[4], uvs2[5]],
-          pass.type, passMask);
-      }
     }
   }
 

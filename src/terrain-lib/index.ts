@@ -7,6 +7,7 @@
 
 export { Terrain, terrain, MAX_VARIATION, getGeometryType } from './terrain.js';
 export { TERRAIN_FAMILY, getTerrainPriority, maskToSpriteCoords, type TransitionMask, TRANSITION_FULL, TRANSITION_NONE } from './autotile.js';
+export { Quadrant, QUADRANTS, getQuadrantMask, getQuadrantVariation, buildQuadrantTextureKey, getBrightness, type SubTileGrid, type QuadrantResult } from './sub-tile.js';
 export { GLTileRenderer, type TileVertex } from './gl-renderer.js';
 export { parseLightingConfig } from './lighting.js';
 export { bezierSpline, cardinalSpline, isometricCircle } from './splines.js';

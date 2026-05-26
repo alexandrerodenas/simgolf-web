@@ -175,15 +175,17 @@ export class ThreeRenderer {
   }
 
   /**
-   * getOrCreateTransitionTexture — Charge ou crée une texture
-   * de spritesheet 4×4 pour les transitions.
+   * getOrCreateTransitionTexture — Charge une texture de variation
+   * pour un quadrant de transition.
    *
-   * Format textureKey : "trans:type:mask:variation"
-   *   - type  : TileType (numérique)
-   *   - mask  : mask 4-bit de transition (0-15)
-   *   - variation : index cosmétique
+   * Format textureKey (nouveau) : "trans:type:variation:geomSuffix:mask"
+   *   - type       : TileType (numérique)
+   *   - variation  : 0-indexé (0=0001, 1=0002, ..., 8=0009)
+   *   - geomSuffix : A/B/C/D/E
+   *   - mask       : 3-bit mask (0-7)
    *
-   * Chemin attendu : /assets/textures/{theme}/{folder}/{PREFIX}_trans_r{row}_c{col}_v{var4}.webp
+   * Chemin généré : /assets/textures/{theme}/{folder}/{PREFIX}{geom}{var4}.webp
+   * Exemple : trans:7:3:A:5 → DEEPROUGHA0004.webp (var 3+1=4 → 0004)
    */
   private getOrCreateTransitionTexture(textureKey: string): THREE.Texture | null {
     if (this.loadedTextures.has(textureKey)) {
@@ -191,42 +193,35 @@ export class ThreeRenderer {
     }
 
     const parts = textureKey.split(':');
-    if (parts.length !== 4) return null;
+    // Nouveau format: trans:type:variation:geomSuffix:mask (5 parts)
+    // Ancien format: trans:type:mask:variation (4 parts)
+    if (parts.length < 3) return null;
 
     const type = parseInt(parts[1], 10) as TileType;
-    const mask = parseInt(parts[2], 10);
-    const variation = parseInt(parts[3], 10);
+    let variation: number;
+    let geomSuffix: string;
 
-    const { row, col } = this.maskToSpriteCoords(mask);
+    if (parts.length === 5) {
+      // Nouveau format
+      variation = parseInt(parts[2], 10);
+      geomSuffix = parts[3];
+    } else {
+      // Ancien format (4 parts) — fallback
+      variation = parseInt(parts[3], 10);
+      geomSuffix = 'A';
+    }
+
     const prefix = this.textureTable.getPrefix(type);
     const folder = this.textureTable.getFolder(type);
     if (!prefix || !folder) return null;
 
     const varStr = String(variation + 1).padStart(4, '0');
-    const path = `/assets/textures/parkland/${folder}/${prefix}_trans_r${row}_c${col}_v${varStr}.webp`;
+    const path = `/assets/textures/parkland/${folder}/${prefix}${geomSuffix}${varStr}.webp`;
 
-    // On essaie de charger la texture
-    try {
-      const tex = new THREE.TextureLoader().load(path);
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      this.loadedTextures.set(textureKey, tex);
-      return tex;
-    } catch {
-      // La texture n'existe pas encore — fallback null (→ couleur)
-      // Quand le user créera les spritesheets, ça fonctionnera automatiquement
-      return null;
-    }
-  }
-
-  /** Cache built-in pour mask → (row, col) — évite la dépendance vers autotile */
-  private maskToSpriteCoords(mask: number): { row: number; col: number } {
-    return {
-      row: mask >> 2,
-      col: mask & 3,
-    };
+    // Vérifier si la texture existe
+    const tex = this.loadTexture(path);
+    this.loadedTextures.set(textureKey, tex);
+    return tex;
   }
 
   private loadTexture(path: string): THREE.Texture {
