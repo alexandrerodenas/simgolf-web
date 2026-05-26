@@ -26,49 +26,14 @@ import {
   TILE_H,
 } from './types.js';
 
-// ─── Familles de terrain (jeu original) ───
-
-/**
- * Familles de terrain — 2 tuiles de même famille = pas de bordure.
- *  0 = grass   : Rough, DeepRough, Woods, Brush, Rock
- *  1 = play    : Fairway, Tee, Green
- *  2 = sand    : Bunker, GrassySand
- *  3 = water   : Shallow, Middle, Deep
- *  4 = path    : Path, Bridge, Ravine
- *  5 = building
- *  6 = cliff
- */
-export const TERRAIN_FAMILY: Record<TileType, number> = {
-  [TileType.Rough]:         0,
-  [TileType.Tree]:          0,
-  [TileType.Flower]:        0,
-  [TileType.DeepRough]:     0,
-  [TileType.Rock]:          0,
-  [TileType.Marsh]:         3,
-  [TileType.Overgrowth]:    0,
-  [TileType.Fairway]:       1,
-  [TileType.Tee]:           1,
-  [TileType.PuttingGreen]:  1,
-  [TileType.FirmFairway]:   1,
-  [TileType.TrickyGreen]:   1,
-  [TileType.SandBunker]:    2,
-  [TileType.GrassySand]:    2,
-  [TileType.GrassBunker]:   2,
-  [TileType.PotSandBunker]: 2,
-  [TileType.ZenSand]:       2,
-  [TileType.WaterShallow]:  3,
-  [TileType.WaterMiddle]:   3,
-  [TileType.WaterDeep]:     3,
-  [TileType.Path]:          4,
-  [TileType.Bridge]:        4,
-  [TileType.Ravine]:        4,
-  [TileType.Building]:      5,
-  [TileType.RetainingWall]: 5,
-  [TileType.Cliff]:         6,
-  [TileType.Brush]:         0,
-  [TileType.Natural]:       0,
-  [TileType.Vegetation]:    0,
-};
+import {
+  TerrainTransitionManager,
+  getTerrainPriority,
+  maskToSpriteCoords,
+  type AutotileGrid,
+  type TransitionMask,
+  TRANSITION_FULL,
+} from './autotile.js';
 
 // ─── Configuration des textures par type ───
 // Nombre max de variations cosmétiques par type
@@ -133,30 +98,9 @@ export function getGeometryType(e: [number, number, number, number]): string {
   return 'C';
 }
 
-// ─── Transitions (bordures entre familles) ───
-
-/** Mapping de transition asymétrique entre familles */
-function borderOverride(
-  currType: TileType, neiType: TileType
-): TileType | undefined {
-  const fCurr = TERRAIN_FAMILY[currType] ?? 0;
-  const fNei  = TERRAIN_FAMILY[neiType]  ?? 0;
-  if (fCurr === fNei) return undefined;
-
-  if (fCurr === 2 && fNei === 0) return TileType.GrassySand;
-  if (fCurr === 0 && fNei === 2) return TileType.GrassBunker;
-  if (fCurr === 2 && fNei === 1) return TileType.SandBunker;
-  if (fCurr === 1 && fNei === 2) return TileType.GrassBunker;
-  if (fCurr === 3 && fNei !== 3) return TileType.WaterShallow;
-  if (fCurr !== 3 && fNei === 3) return TileType.Marsh;
-  return undefined;
-}
-
-function needsBorder(currType: TileType, neiType: TileType): boolean {
-  return TERRAIN_FAMILY[currType] !== TERRAIN_FAMILY[neiType];
-}
 
 // ─── Conversion grille → monde ───
+
 
 /** Projection dimétrique : worldX = (gx-gy)*64, worldZ = (gx+gy)*32, worldY = elev*32 */
 function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: number; z: number } {
@@ -169,13 +113,16 @@ function gridToWorld(gx: number, gy: number, elev: number): { x: number; y: numb
 
 // ─────── Terrain class (Port du singleton original) ───────
 
-export class Terrain {
+export class Terrain implements AutotileGrid {
   private static _instance: Terrain | null = null;
 
   // Grille de terrain
   tiles: ITile[] = [];
   width = 0;
   height = 0;
+
+  // Gestionnaire d'autotiling vertex-based
+  autotile: TerrainTransitionManager;
 
   // État du système
   hdc: any = null;          // HDC Windows → WebGL context
@@ -207,7 +154,7 @@ export class Terrain {
 
   // ── Construction ──
   protected constructor() {
-    // singleton
+    this.autotile = new TerrainTransitionManager(this);
   }
 
   /**
@@ -293,6 +240,20 @@ export class Terrain {
     return this.tileAt(x, y);
   }
 
+  // ── Interface AutotileGrid ──
+
+  /** Implémentation de AutotileGrid.getTileType */
+  getTileType(r: number, c: number): TileType {
+    const tile = this.tileAt(c, r);
+    return tile ? tile.type : TileType.WaterDeep;
+  }
+
+  /** Implémentation de AutotileGrid.getTileElevation */
+  getTileElevation(r: number, c: number): [number, number, number, number] {
+    const tile = this.tileAt(c, r);
+    return tile ? tile.elevation : [0, 0, 0, 0];
+  }
+
   // ── Types de terrain ──
 
   /**
@@ -312,13 +273,10 @@ export class Terrain {
     if (!tile) return;
     tile.type = newType as TileType;
     tile.subType = effect;
-
     // Réassigner une variation aléatoire
     const maxVar = MAX_VARIATION[tile.type] ?? 1;
     tile.variation = Math.floor(Math.random() * maxVar);
-
-    // Mettre à jour les flags de bordure
-    this.updateBorderFlags(tile);
+    // Le recalcul des passes est déclenché par computeAllRenderPasses()
   }
 
   /**
@@ -459,7 +417,6 @@ export class Terrain {
     if (!tile) return;
     tile.flags |= TileFlags.HasPath;
     tile.type = TileType.Path;
-    this.updateBorderFlags(tile);
   }
 
   /**
@@ -470,7 +427,7 @@ export class Terrain {
       for (let dx = -range; dx <= range; dx++) {
         const tile = this.tileAt(x + dx, y + dy);
         if (tile && this.hasPath(tile)) {
-          this.updateBorderFlags(tile);
+          tile.renderPasses = this.computeRenderPasses(tile);
         }
       }
     }
@@ -654,7 +611,7 @@ export class Terrain {
    */
   pathUpdateRender(tile: ITile | null, t: number): void {
     if (!tile || !this.hasPath(tile)) return;
-    this.updateBorderFlags(tile);
+    tile.renderPasses = this.computeRenderPasses(tile);
     this.render(tile, t);
   }
 
@@ -733,60 +690,32 @@ export class Terrain {
   /**
    * drawLine — Génère une ligne entre 2 points avec épaisseur.
    * 7 paramètres : x1,y1, x2,y2, épaisseur, type, motif
-   */
-  drawLine(
-    x1: number, y1: number,
-    x2: number, y2: number,
-    thickness: number,
-    lineType: number,
-    pattern: number,
-  ): Array<[number, number]> {
-    return [[x1, y1], [x2, y2]];
-  }
-
-// ─── Gestion des bordures (internes) ───
-
-  private updateBorderFlags(tile: ITile): void {
-    const neighbors = [
-      this.tileAt(tile.x, tile.y - 1), // N
-      this.tileAt(tile.x + 1, tile.y), // E
-      this.tileAt(tile.x, tile.y + 1), // S
-      this.tileAt(tile.x - 1, tile.y), // W
-    ];
-
-    let flags = tile.flags;
-    const bitMask = [TileFlags.BorderN, TileFlags.BorderE, TileFlags.BorderS, TileFlags.BorderW];
-
-    for (let i = 0; i < 4; i++) {
-      if (neighbors[i] && needsBorder(tile.type, neighbors[i]!.type)) {
-        flags |= bitMask[i];
-      } else {
-        flags &= ~bitMask[i];
+  updatePath(x: number, y: number, range: number): void {
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dx = -range; dx <= range; dx++) {
+        const tile = this.tileAt(x + dx, y + dy);
+        if (tile && this.hasPath(tile)) {
+          tile.renderPasses = this.computeRenderPasses(tile);
+        }
       }
     }
-    tile.flags = flags;
   }
 
-  // ── Calcul de passes de rendu ──
+  // ── Rendu vertex-based (autotile) ──
 
   /**
-   * computeRenderPasses — Calcule les passes de rendu pour une tuile.
+   * computeRenderPasses — Calcule les passes de rendu via l'autotiling
+   * vertex-based (TerrainTransitionManager).
    *
-   * Architecture originale (FUN_1000e6c0) :
-   *   - Passe 0-1 : 2 triangles formant le quad complet (base texture)
-   *   - Passes 2+  : strips de bordure par côté (override type, A-D)
+   * Remplace l'ancien système de bordures par arêtes qui produisait
+   * des transitions en bloc en isométrique.
    *
-   * Les bordures sont des quads de strip (2 triangles) à 1/3 du bord,
-   * avec la texture du type override (ex: WaterShallow_A, GrassBunker_C).
+   * Chaque passe correspond à une couche de priorité avec un mask 4-bit
+   * qui détermine la frame de transition à afficher.
    */
   private computeRenderPasses(tile: ITile): IRenderPass[] {
     const passes: IRenderPass[] = [];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
-    const family = TERRAIN_FAMILY[tile.type] ?? 0;
-    const geomSuffix = getGeometryType(tile.elevation);
-
-    // Suffixe de base : géométrie A-E pour grass, A pour les autres
-    const baseSuffix = family === 0 ? geomSuffix : 'A';
 
     // Positions des 4 coins en 3D
     const C = {
@@ -796,66 +725,116 @@ export class Terrain {
       BL: gridToWorld(tile.x,     tile.y + 1, hBL),
     };
 
-    // Helper
-    const tri = (a: {x:number;y:number;z:number},
-                  b: {x:number;y:number;z:number},
-                  c: {x:number;y:number;z:number}): [number,number,number,number,number,number,number,number,number] =>
+    // Helper: crée les 3 vertex d'un triangle
+    const tri = (a: typeof C.TL, b: typeof C.TL, c: typeof C.TL):
+      [number,number,number,number,number,number,number,number,number] =>
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
-    // Diagonale la plus courte pour le split du quad
+    // Diagonale la plus courte pour éviter l'artefact de split
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
 
-    // Seulement 2 passes : les 2 triangles du quad
-    if (diagTLBR) {
-      passes.push(this._pass(tile, baseSuffix,
-        tri(C.TL, C.TR, C.BL),
-        [0, 0, 1, 0, 0, 1] as any));
-      passes.push(this._pass(tile, baseSuffix,
-        tri(C.TR, C.BR, C.BL),
-        [1, 0, 1, 1, 0, 1] as any));
-    } else {
-      passes.push(this._pass(tile, baseSuffix,
-        tri(C.TL, C.TR, C.BR),
-        [0, 0, 1, 0, 1, 1] as any));
-      passes.push(this._pass(tile, baseSuffix,
-        tri(C.TL, C.BR, C.BL),
-        [0, 0, 1, 1, 0, 1] as any));
+    // Récupère les passes d'autotiling depuis le TransitionManager
+    const autoPasses = this.autotile.getTileRenderPasses(tile.y, tile.x);
+
+    for (const auto of autoPasses) {
+      const { priority, mask } = auto;
+      const variation = tile.variation;
+
+      // Résout le type de terrain à afficher pour cette priorité
+      const displayType = this.resolveDisplayType(tile.type, priority);
+
+      if (mask === TRANSITION_FULL) {
+        // Pleine tuile — 2 triangles formant le quad
+        const texUvs: [number,number,number,number,number,number] = diagTLBR
+          ? [0, 0, 1, 0, 0, 1]
+          : [0, 0, 1, 0, 1, 1];
+
+        passes.push(this._pass(
+          displayType, variation,
+          diagTLBR ? tri(C.TL, C.TR, C.BL) : tri(C.TL, C.TR, C.BR),
+          texUvs, mask
+        ));
+
+        passes.push(this._pass(
+          displayType, variation,
+          diagTLBR ? tri(C.TR, C.BR, C.BL) : tri(C.TL, C.BR, C.BL),
+          diagTLBR ? [1, 0, 1, 1, 0, 1] : [0, 0, 1, 1, 0, 1] as any,
+          mask
+        ));
+      } else {
+        // Transition partielle — un seul quad avec UV mapping du mask
+        // On utilise un quad complet découpé par le fragment shader
+        // selon le mask 4-bit, OU on utilise une texture pré-découpée
+        // selon la spritesheet 4×4.
+        passes.push(this._pass(
+          displayType, variation,
+          tri(C.TL, C.TR, C.BL),
+          [0, 0, 1, 0, 0, 1] as any,
+          mask
+        ));
+        passes.push(this._pass(
+          displayType, variation,
+          tri(C.TR, C.BR, C.BL),
+          [1, 0, 1, 1, 0, 1] as any,
+          mask
+        ));
+      }
     }
 
     return passes;
   }
 
   /**
-   * _pass — Construit une IRenderPass.
+   * resolveDisplayType — Détermine le type de texture à utiliser
+   * pour une couche de priorité donnée.
+   */
+  private resolveDisplayType(tileType: TileType, priority: number): TileType {
+    const tilePri = getTerrainPriority(tileType);
+    if (tilePri === priority) return tileType;
+
+    // Mapping priorité → type par défaut
+    switch (priority) {
+      case 0: return TileType.WaterDeep;
+      case 1: return TileType.SandBunker;
+      case 2: return TileType.DeepRough;
+      case 3: return TileType.Rough;
+      case 4: return TileType.Fairway;
+      case 5: return TileType.PuttingGreen;
+      default: return tileType;
+    }
+  }
+
+  /**
+   * _pass — Construit une IRenderPass avec texture de transition.
    */
   private _pass(
-    tile: ITile, suffix: string,
+    type: TileType, variation: number,
     positions: [number,number,number,number,number,number,number,number,number],
     uvs: [number,number,number,number,number,number],
-    variationOverride?: number,
-    isBorder?: boolean,
+    mask: TransitionMask,
   ): IRenderPass {
-    const v = variationOverride ?? tile.variation;
+    const { row, col } = maskToSpriteCoords(mask);
     return {
-      type: tile.type,
-      variation: v,
-      suffix,
-      subType: tile.subType,
+      type,
+      variation,
+      suffix: `${type}_r${row}_c${col}`,
+      subType: 0,
       vertexPositions: positions,
       texCoordIndices: uvs,
-      textureKey: this.computeTextureKey(tile.type, v, suffix),
-      isOverlay: isBorder ?? false,
+      textureKey: this.computeTextureKey(type, variation, mask),
+      isOverlay: mask !== TRANSITION_FULL,
     };
   }
 
-  // ── Helpers ──
-
   /**
-   * computeTextureKey — Génère la clé de texture pour une passe de rendu.
+   * computeTextureKey — Génère la clé pour la texture de transition.
+   * Format: "trans_{type}_r{row}_c{col}_v{var}"
    */
-  private computeTextureKey(type: TileType, variation: number, suffix: string): string {
-    return `${type}:${variation}:${suffix}`;
+  private computeTextureKey(type: TileType, variation: number, mask: TransitionMask): string {
+    const { row, col } = maskToSpriteCoords(mask);
+    return `trans_${type}_r${row}_c${col}_v${variation}`;
   }
+
 
   private createTile(x: number, y: number, type: TileType, elevation: [number, number, number, number]): ITile {
     return {
