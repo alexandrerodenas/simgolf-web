@@ -215,10 +215,10 @@ export class ThreeRenderer {
     const folder = this.textureTable.getFolder(type);
     if (!prefix || !folder) return null;
 
-    const varStr = String(variation + 1).padStart(4, '0');
+    // La clé stocke la variation 1-indexée (ex: 4 = 0004)
+    const varStr = String(variation).padStart(4, '0');
     const path = `/assets/textures/parkland/${folder}/${prefix}${geomSuffix}${varStr}.webp`;
 
-    // Vérifier si la texture existe
     const tex = this.loadTexture(path);
     this.loadedTextures.set(textureKey, tex);
     return tex;

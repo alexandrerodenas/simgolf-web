@@ -47,6 +47,8 @@ const TYPE_PREFIX: Record<number, string> = {
   [TileType.ZenSand]:       'ZENSAND',
   [TileType.TrickyGreen]:   'TRICKYGREEN',
   [TileType.PotSandBunker]: 'POTSANDBUNKER',
+  [TileType.Ravine]:        'RAVINE',
+  [TileType.Building]:      'BUILDING',
 };
 
 const TYPE_FOLDER: Record<number, string> = {
@@ -71,6 +73,8 @@ const TYPE_FOLDER: Record<number, string> = {
   [TileType.ZenSand]:       'zensand',
   [TileType.TrickyGreen]:   'trickygreen',
   [TileType.PotSandBunker]: 'sandbunker',
+  [TileType.Ravine]:        'ravine',
+  [TileType.Building]:      'building',
 };
 
 // ── Types qui utilisent le suffixe A-D comme ORIENTATION (bordures) ──

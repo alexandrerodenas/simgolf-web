@@ -157,7 +157,7 @@ export interface SubTileGrid {
  * darkRange (0002-0005) → index [0..3]
  * lightRange (0006-0009) → index [4..7]
  */
-const MASK_TO_VAR_INDEX = [0, 1, 1, 2, 3, 3, 3, 4];
+const MASK_TO_VAR_INDEX = [0, 1, 1, 2, 3, 3, 3, 3]; // pas de convexe (mask 7 → 4/8)
 
 /** Variations possibles (indexées par MASK_TO_VAR_INDEX) */
 const VAR_DARK  = [1, 2, 2, 3, 4, 4, 4, 5];   // 0001-0005
@@ -288,14 +288,14 @@ export function getQuadrantVariation(
   const light = useLightRange(grid, x, y, quadrant);
   const varIndex = MASK_TO_VAR_INDEX[mask];
 
-  if (light) {
+  if (light && hasLightVariants(currentType)) {
     const variation = VAR_LIGHT[varIndex];
-    const exists = hasLightVariants(currentType);
-    return { mask, variation, textureExists: exists };
-  } else {
-    const variation = VAR_DARK[varIndex];
-    return { mask, variation, textureExists: true }; // dark toujours disponibles
+    return { mask, variation, textureExists: true };
   }
+
+  // Fallback : plage sombre (toujours disponible)
+  const variation = VAR_DARK[varIndex];
+  return { mask, variation, textureExists: true };
 }
 
 /**
