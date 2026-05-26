@@ -393,6 +393,23 @@ export function generateGridRough(
   tiles[cy * width + (cx + 1)].type = TileType.Tree;
   tiles[cy * width + (cx + 1)].variation = 0;
 
+  // Étang au nord (3×3 au centre nord)
+  const pondY = 5;
+  const pondX = Math.floor(width / 2) - 1;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const tx = pondX + dx;
+      const ty = pondY + dy;
+      const idx = ty * width + tx;
+      if (dx === 0 && dy === 0) {
+        tiles[idx].type = TileType.WaterDeep;
+      } else {
+        tiles[idx].type = TileType.WaterShallow;
+      }
+      tiles[idx].variation = 0;
+    }
+  }
+
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
   terrain.computeAllRenderPasses();
 
