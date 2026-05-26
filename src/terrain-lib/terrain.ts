@@ -703,8 +703,8 @@ export class Terrain implements AutotileGrid {
 
   // ── Rendu edge-strip overlay ──
 
-  /** Ratio UV pour le strip de 6px (textures 64×64) */
-  private static readonly EDGE_STRIP_UV = 6 / 64; // ≈ 0.09375
+  /** Ratio UV pour le strip de 4px (textures 64×64) */
+  private static readonly EDGE_STRIP_UV = 4 / 64; // ≈ 0.0625
 
   /**
    * computeRenderPasses — Génère les passes de rendu avec edge-strip overlay.
