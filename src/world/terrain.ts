@@ -350,6 +350,44 @@ export function generateVegetationGrid(
   };
 }
 
+// ─── GÉNÉRATION ROUGH UNI (DEBUG) ───
+
+/**
+ * Génère une carte 100% Rough, élévation plate, variation 0001.
+ * Utile pour tester le rendu de base sans transitions.
+ */
+export function generateGridRough(
+  width: number = 40,
+  height: number = 40,
+): IMapState {
+  const terrain = Terrain.getInstance();
+  terrain.initSystem(width, height, null, false);
+  terrain.theme = CourseTheme.Parkland;
+  terrain.resetTerrain();
+
+  const { tiles } = terrain;
+
+  for (let i = 0; i < tiles.length; i++) {
+    tiles[i].type = TileType.Rough;
+    tiles[i].elevation = [0, 0, 0, 0];
+    tiles[i].variation = 0;
+    tiles[i].subType = 0;
+  }
+
+  // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
+  terrain.computeAllRenderPasses();
+
+  return {
+    width, height,
+    theme: CourseTheme.Parkland,
+    tiles,
+    lighting: terrain.lighting,
+    zoomLevel: terrain.zoomLevel,
+    splineHeight: terrain.splineHeight,
+    viewMode: 0,
+  };
+}
+
 // ─── GÉNÉRATION PARKLAND COMPLÈTE ───
 
 function generateFairwayZones(w: number, h: number): boolean[] {

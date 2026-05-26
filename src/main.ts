@@ -14,7 +14,7 @@
  */
 
 import * as THREE from 'three';
-import { generateParklandGrid } from './world/terrain';
+import { generateGridRough } from './world/terrain';
 import { getGeometryType, Terrain } from './terrain-lib/index.js';
 import { TileType, ITile } from './terrain-lib/types.js';
 import { ThreeRenderer } from './render/ThreeRenderer';
@@ -32,7 +32,7 @@ const container = document.getElementById('game-container')!;
 // ---- 3. Initialisation ----
 const renderer = new ThreeRenderer(container);
 const terrain = Terrain.getInstance();
-const mapState = generateParklandGrid(MAP_W, MAP_H);
+const mapState = generateGridRough(MAP_W, MAP_H);
 renderer.loadMap(mapState);
 
 console.log(`[SimGolf] Carte ${MAP_W}×${MAP_H}, ${mapState.tiles.length} tuiles`);
