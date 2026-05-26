@@ -800,7 +800,8 @@ export class Terrain implements AutotileGrid {
     // Coins adjacents : si 2 arêtes adjacentes diffèrent → coin 0004
     interface CornerQuad {
       name: string;
-      a: typeof TL; b: typeof TL; c: typeof TL; d: typeof TL; // Les 4 points du quad
+      a: typeof TL; b: typeof TL; c: typeof TL; d: typeof TL;
+      vari: number; // 2=0003, 3=0004
       uv: [number,number,number,number,number,number][];
     }
     const corners: CornerQuad[] = [];
@@ -821,8 +822,13 @@ export class Terrain implements AutotileGrid {
 
     // NE corner (N+E) → quadrant TR
     if (diffEdges.N && diffEdges.E) {
+      const nPri = getTerrainPriority(tile.neighborE!.type);
+      const tPri = getTerrainPriority(tile.type);
+      const useRounded = nPri > tPri; // voisin plus clair → 0004, plus sombre → 0003
+      const cornerVar = useRounded ? 3 : 2;
       corners.push({
         name: 'NE', a: TR, b: center, c: M_T, d: M_R,
+        vari: cornerVar,
         uv: [
           [1, 0, 0.5, 0.5, 0.5, 0],     // Tri1: TR, C, M_T
           [1, 0, 1, 0.5, 0.5, 0.5],     // Tri2: TR, M_R, C
@@ -832,8 +838,13 @@ export class Terrain implements AutotileGrid {
 
     // SE corner (E+S) → quadrant BR
     if (diffEdges.E && diffEdges.S) {
+      const nPri = getTerrainPriority(tile.neighborE!.type);
+      const tPri = getTerrainPriority(tile.type);
+      const useRounded = nPri > tPri;
+      const cornerVar = useRounded ? 3 : 2;
       corners.push({
         name: 'SE', a: BR, b: center, c: M_R, d: M_B,
+        vari: cornerVar,
         uv: [
           [1, 1, 0.5, 0.5, 1, 0.5],     // Tri1: BR, C, M_R
           [1, 1, 0.5, 1, 0.5, 0.5],     // Tri2: BR, M_B, C
@@ -843,8 +854,13 @@ export class Terrain implements AutotileGrid {
 
     // SW corner (S+W) → quadrant BL
     if (diffEdges.S && diffEdges.W) {
+      const nPri = getTerrainPriority(tile.neighborS!.type);
+      const tPri = getTerrainPriority(tile.type);
+      const useRounded = nPri > tPri;
+      const cornerVar = useRounded ? 3 : 2;
       corners.push({
         name: 'SW', a: BL, b: center, c: M_B, d: M_L,
+        vari: cornerVar,
         uv: [
           [0, 1, 0.5, 0.5, 0.5, 1],     // Tri1: BL, C, M_B
           [0, 1, 0, 0.5, 0.5, 0.5],     // Tri2: BL, M_L, C
@@ -854,8 +870,13 @@ export class Terrain implements AutotileGrid {
 
     // NW corner (W+N) → quadrant TL
     if (diffEdges.W && diffEdges.N) {
+      const nPri = getTerrainPriority(tile.neighborW!.type);
+      const tPri = getTerrainPriority(tile.type);
+      const useRounded = nPri > tPri;
+      const cornerVar = useRounded ? 3 : 2;
       corners.push({
         name: 'NW', a: TL, b: center, c: M_L, d: M_T,
+        vari: cornerVar,
         uv: [
           [0, 0, 0.5, 0.5, 0, 0.5],     // Tri1: TL, C, M_L
           [0, 0, 0.5, 0, 0.5, 0.5],     // Tri2: TL, M_T, C
@@ -863,19 +884,19 @@ export class Terrain implements AutotileGrid {
       });
     }
 
-    // Ajout des coins corner (variation 0004, index 3)
+    // Ajout des coins corner (variation 0003 ou 0004)
     for (const cnr of corners) {
-      const key = `corner:${tile.type}:3:${geomWithSub}:${cnr.name}`;
+      const key = `corner:${tile.type}:${cnr.vari}:${geomWithSub}:${cnr.name}`;
       // Tri1: a → b → d  (quadrant split)
       passes.push({
-        type: tile.type, variation: 3, suffix: geomWithSub,
+        type: tile.type, variation: cnr.vari, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(cnr.a, cnr.b, cnr.c),
         texCoordIndices: cnr.uv[0],
         textureKey: key, isOverlay: true,
       });
       passes.push({
-        type: tile.type, variation: 3, suffix: geomWithSub,
+        type: tile.type, variation: cnr.vari, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(cnr.a, cnr.d, cnr.b),
         texCoordIndices: cnr.uv[1],
