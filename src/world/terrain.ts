@@ -481,7 +481,7 @@ export function generateParklandGrid(
         tiles[idx].elevation = [0, 0, 0, 0];
       } else if (n < 0.14) {
         terrain.setType(tiles[idx], TileType.SandBunker,
-          ((x * 7 + y * 13) % 5));
+          ((x * 7 + y * 13) % 4) + 1);
       } else if (n < 0.18) {
         terrain.setType(tiles[idx], TileType.DeepRough, 0);
       } else if (n < 0.85) {
@@ -611,6 +611,8 @@ export interface MeshGroup {
   geometry: THREE.BufferGeometry;
   textureKey: string | null;
   fallbackColor: [number, number, number];
+  /** Sous-type (pour SandBunker notamment) */
+  subType?: number;
 }
 
 /**
@@ -695,6 +697,13 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
     const c = palette[group.type] ?? [0.227, 0.490, 0.227];
     results.push({ geometry, textureKey: key, fallbackColor: c });
   }
+
+  // ── 3. SubType par groupe (extraction du premier triangle) ──
+  // Pour connaître le subType d'un groupe, on cherche dans les passes originales
+  // le premier pass dont la textureKey correspond.
+  // Note : le subType vient de la passe, pas du MeshGroup — utilisons la key.
+  // Les types SandBunker ont des keys uniques grâce à la variation.
+  // Pas de subType dans MeshGroup — il est encodé dans la textureKey via buildPath.
 
   // ── 3. Chemins (post-process paths) ──
   const pv: number[] = [];

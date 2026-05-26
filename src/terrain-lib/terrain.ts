@@ -760,14 +760,23 @@ export class Terrain implements AutotileGrid, SubTileGrid {
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
     // Pour chaque quadrant, calcule la variation et génère 2 triangles
+    const baseType = tile.type;
     for (const quadrant of QUADRANTS) {
       const { variation, mask } = getQuadrantVariation(
         this, tile.x, tile.y, quadrant, geomSuffix,
       );
 
-      const baseType = tile.type;
+      // SandBunker : encoder le sous-type dans le suffixe (defaut 1 si 0)
+      // ex: subtype=1, geom='A' → suffix='1A' → SANDBUNKER1A0001.webp
+      const sbSubType = baseType === TileType.SandBunker
+        ? Math.max(1, tile.subType || 1)
+        : 0;
+      const effectiveSuffix = sbSubType > 0
+        ? `${sbSubType}${geomSuffix}`
+        : geomSuffix;
+
       const textureKey = buildQuadrantTextureKey(
-        baseType, variation, geomSuffix, mask,
+        baseType, variation, effectiveSuffix, mask,
       );
 
       // UVs : chaque quadrant couvre 1/4 de la texture pleine
@@ -834,8 +843,8 @@ export class Terrain implements AutotileGrid, SubTileGrid {
         passes.push({
           type: baseType,
           variation: variation - 1, // 0-indexed pour compat texture loading
-          suffix: geomSuffix,
-          subType: quadrant,
+          suffix: effectiveSuffix,
+          subType: tile.subType,
           mask,
           vertexPositions: tri(positions[i][0], positions[i][1], positions[i][2]),
           texCoordIndices: uvs[i],
