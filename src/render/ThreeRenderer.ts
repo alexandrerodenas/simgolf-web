@@ -95,10 +95,14 @@ export class ThreeRenderer {
         if (group.textureKey.startsWith('special:')) {
           const slot = group.textureKey === 'special:path' ? 0x21 : 0x20;
           texture = this.textureTable.getSpecialTexture(slot);
+        } else if (group.textureKey.startsWith('corner:')) {
+          // Corner piece (0004) — extrait la variation de la clé
+          isEdgeOverlay = true;
+          texture = this.getOrLoadKeyedTexture(group.textureKey);
         } else if (group.textureKey.startsWith('edge:')) {
           // Edge strip overlay — charge la variante 0002
           isEdgeOverlay = true;
-          texture = this.getOrLoadEdgeTexture(group.textureKey);
+          texture = this.getOrLoadKeyedTexture(group.textureKey);
         } else if (group.textureKey.startsWith('trans:')) {
           texture = this.getOrCreateTransitionTexture(group.textureKey);
         } else {
@@ -138,14 +142,13 @@ export class ThreeRenderer {
   }
 
   /**
-   * getOrLoadEdgeTexture — Charge la variante 0002 pour un edge strip.
+   * getOrLoadKeyedTexture — Charge une texture pour un edge strip ou corner.
    *
-   * Format textureKey : "edge:type:geomSuffix:dir"
-   *   - type       : TileType (numérique)
-   *   - geomSuffix : A/B/C/D/E (avec optionnel sous-type, ex: 1A)
-   *   - dir        : N/E/S/W (direction de l'arête)
+   * Formats :
+   *   edge:type:geomSuffix:dir          → variation 1 (0002)
+   *   corner:type:variation:geomSuffix:name → variation depuis la clé (0004)
    */
-  private getOrLoadEdgeTexture(textureKey: string): THREE.Texture | null {
+  private getOrLoadKeyedTexture(textureKey: string): THREE.Texture | null {
     if (this.loadedTextures.has(textureKey)) {
       return this.loadedTextures.get(textureKey)!;
     }
@@ -153,11 +156,21 @@ export class ThreeRenderer {
     const parts = textureKey.split(':');
     if (parts.length < 3) return null;
 
+    const prefix = parts[0]; // 'edge' ou 'corner'
     const type = parseInt(parts[1], 10) as TileType;
-    const geomSuffix = parts[2];
+    let variation = 1; // default = 0002
+    let geomSuffix: string;
 
-    // Variante 0002 (variation=1 en 0-indexé)
-    const path = this.textureTable.buildPath(type, 1, geomSuffix);
+    if (prefix === 'corner' && parts.length >= 5) {
+      // corner:type:variation:geom:name
+      variation = parseInt(parts[2], 10);
+      geomSuffix = parts[3];
+    } else {
+      // edge:type:geom:dir
+      geomSuffix = parts[2];
+    }
+
+    const path = this.textureTable.buildPath(type, variation, geomSuffix);
     if (!path) return null;
 
     const tex = this.loadTexture(path);

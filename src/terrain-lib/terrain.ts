@@ -788,102 +788,190 @@ export class Terrain implements AutotileGrid {
       });
     }
 
-    // ─── 2. Edge strips overlay (variation 0002) ───
-    // Vérifie les 4 voisins, pose un strip de 6px côté jointure
+    // ─── 2. Coins et Edge strips overlay ───
+    // Détecte quels voisins diffèrent
+    const diffEdges = {
+      N: tile.neighborN?.type !== tile.type && tile.neighborN !== null,
+      E: tile.neighborE?.type !== tile.type && tile.neighborE !== null,
+      S: tile.neighborS?.type !== tile.type && tile.neighborS !== null,
+      W: tile.neighborW?.type !== tile.type && tile.neighborW !== null,
+    };
+
+    // Coins adjacents : si 2 arêtes adjacentes diffèrent → coin 0004
+    interface CornerQuad {
+      name: string;
+      a: typeof TL; b: typeof TL; c: typeof TL; d: typeof TL; // Les 4 points du quad
+      uv: [number,number,number,number,number,number][];
+    }
+    const corners: CornerQuad[] = [];
+    const edgesToSkip = new Set<string>();
+
+    // Midpoints des arêtes et centre
+    const mid = (a: typeof TL, b: typeof TL) => ({
+      x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2,
+    });
+    const M_T = mid(TL, TR);
+    const M_R = mid(TR, BR);
+    const M_B = mid(BL, BR);
+    const M_L = mid(TL, BL);
+    const center = {
+      x: (TL.x + TR.x + BR.x + BL.x) / 4,
+      y: (TL.y + TR.y + BR.y + BL.y) / 4,
+      z: (TL.z + TR.z + BR.z + BL.z) / 4,
+    };
+
+    // NE corner (N+E) → quadrant TR
+    if (diffEdges.N && diffEdges.E) {
+      corners.push({
+        name: 'NE', a: TR, b: center, c: M_T, d: M_R,
+        uv: [
+          [1, 0, 0.5, 0.5, 0.5, 0],     // Tri1: TR, C, M_T
+          [1, 0, 1, 0.5, 0.5, 0.5],     // Tri2: TR, M_R, C
+        ],
+      });
+      edgesToSkip.add('N'); edgesToSkip.add('E');
+    }
+
+    // SE corner (E+S) → quadrant BR
+    if (diffEdges.E && diffEdges.S) {
+      corners.push({
+        name: 'SE', a: BR, b: center, c: M_R, d: M_B,
+        uv: [
+          [1, 1, 0.5, 0.5, 1, 0.5],     // Tri1: BR, C, M_R
+          [1, 1, 0.5, 1, 0.5, 0.5],     // Tri2: BR, M_B, C
+        ],
+      });
+      edgesToSkip.add('E'); edgesToSkip.add('S');
+    }
+
+    // SW corner (S+W) → quadrant BL
+    if (diffEdges.S && diffEdges.W) {
+      corners.push({
+        name: 'SW', a: BL, b: center, c: M_B, d: M_L,
+        uv: [
+          [0, 1, 0.5, 0.5, 0.5, 1],     // Tri1: BL, C, M_B
+          [0, 1, 0, 0.5, 0.5, 0.5],     // Tri2: BL, M_L, C
+        ],
+      });
+      edgesToSkip.add('S'); edgesToSkip.add('W');
+    }
+
+    // NW corner (W+N) → quadrant TL
+    if (diffEdges.W && diffEdges.N) {
+      corners.push({
+        name: 'NW', a: TL, b: center, c: M_L, d: M_T,
+        uv: [
+          [0, 0, 0.5, 0.5, 0, 0.5],     // Tri1: TL, C, M_L
+          [0, 0, 0.5, 0, 0.5, 0.5],     // Tri2: TL, M_T, C
+        ],
+      });
+      edgesToSkip.add('W'); edgesToSkip.add('N');
+    }
+
+    // Ajout des coins corner (variation 0004, index 3)
+    for (const cnr of corners) {
+      const key = `corner:${tile.type}:3:${geomWithSub}:${cnr.name}`;
+      // Tri1: a → b → d  (quadrant split)
+      passes.push({
+        type: tile.type, variation: 3, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(cnr.a, cnr.b, cnr.c),
+        texCoordIndices: cnr.uv[0],
+        textureKey: key, isOverlay: true,
+      });
+      passes.push({
+        type: tile.type, variation: 3, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(cnr.a, cnr.d, cnr.b),
+        texCoordIndices: cnr.uv[1],
+        textureKey: key, isOverlay: true,
+      });
+    }
+
+    // Ajout des edge strips pour les arêtes non couvertes par un corner
     const edgeKey = `edge:${tile.type}:${geomWithSub}`;
 
-    // Voisins avec leur type, pour chaque direction
-    type EdgeDir = 'N' | 'E' | 'S' | 'W';
-    const edges: Array<{
-      dir: EdgeDir;
-      neighbor: ITile | null;
-      // Les 2 coins de l'arête (outer) et les 2 coins intérieurs
-      a: typeof TL; b: typeof TL;
-      innerA: typeof TL; innerB: typeof TL;
-      uv: [number,number,number,number,number,number][];
-    }> = [];
-
     // Nord
-    const nN = tile.neighborN;
-    if (nN && nN.type !== tile.type) {
-      const iTL = lerp(TL, BL, S);  // S vers le sud
+    if (diffEdges.N && !edgesToSkip.has('N')) {
+      const iTL = lerp(TL, BL, S);
       const iTR = lerp(TR, BR, S);
-      edges.push({
-        dir: 'N', neighbor: nN, a: TL, b: TR, innerA: iTL, innerB: iTR,
-        uv: [
-          [0, 0, 1, 0, 1, S],   // Tri1: TL, TR, iTR
-          [0, 0, 1, S, 0, S],   // Tri2: TL, iTR, iTL
-        ],
+      const key = `${edgeKey}:N`;
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TL, TR, iTR),
+        texCoordIndices: [0, 0, 1, 0, 1, S],
+        textureKey: key, isOverlay: true,
+      });
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TL, iTR, iTL),
+        texCoordIndices: [0, 0, 1, S, 0, S],
+        textureKey: key, isOverlay: true,
       });
     }
 
     // Est
-    const nE = tile.neighborE;
-    if (nE && nE.type !== tile.type) {
-      const iTR = lerp(TR, TL, S);  // S vers l'ouest
+    if (diffEdges.E && !edgesToSkip.has('E')) {
+      const iTR = lerp(TR, TL, S);
       const iBR = lerp(BR, BL, S);
-      edges.push({
-        dir: 'E', neighbor: nE, a: TR, b: BR, innerA: iTR, innerB: iBR,
-        uv: [
-          [1, 0, 1, 1, 1-S, 1],  // Tri1: TR, BR, iBR
-          [1, 0, 1-S, 1, 1-S, 0], // Tri2: TR, iBR, iTR
-        ],
+      const key = `${edgeKey}:E`;
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TR, BR, iBR),
+        texCoordIndices: [1, 0, 1, 1, 1-S, 1],
+        textureKey: key, isOverlay: true,
+      });
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(TR, iBR, iTR),
+        texCoordIndices: [1, 0, 1-S, 1, 1-S, 0],
+        textureKey: key, isOverlay: true,
       });
     }
 
     // Sud
-    const nS = tile.neighborS;
-    if (nS && nS.type !== tile.type) {
-      const iBL = lerp(BL, TL, S);  // S vers le nord
+    if (diffEdges.S && !edgesToSkip.has('S')) {
+      const iBL = lerp(BL, TL, S);
       const iBR = lerp(BR, TR, S);
-      edges.push({
-        dir: 'S', neighbor: nS, a: BR, b: BL, innerA: iBR, innerB: iBL,
-        uv: [
-          [1, 1, 0, 1, 0, 1-S],  // Tri1: BR, BL, iBL
-          [1, 1, 0, 1-S, 1, 1-S], // Tri2: BR, iBL, iBR
-        ],
+      const key = `${edgeKey}:S`;
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(BR, BL, iBL),
+        texCoordIndices: [1, 1, 0, 1, 0, 1-S],
+        textureKey: key, isOverlay: true,
+      });
+      passes.push({
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(BR, iBL, iBR),
+        texCoordIndices: [1, 1, 0, 1-S, 1, 1-S],
+        textureKey: key, isOverlay: true,
       });
     }
 
     // Ouest
-    const nW = tile.neighborW;
-    if (nW && nW.type !== tile.type) {
-      const iTL = lerp(TL, TR, S);  // S vers l'est
+    if (diffEdges.W && !edgesToSkip.has('W')) {
+      const iTL = lerp(TL, TR, S);
       const iBL = lerp(BL, BR, S);
-      edges.push({
-        dir: 'W', neighbor: nW, a: BL, b: TL, innerA: iBL, innerB: iTL,
-        uv: [
-          [0, 1, 0, 0, S, 0],    // Tri1: BL, TL, iTL
-          [0, 1, S, 0, S, 1],    // Tri2: BL, iTL, iBL
-        ],
-      });
-    }
-
-    for (const edge of edges) {
-      const key = `${edgeKey}:${edge.dir}`;
-      // Tri1: a → b → innerB
+      const key = `${edgeKey}:W`;
       passes.push({
-        type: tile.type,
-        variation: 1,  // 0-indexed → 0002
-        suffix: geomWithSub,
-        subType: tile.subType,
-        mask: 0,
-        vertexPositions: tri(edge.a, edge.b, edge.innerB),
-        texCoordIndices: edge.uv[0],
-        textureKey: key,
-        isOverlay: true,
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(BL, TL, iTL),
+        texCoordIndices: [0, 1, 0, 0, S, 0],
+        textureKey: key, isOverlay: true,
       });
-      // Tri2: a → innerB → innerA
       passes.push({
-        type: tile.type,
-        variation: 1,
-        suffix: geomWithSub,
-        subType: tile.subType,
-        mask: 0,
-        vertexPositions: tri(edge.a, edge.innerB, edge.innerA),
-        texCoordIndices: edge.uv[1],
-        textureKey: key,
-        isOverlay: true,
+        type: tile.type, variation: 1, suffix: geomWithSub,
+        subType: tile.subType, mask: 0,
+        vertexPositions: tri(BL, iTL, iBL),
+        texCoordIndices: [0, 1, S, 0, S, 1],
+        textureKey: key, isOverlay: true,
       });
     }
 
