@@ -789,12 +789,17 @@ export class Terrain implements AutotileGrid {
     }
 
     // ─── 2. Coins et Edge strips overlay ───
-    // Détecte quels voisins diffèrent
+    // Détecte quels voisins diffèrent (par famille visuelle, pas type exact)
+    // Ex: WaterShallow/Middle/Deep sont même famille → pas de bordure entre eux
+    const sameFamily = (a: ITile | null, b: ITile | null): boolean => {
+      if (!a || !b) return false;
+      return getTerrainPriority(a.type) === getTerrainPriority(b.type);
+    };
     const diffEdges = {
-      N: tile.neighborN?.type !== tile.type && tile.neighborN !== null,
-      E: tile.neighborE?.type !== tile.type && tile.neighborE !== null,
-      S: tile.neighborS?.type !== tile.type && tile.neighborS !== null,
-      W: tile.neighborW?.type !== tile.type && tile.neighborW !== null,
+      N: tile.neighborN !== null && !sameFamily(tile, tile.neighborN),
+      E: tile.neighborE !== null && !sameFamily(tile, tile.neighborE),
+      S: tile.neighborS !== null && !sameFamily(tile, tile.neighborS),
+      W: tile.neighborW !== null && !sameFamily(tile, tile.neighborW),
     };
 
     // Coins adjacents : si 2 arêtes adjacentes diffèrent → coin 0004
