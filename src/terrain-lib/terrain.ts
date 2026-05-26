@@ -804,7 +804,6 @@ export class Terrain implements AutotileGrid {
       uv: [number,number,number,number,number,number][];
     }
     const corners: CornerQuad[] = [];
-    const edgesToSkip = new Set<string>();
 
     // Midpoints des arêtes et centre
     const mid = (a: typeof TL, b: typeof TL) => ({
@@ -829,7 +828,6 @@ export class Terrain implements AutotileGrid {
           [1, 0, 1, 0.5, 0.5, 0.5],     // Tri2: TR, M_R, C
         ],
       });
-      edgesToSkip.add('N'); edgesToSkip.add('E');
     }
 
     // SE corner (E+S) → quadrant BR
@@ -841,7 +839,6 @@ export class Terrain implements AutotileGrid {
           [1, 1, 0.5, 1, 0.5, 0.5],     // Tri2: BR, M_B, C
         ],
       });
-      edgesToSkip.add('E'); edgesToSkip.add('S');
     }
 
     // SW corner (S+W) → quadrant BL
@@ -853,7 +850,6 @@ export class Terrain implements AutotileGrid {
           [0, 1, 0, 0.5, 0.5, 0.5],     // Tri2: BL, M_L, C
         ],
       });
-      edgesToSkip.add('S'); edgesToSkip.add('W');
     }
 
     // NW corner (W+N) → quadrant TL
@@ -865,7 +861,6 @@ export class Terrain implements AutotileGrid {
           [0, 0, 0.5, 0, 0.5, 0.5],     // Tri2: TL, M_T, C
         ],
       });
-      edgesToSkip.add('W'); edgesToSkip.add('N');
     }
 
     // Ajout des coins corner (variation 0004, index 3)
@@ -892,7 +887,7 @@ export class Terrain implements AutotileGrid {
     const edgeKey = `edge:${tile.type}:${geomWithSub}`;
 
     // Nord
-    if (diffEdges.N && !edgesToSkip.has('N')) {
+    if (diffEdges.N) {
       const iTL = lerp(TL, BL, S);
       const iTR = lerp(TR, BR, S);
       const key = `${edgeKey}:N`;
@@ -913,7 +908,7 @@ export class Terrain implements AutotileGrid {
     }
 
     // Est
-    if (diffEdges.E && !edgesToSkip.has('E')) {
+    if (diffEdges.E) {
       const iTR = lerp(TR, TL, S);
       const iBR = lerp(BR, BL, S);
       const key = `${edgeKey}:E`;
@@ -934,7 +929,7 @@ export class Terrain implements AutotileGrid {
     }
 
     // Sud
-    if (diffEdges.S && !edgesToSkip.has('S')) {
+    if (diffEdges.S) {
       const iBL = lerp(BL, TL, S);
       const iBR = lerp(BR, TR, S);
       const key = `${edgeKey}:S`;
@@ -955,7 +950,7 @@ export class Terrain implements AutotileGrid {
     }
 
     // Ouest
-    if (diffEdges.W && !edgesToSkip.has('W')) {
+    if (diffEdges.W) {
       const iTL = lerp(TL, TR, S);
       const iBL = lerp(BL, BR, S);
       const key = `${edgeKey}:W`;
