@@ -817,6 +817,7 @@ export class Terrain implements AutotileGrid {
     return {
       type,
       variation,
+      mask,
       suffix: `${type}_r${row}_c${col}`,
       subType: 0,
       vertexPositions: positions,

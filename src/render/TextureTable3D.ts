@@ -286,6 +286,18 @@ export class TextureTable3D {
     return tex;
   }
 
+  // ── Méthodes d'accès publiques ──
+
+  /** Retourne le préfixe de fichier pour un type de terrain */
+  getPrefix(type: TileType): string | undefined {
+    return TYPE_PREFIX[type];
+  }
+
+  /** Retourne le dossier de texture pour un type de terrain */
+  getFolder(type: TileType): string | undefined {
+    return TYPE_FOLDER[type];
+  }
+
   // ── Méthodes utilitaires statiques ──
 
   /**

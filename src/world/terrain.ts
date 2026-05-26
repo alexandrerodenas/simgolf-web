@@ -4,12 +4,12 @@
  * ⚠️ SOURCE DE VÉRITÉ : terrain-ts (simgolf-re/terrain-ts)
  *   - Types : TileType, ITile, IRenderPass, IMapState → terrain-ts
  *   - Logique terrain : computeRenderPasses, getGeometryType → terrain-ts
- *   - Familles : TERRAIN_FAMILY, MAX_VARIATION → terrain-ts
+ *   - Autotiling vertex-based : TerrainTransitionManager → terrain-ts
  *
  * Ce fichier ne fait QUE :
  *   1. Génération procédurale (bruit + distribution dont water clusters)
- *   2. Mapping passe → chemin de texture WebP
- *   3. Construction de maillage Three.js
+ *   2. Construction de maillage Three.js à partir des passes de rendu
+ *   3. Chemins / overlays
  */
 
 import * as THREE from 'three';
@@ -20,15 +20,46 @@ import {
   IRenderPass,
   IMapState,
   Terrain,
-  TERRAIN_FAMILY,
   MAX_VARIATION,
   getGeometryType,
+  getTerrainPriority,
+  maskToSpriteCoords,
+  type TransitionMask,
+  TRANSITION_FULL,
 } from '../terrain-lib/index.js';
 
 // ─── CONSTANTES DE GÉNÉRATION ───
 
 const COSMETIC_MAX = 5;
 const ELEVATION_MAX = 4; // 0-4 comme le jeu original
+
+// ─── Palette de couleurs (fallback pour transitions sans texture) ───
+
+const palette: Record<number, [number, number, number]> = {
+  [TileType.Rough]:        [0.227, 0.490, 0.227],
+  [TileType.Fairway]:      [0.306, 0.651, 0.306],
+  [TileType.PuttingGreen]: [0.180, 0.800, 0.251],
+  [TileType.SandBunker]:   [0.910, 0.835, 0.627],
+  [TileType.WaterShallow]: [0.200, 0.533, 0.800],
+  [TileType.WaterMiddle]:  [0.133, 0.467, 0.733],
+  [TileType.WaterDeep]:    [0.067, 0.400, 0.667],
+  [TileType.DeepRough]:    [0.176, 0.353, 0.118],
+  [TileType.GrassySand]:   [0.784, 0.722, 0.471],
+  [TileType.GrassBunker]:  [0.863, 0.784, 0.565],
+  [TileType.Tee]:          [0.361, 0.722, 0.361],
+  [TileType.Cliff]:        [0.533, 0.467, 0.400],
+  [TileType.Path]:         [0.784, 0.722, 0.596],
+  [TileType.Building]:     [0.600, 0.400, 0.267],
+  [TileType.Tree]:         [0.176, 0.353, 0.118],
+  [TileType.Flower]:       [0.800, 0.267, 0.533],
+  [TileType.Rock]:         [0.533, 0.467, 0.400],
+  [TileType.Marsh]:        [0.267, 0.400, 0.333],
+  [TileType.Overgrowth]:   [0.157, 0.314, 0.078],
+  [TileType.FirmFairway]:  [0.357, 0.702, 0.357],
+  [TileType.ZenSand]:      [0.953, 0.918, 0.761],
+  [TileType.TrickyGreen]:  [0.210, 0.620, 0.271],
+  [TileType.PotSandBunker]:[0.953, 0.878, 0.729],
+};
 
 // ─── GÉNÉRATION VÉGÉTALE + EAU ───
 
@@ -104,8 +135,8 @@ function assignElevations(
       const idx = y * w + x;
       const gw = w + 1;
       tiles[idx].elevation = [
-        elevMap[y * gw + x],       // TL (y, x)
-        elevMap[y * gw + x + 1],   // TR (y, x+1)
+        elevMap[y * gw + x],           // TL (y, x)
+        elevMap[y * gw + x + 1],       // TR (y, x+1)
         elevMap[(y + 1) * gw + x + 1], // BR (y+1, x+1)
         elevMap[(y + 1) * gw + x],     // BL (y+1, x)
       ];
@@ -310,7 +341,7 @@ export function generateVegetationGrid(
   // ── 4. Assigner profondeurs d'eau ──
   assignWaterDepth(tiles, waterMask, width, height, 'parkland');
 
-  // ── 5. Calculer les passes de rendu ──
+  // ── 5. Calculer les passes de rendu via vertex-based autotiling ──
   terrain.computeAllRenderPasses();
 
   return {
@@ -544,13 +575,28 @@ function texturePrefixForType(type: TileType, subType?: number): string {
 }
 
 /**
- * Retourne le chemin de la texture WebP pour une passe de rendu.
+ * Retourne le chemin de la texture WebP pour une passe de rendu
+ * qui est une tuile PLEINE (mask 15 → texture de base existante).
  */
-export function texturePathForPass(pass: IRenderPass): string {
+function texturePathForPass(pass: IRenderPass): string | null {
   const folder = textureFolderForType(pass.type);
   const prefix = texturePrefixForType(pass.type, pass.subType);
   const var4 = String(pass.variation + 1).padStart(4, '0');
-  return `/assets/textures/parkland/${folder}/${prefix}${pass.suffix}${var4}.webp`;
+  const suffix = pass.suffix || 'A';
+  return `/assets/textures/parkland/${folder}/${prefix}${suffix}${var4}.webp`;
+}
+
+/**
+ * Retourne le chemin de texture WebP pour une frame de transition
+ * (mask != 15 → spritesheet 4×4 frame).
+ * Format: {PREFIX}_trans_r{row}_c{col}_v{var4}.webp
+ */
+function transitionPathForPass(type: TileType, mask: TransitionMask, variation: number): string {
+  const folder = textureFolderForType(type);
+  const prefix = texturePrefixForType(type);
+  const { row, col } = maskToSpriteCoords(mask);
+  const var4 = String(variation + 1).padStart(4, '0');
+  return `/assets/textures/parkland/${folder}/${prefix}_trans_r${row}_c${col}_v${var4}.webp`;
 }
 
 /**
@@ -571,32 +617,6 @@ export interface MeshGroup {
   textureKey: string | null;
   fallbackColor: [number, number, number];
 }
-
-const palette: Record<number, [number, number, number]> = {
-  [TileType.Rough]:        [0.227, 0.490, 0.227],
-  [TileType.Fairway]:      [0.306, 0.651, 0.306],
-  [TileType.PuttingGreen]: [0.180, 0.800, 0.251],
-  [TileType.SandBunker]:   [0.910, 0.835, 0.627],
-  [TileType.WaterShallow]: [0.200, 0.533, 0.800],
-  [TileType.WaterMiddle]:  [0.133, 0.467, 0.733],
-  [TileType.WaterDeep]:    [0.067, 0.400, 0.667],
-  [TileType.DeepRough]:    [0.176, 0.353, 0.118],
-  [TileType.GrassySand]:   [0.784, 0.722, 0.471],
-  [TileType.GrassBunker]:  [0.863, 0.784, 0.565],
-  [TileType.Tee]:          [0.361, 0.722, 0.361],
-  [TileType.Cliff]:        [0.533, 0.467, 0.400],
-  [TileType.Path]:         [0.784, 0.722, 0.596],
-  [TileType.Building]:     [0.600, 0.400, 0.267],
-  [TileType.Tree]:         [0.176, 0.353, 0.118],
-  [TileType.Flower]:       [0.800, 0.267, 0.533],
-  [TileType.Rock]:         [0.533, 0.467, 0.400],
-  [TileType.Marsh]:        [0.267, 0.400, 0.333],
-  [TileType.Overgrowth]:   [0.157, 0.314, 0.078],
-  [TileType.FirmFairway]:  [0.357, 0.702, 0.357],
-  [TileType.ZenSand]:      [0.953, 0.918, 0.761],
-  [TileType.TrickyGreen]:  [0.210, 0.620, 0.271],
-  [TileType.PotSandBunker]:[0.953, 0.878, 0.729],
-};
 
 /**
  * Calcule la normale d'un quadrilatère par le cross product des diagonales.
@@ -625,52 +645,97 @@ function computeTileNormal(
 }
 
 /**
- * Construit des BufferGeometry Three.js groupés par texture.
+ * Construit la texture key pour le ThreeRenderer.
  *
- * Chaque tuile = 2 triangles (quad complet).
- * Les séparations entre familles de terrain sont rendues par les
- * variantes de texture 0002-0005 qui ont des bordures pré-dessinées.
- * Les tuiles intérieures utilisent 0001/0003 (pleine, sans bordure).
+ * Deux formats selon le mask :
+ *   mask == 15 (pleine) → "type:variation:geomSuffix"  → charge texture existante
+ *   mask != 15 (transition) → "trans:type:mask:variation" → charge frame spritesheet
+ */
+function buildTextureKey(
+  type: TileType,
+  variation: number,
+  geomSuffix: string,
+  mask: TransitionMask,
+): string {
+  if (mask === TRANSITION_FULL) {
+    return `${type}:${variation}:${geomSuffix}`;
+  }
+  return `trans:${type}:${mask}:${variation}`;
+}
+
+/**
+ * Construit des BufferGeometry Three.js groupés par textureKey.
  *
- * Plus aucun per-vertex darkening — les bordures sont dans les textures 0002-0005.
+ * Chaque tuile = N passes de rendu (autotile vertex-based).
+ * Chaque passe = 2 triangles (quad complet) avec UV adaptés.
+ *
+ * Pour mask == 15 (pleine) :
+ *   - La texture de base existante est chargée (ex: FAIRWAYA0001.webp)
+ *   - Les UV couvrent [0,1]
+ *
+ * Pour mask != 15 (transition) :
+ *   - Une texture de spritesheet 4×4 est attendue
+ *   - Les UV sont décalés pour sélectionner la bonne frame
+ *   - Si la texture n'existe pas, ThreeRenderer utilise la couleur fallback
  */
 export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   const { width, height, tiles } = mapState;
 
-  // ── 1. Grouper les triangles par textureKey ──
-  interface TriGroup { positions: number[]; uvs: number[]; type: TileType }
+  // Groupe de triangles par textureKey
+  interface TriGroup { positions: number[]; uvs: number[]; type: TileType; mask: number }
   const groups = new Map<string, TriGroup>();
 
-  const fam = (t: ITile | null) => t ? (TERRAIN_FAMILY[t.type] ?? 0) : -1;
+  // Projection dimétrique 2:1
+  const p = (gx: number, gy: number, elev: number): [number, number, number] => [
+    (gx - gy) * 64, elev * 32, (gx + gy) * 32,
+  ];
+
+  // Calcule les UV d'un triangle pour une frame de spritesheet 4×4
+  const frameUVs = (mask: TransitionMask, diagTLBR: boolean): [number,number,number,number,number,number] => {
+    if (mask === TRANSITION_FULL) {
+      return diagTLBR
+        ? [0, 0, 1, 0, 0, 1]  // tri TL-TR-BL
+        : [0, 0, 1, 0, 1, 1]; // tri TL-TR-BR
+    }
+
+    const { row, col } = maskToSpriteCoords(mask);
+    const u0 = col * 0.25;
+    const v0 = row * 0.25;
+    const u1 = (col + 1) * 0.25;
+    const v1 = (row + 1) * 0.25;
+
+    // Pour un quad split par la diagonale TL-BR :
+    // Tri1: TL(u0,v0) TR(u1,v0) BL(u0,v1)
+    // Tri2: TR(u1,v0) BR(u1,v1) BL(u0,v1)
+    // Pour la diagonale TR-BL :
+    // Tri1: TL(u0,v0) TR(u1,v0) BR(u1,v1)
+    // Tri2: TL(u0,v0) BR(u1,v1) BL(u0,v1)
+    if (diagTLBR) {
+      return [u0, v0, u1, v0, u0, v1];
+    }
+    return [u0, v0, u1, v0, u1, v1];
+  };
+
+  // Helper : ajoute un triangle avec positions et UV
+  const addTri = (
+    key: string,
+    v0: [number, number, number],
+    v1: [number, number, number],
+    v2: [number, number, number],
+    uvs: [number, number, number, number, number, number],
+    type: TileType,
+    mask: number,
+  ) => {
+    if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type, mask });
+    const g = groups.get(key)!;
+    g.positions.push(...v0, ...v1, ...v2);
+    g.uvs.push(...uvs);
+  };
 
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti];
     const [hTL, hTR, hBR, hBL] = tile.elevation;
-    const family = TERRAIN_FAMILY[tile.type] ?? 0;
     const geomSuffix = getGeometryType(tile.elevation);
-    const baseSuffix = family === 0 ? geomSuffix : 'A';
-
-    // Calcul du borderMask : toutes les tuiles en bordure utilisent
-    // les variantes 0002-0005 (bordures pré-dessinées) comme séparateur.
-    // Les tuiles intérieures utilisent 0001 ou 0003 (pleines, sans bordure).
-    const myFam = fam(tile);
-    let isBorder = 0;
-    if (tile.neighborN && fam(tile.neighborN) !== myFam) isBorder = 1;
-    if (tile.neighborS && fam(tile.neighborS) !== myFam) isBorder = 1;
-    if (tile.neighborE && fam(tile.neighborE) !== myFam) isBorder = 1;
-    if (tile.neighborW && fam(tile.neighborW) !== myFam) isBorder = 1;
-
-    // borderMask = 0→0001 (plein), 1→0002 (bordure droite), 3→0004 (arrondi), 4→0005 (alternatif)
-    // On alterne entre les bordures pour variété visuelle
-    const borderVar = isBorder ? ((Math.abs(tile.x * 31 + tile.y * 17) % 3) + 1) : 0;
-    // borderVar: 0=0001, 1=0002, 2=0003 (non utilisé), 3=0004, 4=0005
-    // On skip 0003 (similaire à 0001), on utilise 1, 3, 4 pour les bordures
-    const borderVariants = [0, 1, 3, 4]; // 0001, 0002, 0004, 0005
-    const effectiveVar = borderVariants[borderVar];
-
-    const p = (gx: number, gy: number, elev: number): [number, number, number] => [
-      (gx - gy) * 64, elev * 32, (gx + gy) * 32,
-    ];
 
     const C = {
       TL: p(tile.x,     tile.y,     hTL),
@@ -679,39 +744,48 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
       BL: p(tile.x,     tile.y + 1, hBL),
     };
 
-    // Helper : ajoute un triangle avec positions, UV et couleurs pleines
-    const addTri = (
-      key: string,
-      v0: [number, number, number],
-      v1: [number, number, number],
-      v2: [number, number, number],
-      uvs: [number, number, number, number, number, number],
-    ) => {
-      if (!groups.has(key)) groups.set(key, { positions: [], uvs: [], type: tile.type });
-      const g = groups.get(key)!;
-      g.positions.push(...v0, ...v1, ...v2);
-      g.uvs.push(...uvs);
-    };
-
-    // 2 triangles = quad complet, split par la diagonale la plus courte
+    // Diagonale la plus courte pour éviter l'artefact de split
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
-    // Variation pour la texture : 0→0001 (plein), 1→0002, 3→0004, 4→0005 (bordures)
-    const key = `${tile.type}:${effectiveVar}:${baseSuffix}:${isBorder}`;
 
-    if (diagTLBR) {
-      // Tri0: TL-TR-BL
-      addTri(key, C.TL, C.TR, C.BL,
-        [0, 0, 1, 0, 0, 1] as any);
-      // Tri1: TR-BR-BL
-      addTri(key, C.TR, C.BR, C.BL,
-        [1, 0, 1, 1, 0, 1] as any);
-    } else {
-      // Tri0: TL-TR-BR
-      addTri(key, C.TL, C.TR, C.BR,
-        [0, 0, 1, 0, 1, 1] as any);
-      // Tri1: TL-BR-BL
-      addTri(key, C.TL, C.BR, C.BL,
-        [0, 0, 1, 1, 0, 1] as any);
+    // Utiliser les passes de rendu de l'autotile vertex-based
+    for (const pass of tile.renderPasses) {
+      const { mask, variation } = pass;
+
+      // Récupération du mask (15 = pleine tuile si non défini)
+      const passMask = mask ?? TRANSITION_FULL;
+
+      const key = buildTextureKey(
+        pass.type,
+        variation,
+        geomSuffix,
+        passMask,
+      );
+
+      const triUVs = frameUVs(passMask, diagTLBR);
+
+      // Premier triangle
+      if (diagTLBR) {
+        addTri(key, C.TL, C.TR, C.BL,
+          [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]],
+          pass.type, passMask);
+        // Deuxième triangle
+        const uvs2 = passMask === TRANSITION_FULL
+          ? [1, 0, 1, 1, 0, 1]
+          : [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]];
+        addTri(key, C.TR, C.BR, C.BL,
+          [uvs2[0], uvs2[1], uvs2[2], uvs2[3], uvs2[4], uvs2[5]],
+          pass.type, passMask);
+      } else {
+        addTri(key, C.TL, C.TR, C.BR,
+          [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]],
+          pass.type, passMask);
+        const uvs2 = passMask === TRANSITION_FULL
+          ? [0, 0, 1, 1, 0, 1]
+          : [triUVs[0], triUVs[1], triUVs[2], triUVs[3], triUVs[4], triUVs[5]];
+        addTri(key, C.TL, C.BR, C.BL,
+          [uvs2[0], uvs2[1], uvs2[2], uvs2[3], uvs2[4], uvs2[5]],
+          pass.type, passMask);
+      }
     }
   }
 
@@ -730,7 +804,6 @@ export function buildParklandMesh(mapState: IMapState): MeshGroup[] {
   }
 
   // ── 3. Chemins (post-process paths) ──
-  // (same as before, keep)
   const pv: number[] = [];
   for (const tile of tiles) {
     if (tile.pathN && tile.neighborN) addPathQuad(tile, 'N', pv);

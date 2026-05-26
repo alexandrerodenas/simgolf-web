@@ -8,6 +8,11 @@
  *   - Quads de chemins (FUN_1000f7f0)
  *   - Pas d'éclairage OpenGL (glDisable(GL_LIGHTING))
  *   - Normales fixes (glNormal3f(0,1,0))
+ *
+ * Supporte deux formats de textureKey :
+ *   - Tuile pleine  : "type:variation:geomSuffix"   → charge texture existante (ex: FAIRWAYA0001.webp)
+ *   - Transition    : "trans:type:mask:variation"     → charge frame spritesheet (fallback couleur si absent)
+ *   - Chemin        : "special:path"                  → texture de chemin
  */
 
 import * as THREE from 'three';
@@ -19,9 +24,9 @@ export class ThreeRenderer {
   private scene: THREE.Scene;
   camera: THREE.OrthographicCamera;
   private renderer: THREE.WebGLRenderer;
-  private meshes: THREE.Mesh[] = [];
   private textureTable: TextureTable3D;
   private mapState: IMapState | null = null;
+  private meshes: THREE.Mesh[] = [];
 
   // Cache de textures chargées
   private loadedTextures = new Map<string, THREE.Texture>();
@@ -50,9 +55,6 @@ export class ThreeRenderer {
   setViewMode(mode: number): void {
     if (this.mapState) {
       this.mapState.viewMode = mode;
-      // En mode réflexion, la texture est sélectionnée dynamiquement
-      // via TextureTable3D.resolveDynamicTexture()
-      // On doit re-générer les maillages
       this.rebuild();
     }
   }
@@ -86,7 +88,6 @@ export class ThreeRenderer {
 
   private buildMeshesFromGroups(groups: MeshGroup[]): void {
     for (const group of groups) {
-      // Résoudre la texture via TextureTable3D
       let texture: THREE.Texture | null = null;
 
       if (group.textureKey) {
@@ -94,9 +95,12 @@ export class ThreeRenderer {
           // Texture spéciale (chemin/dirt)
           const slot = group.textureKey === 'special:path' ? 0x21 : 0x20;
           texture = this.textureTable.getSpecialTexture(slot);
+        } else if (group.textureKey.startsWith('trans:')) {
+          // Transition spritesheet — charge la texture spritesheet
+          texture = this.getOrCreateTransitionTexture(group.textureKey);
         } else {
-          // Texture normale ou avec bordure — traité par le cache composite
-          texture = this.getOrLoadBorderTexture(group.textureKey);
+          // Texture normale pleine (type:variation:geomSuffix)
+          texture = this.getOrLoadTexture(group.textureKey);
         }
       }
 
@@ -128,22 +132,36 @@ export class ThreeRenderer {
   }
 
   /**
-   * getOrLoadBorderTexture — Charge une texture depuis le cache.
+   * getOrLoadTexture — Charge une texture pleine depuis le cache.
    *
-   * Format textureKey : "type:variation:suffix:isBorder"
-   *   - isBorder=0 : texture 0001/0003 (pleine, sans bordure)
-   *   - isBorder=1 : texture 0002/0004/0005 (avec bordure pré-dessinée)
+   * Format textureKey : "type:variation:geomSuffix"
+   *   - type        : TileType (numérique)
+   *   - variation   : index de variation cosmétique (0..N)
+   *   - geomSuffix  : A/B/C/D/E (type de géométrie de la tile)
    *
-   * La variation encode directement le numéro 4-digit (0001-0005).
+   * Génère le chemin : /assets/textures/{theme}/{folder}/{PREFIX}{suffix}{var4}.webp
    */
-  private getOrLoadBorderTexture(textureKey: string): THREE.Texture | null {
+  private getOrLoadTexture(textureKey: string): THREE.Texture | null {
     if (this.loadedTextures.has(textureKey)) {
       return this.loadedTextures.get(textureKey)!;
     }
 
-    // Parser la clé : "type:variation:suffix:isBorder"
     const parts = textureKey.split(':');
-    if (parts.length !== 4) return null;
+    if (parts.length === 4) {
+      // Ancien format "type:variation:suffix:isBorder" — compatibilité
+      const type = parseInt(parts[0], 10) as TileType;
+      const variation = parseInt(parts[1], 10);
+      const suffix = parts[2];
+      const path = this.textureTable.buildPath(type, variation, suffix);
+      if (!path) return null;
+      const tex = this.loadTexture(path);
+      this.loadedTextures.set(textureKey, tex);
+      return tex;
+    }
+
+    // Nouveau format "type:variation:geomSuffix" (3 parties)
+    if (parts.length !== 3) return null;
+
     const type = parseInt(parts[0], 10) as TileType;
     const variation = parseInt(parts[1], 10);
     const suffix = parts[2];
@@ -154,6 +172,61 @@ export class ThreeRenderer {
     const tex = this.loadTexture(path);
     this.loadedTextures.set(textureKey, tex);
     return tex;
+  }
+
+  /**
+   * getOrCreateTransitionTexture — Charge ou crée une texture
+   * de spritesheet 4×4 pour les transitions.
+   *
+   * Format textureKey : "trans:type:mask:variation"
+   *   - type  : TileType (numérique)
+   *   - mask  : mask 4-bit de transition (0-15)
+   *   - variation : index cosmétique
+   *
+   * Chemin attendu : /assets/textures/{theme}/{folder}/{PREFIX}_trans_r{row}_c{col}_v{var4}.webp
+   */
+  private getOrCreateTransitionTexture(textureKey: string): THREE.Texture | null {
+    if (this.loadedTextures.has(textureKey)) {
+      return this.loadedTextures.get(textureKey)!;
+    }
+
+    const parts = textureKey.split(':');
+    if (parts.length !== 4) return null;
+
+    const type = parseInt(parts[1], 10) as TileType;
+    const mask = parseInt(parts[2], 10);
+    const variation = parseInt(parts[3], 10);
+
+    const { row, col } = this.maskToSpriteCoords(mask);
+    const prefix = this.textureTable.getPrefix(type);
+    const folder = this.textureTable.getFolder(type);
+    if (!prefix || !folder) return null;
+
+    const varStr = String(variation + 1).padStart(4, '0');
+    const path = `/assets/textures/parkland/${folder}/${prefix}_trans_r${row}_c${col}_v${varStr}.webp`;
+
+    // On essaie de charger la texture
+    try {
+      const tex = new THREE.TextureLoader().load(path);
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      this.loadedTextures.set(textureKey, tex);
+      return tex;
+    } catch {
+      // La texture n'existe pas encore — fallback null (→ couleur)
+      // Quand le user créera les spritesheets, ça fonctionnera automatiquement
+      return null;
+    }
+  }
+
+  /** Cache built-in pour mask → (row, col) — évite la dépendance vers autotile */
+  private maskToSpriteCoords(mask: number): { row: number; col: number } {
+    return {
+      row: mask >> 2,
+      col: mask & 3,
+    };
   }
 
   private loadTexture(path: string): THREE.Texture {

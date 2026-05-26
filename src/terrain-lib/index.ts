@@ -6,7 +6,7 @@
  */
 
 export { Terrain, terrain, MAX_VARIATION, getGeometryType } from './terrain.js';
-export { TERRAIN_FAMILY } from './autotile.js';
+export { TERRAIN_FAMILY, getTerrainPriority, maskToSpriteCoords, type TransitionMask, TRANSITION_FULL, TRANSITION_NONE } from './autotile.js';
 export { GLTileRenderer, type TileVertex } from './gl-renderer.js';
 export { parseLightingConfig } from './lighting.js';
 export { bezierSpline, cardinalSpline, isometricCircle } from './splines.js';

@@ -46,6 +46,8 @@ export interface IRenderPass {
   variation: number;
   suffix: string;
   subType?: number;
+  /** Mask 4-bit de transition (0-15), 15 = plein */
+  mask?: number;
   /** 9 floats: x0,y0,z0, x1,y1,z1, x2,y2,z2 — positions 3D du triangle */
   vertexPositions: [number, number, number, number, number, number, number, number, number];
   /** 6 floats: U0,V0, U1,V1, U2,V2 — coordonnées UV */
