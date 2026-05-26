@@ -410,6 +410,18 @@ export function generateGridRough(
     }
   }
 
+  // Green au sud (3×3)
+  const greenY = 32;
+  const greenX = Math.floor(width / 2) - 1;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const tx = greenX + dx;
+      const ty = greenY + dy;
+      tiles[ty * width + tx].type = TileType.PuttingGreen;
+      tiles[ty * width + tx].variation = 0;
+    }
+  }
+
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
   terrain.computeAllRenderPasses();
 
