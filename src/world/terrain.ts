@@ -379,6 +379,10 @@ export function generateGridRough(
     if (y >= Math.floor(height / 2) - 1 && y <= Math.floor(height / 2) + 1) {
       tiles[i].type = TileType.Fairway;
     }
+    // Bande de Fairway verticale au milieu
+    if (x >= Math.floor(width / 2) - 1 && x <= Math.floor(width / 2) + 1) {
+      tiles[i].type = TileType.Fairway;
+    }
   }
 
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
