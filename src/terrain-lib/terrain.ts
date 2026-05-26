@@ -723,11 +723,20 @@ export class Terrain implements AutotileGrid {
     const geomSuffix = getGeometryType(tile.elevation);
     const S = Terrain.EDGE_STRIP_UV;
 
+    // Suffixe de texture : varié (A-E) pour les tuiles plates pour casser
+    // la répétition visuelle. Les overlays (edge/corner) gardent geomSuffix
+    // car leurs textures 0002/0003/0004 n'existent qu'en suffixe A.
+    const TEX_SUFFIXES = ['A','B','C','D','E'];
+    const texSuffix = geomSuffix === 'A'
+      ? TEX_SUFFIXES[(tile.x * 7 + tile.y * 13 + tile.type * 3) % TEX_SUFFIXES.length]
+      : geomSuffix;
+
     // SandBunker : encoder le sous-type dans le suffixe
     const sbSubType = tile.type === TileType.SandBunker
       ? Math.max(1, tile.subType || 1)
       : 0;
     const geomWithSub = sbSubType > 0 ? `${sbSubType}${geomSuffix}` : geomSuffix;
+    const texWithSub  = sbSubType > 0 ? `${sbSubType}${texSuffix}` : texSuffix;
 
     // Helper: gridToWorld simplifié
     const p = (gx: number, gy: number, elev: number) => gridToWorld(gx, gy, elev);
@@ -751,8 +760,8 @@ export class Terrain implements AutotileGrid {
       z: a.z + (b.z - a.z) * t,
     });
 
-    // ─── 1. Passe de base : tuile pleine 0001 ───
-    const baseKey = `${tile.type}:0:${geomWithSub}`;
+    // ─── 1. Passe de base : tuile pleine 0001 (avec texSuffix varié) ───
+    const baseKey = `${tile.type}:0:${texWithSub}`;
     const diagTLBR = Math.abs(hTL - hBR) < Math.abs(hTR - hBL);
 
     // 2 triangles = quad complet, split par la diagonale la plus courte
