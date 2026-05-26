@@ -422,6 +422,20 @@ export function generateGridRough(
     }
   }
 
+  // Rochers au sud-est (quelques rochers éparpillés)
+  const rockPositions = [
+    [28, 14], [29, 15], [27, 16],
+    [29, 18], [28, 17],
+    [32, 22], [33, 21], [31, 23],
+  ];
+  for (const [rx, ry] of rockPositions) {
+    const idx = ry * width + rx;
+    if (idx >= 0 && idx < tiles.length) {
+      tiles[idx].type = TileType.Rock;
+      tiles[idx].variation = 0;
+    }
+  }
+
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
   terrain.computeAllRenderPasses();
 
