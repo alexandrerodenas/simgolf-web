@@ -385,6 +385,12 @@ export function generateGridRough(
     }
   }
 
+  // Tuile Wood au centre exact (entourée de Fairway → 0004 sur 4 coins)
+  const cx = Math.floor(width / 2);
+  const cy = Math.floor(height / 2);
+  tiles[cy * width + cx].type = TileType.Tree;
+  tiles[cy * width + cx].variation = 0;
+
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
   terrain.computeAllRenderPasses();
 
