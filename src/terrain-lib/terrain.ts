@@ -723,12 +723,18 @@ export class Terrain implements AutotileGrid {
     const geomSuffix = getGeometryType(tile.elevation);
     const S = Terrain.EDGE_STRIP_UV;
 
-    // Suffixe de texture : varié (A-E) pour les tuiles plates pour casser
-    // la répétition visuelle. Les overlays (edge/corner) gardent geomSuffix
-    // car leurs textures 0002/0003/0004 n'existent qu'en suffixe A.
-    const TEX_SUFFIXES = ['A','B','C','D','E'];
-    const texSuffix = geomSuffix === 'A'
-      ? TEX_SUFFIXES[(tile.x * 7 + tile.y * 13 + tile.type * 3) % TEX_SUFFIXES.length]
+    // Suffixe de texture : varié pour les types multi-suffixe (A-E) pour casser
+    // la répétition visuelle. Les types limités au suffixe A (PuttingGreen, Fairway,
+    // Tee, SandBunker, Flower, Cliff, etc.) gardent 'A' — sinon Three.js fait du noir.
+    // Les overlays (edge/corner) gardent geomSuffix car leurs textures
+    // 0002/0003/0004 n'existent qu'en suffixe A.
+    const MULTI_SUFFIX_TYPES = new Set([
+      TileType.Rough, TileType.DeepRough, TileType.Rock,
+      TileType.Tree, TileType.WaterShallow, TileType.WaterMiddle, TileType.WaterDeep,
+      TileType.Overgrowth,
+    ]);
+    const texSuffix = (geomSuffix === 'A' && MULTI_SUFFIX_TYPES.has(tile.type))
+      ? 'ABCDE'[(tile.x * 7 + tile.y * 13 + tile.type * 3) % 5]
       : geomSuffix;
 
     // SandBunker : encoder le sous-type dans le suffixe

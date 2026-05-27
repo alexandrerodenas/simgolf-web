@@ -19,12 +19,11 @@ import { getGeometryType, Terrain } from './terrain-lib/index.js';
 import { TileType, ITile } from './terrain-lib/types.js';
 import { ThreeRenderer } from './render/ThreeRenderer';
 import { gridCenter, resizeCamera } from './render/camera';
-import { initToolbar, getActiveTool, getActivePanel } from './ui/toolbar';
 
 // ---- 1. Constantes ----
 const MAP_W = 40;
 const MAP_H = 40;
-const TOOLBAR_H = 120;
+const TOOLBAR_H = 0;
 
 // ---- 2. Conteneur Three.js ----
 const container = document.getElementById('game-container')!;
@@ -53,25 +52,6 @@ cam.zoom = 1;
 const lookTarget = new THREE.Vector3(cx, 0, cz);
 resizeCamera(cam, MAP_W, MAP_H, cam.zoom);
 
-// ---- 5. Mapping outil → TileType ----
-const TOOL_TO_TILETYPE: Record<string, TileType> = {
-  rough:     TileType.Rough,
-  fairway:   TileType.Fairway,
-  green:     TileType.PuttingGreen,
-  tee:       TileType.Tee,
-  deeprough: TileType.DeepRough,
-  bunker:    TileType.SandBunker,
-  water:     TileType.WaterShallow,
-  woods:     TileType.Tree,
-  brush:     TileType.Flower,
-  flowers:   TileType.Flower,
-  rocks:     TileType.Rock,
-  path:      TileType.Path,
-  bridge:    TileType.Bridge,
-  clubhouse: TileType.Building,
-  proshop:   TileType.Building,
-};
-
 const TILE_TYPE_NAME: Record<number, string> = {
   [TileType.Rough]: 'Rough', [TileType.Fairway]: 'Fairway',
   [TileType.PuttingGreen]: 'Green', [TileType.SandBunker]: 'Bunker',
@@ -87,88 +67,7 @@ const TILE_TYPE_NAME: Record<number, string> = {
   [TileType.PotSandBunker]: 'Pot Bunker',
 };
 
-// ---- 6. Appliquer un outil sur une tuile ----
-
-function applyToolToTile(tile: ITile, toolId: string): void {
-  const panel = getActivePanel();
-
-  switch (panel) {
-    case 'terrain': {
-      const tileType = TOOL_TO_TILETYPE[toolId];
-      if (tileType !== undefined) {
-        terrain.setType(tile, tileType, 0);
-      }
-      break;
-    }
-    case 'elevation': {
-      switch (toolId) {
-        case 'raise':
-          // Élever le coin le plus bas
-          let minIdx = 0, minVal = tile.elevation[0];
-          for (let i = 1; i < 4; i++) {
-            if (tile.elevation[i] < minVal) { minVal = tile.elevation[i]; minIdx = i; }
-          }
-          terrain.elevateCorner(tile, minIdx);
-          break;
-        case 'lower':
-          let maxIdx = 0, maxVal = tile.elevation[0];
-          for (let i = 1; i < 4; i++) {
-            if (tile.elevation[i] > maxVal) { maxVal = tile.elevation[i]; maxIdx = i; }
-          }
-          terrain.lowerCorner(tile, maxIdx);
-          break;
-        case 'flatten':
-          const avg = Math.round(tile.elevation.reduce((a, b) => a + b, 0) / 4);
-          for (let i = 0; i < 4; i++) tile.elevation[i] = avg;
-          break;
-        case 'smooth':
-          // Lisser : chaque coin = moyenne avec les voisins
-          for (let i = 0; i < 4; i++) {
-            const neighbor = [tile.neighborN, tile.neighborE, tile.neighborS, tile.neighborW][i];
-            if (neighbor) {
-              tile.elevation[i] = Math.round((tile.elevation[i] + neighbor.elevation[(i + 2) % 4]) / 2);
-            }
-          }
-          break;
-      }
-      break;
-    }
-    case 'amenities': {
-      if (toolId === 'path') {
-        tile.flags |= 1 << 8; // HasPath
-        tile.type = TileType.Path;
-        // Activer les flags de chemin vers les voisins qui ont aussi path
-        const neighs: Array<{ nei: ITile | null; selfDir: 'N'|'S'|'E'|'W'; neiDir: 'N'|'S'|'E'|'W' }> = [
-          { nei: tile.neighborN, selfDir: 'N', neiDir: 'S' },
-          { nei: tile.neighborS, selfDir: 'S', neiDir: 'N' },
-          { nei: tile.neighborE, selfDir: 'E', neiDir: 'W' },
-          { nei: tile.neighborW, selfDir: 'W', neiDir: 'E' },
-        ];
-        for (const { nei, selfDir, neiDir } of neighs) {
-          if (nei && (nei.flags & (1 << 8))) {
-            (tile as any)[`path${selfDir}`] = true;
-            (nei as any)[`path${neiDir}`] = true;
-          }
-        }
-      }
-      break;
-    }
-    case 'building': {
-      if (toolId === 'path' || toolId === 'bridge') {
-        terrain.setType(tile, toolId === 'bridge' ? TileType.Bridge : TileType.Path, 0);
-        tile.flags |= 1 << 8;
-      } else {
-        terrain.setType(tile, TileType.Building, 0);
-      }
-      break;
-    }
-  }
-
-  // Recalculer les passes de rendu
-  terrain.computeAllRenderPasses();
-}
-
-// ---- 7. Conversion écran → tuile ----
+// ---- 6. Conversion écran → tuile ----
 
 function screenToTile(sx: number, sy: number): { x: number; y: number } | null {
   const cw = window.innerWidth / 2;
@@ -267,20 +166,13 @@ container.addEventListener('mouseup', (e: MouseEvent) => {
   mouseDown = false;
   container.style.cursor = 'grab';
 
-  // Si la souris n'a pas bougé (ou très peu), c'est un clic → appliquer l'outil
+    // Si la souris n'a pas bougé (ou très peu), c'est un clic → info tile
   if (!mouseMoved) {
     const tile = screenToTile(e.clientX, e.clientY);
     if (tile) {
       const idx = tile.y * MAP_W + tile.x;
       const t = mapState.tiles[idx];
-      const tool = getActiveTool();
-      const panel = getActivePanel();
-      
-      if (tool && panel !== 'employees') {
-        applyToolToTile(t, tool);
-        renderer.rebuild();
-        showInfo(`${TILE_TYPE_NAME[t.type] ?? tool} → tile [${t.x},${t.y}]`);
-      }
+      showInfo(`[${t.x},${t.y}] ${TILE_TYPE_NAME[t.type] ?? t.type} elev:[${t.elevation.join(',')}] var:${t.variation}`);
     }
   }
 });
@@ -353,34 +245,15 @@ container.addEventListener('mousemove', (e: MouseEvent) => {
     const idx = hit.y * MAP_W + hit.x;
     const t = mapState.tiles[idx];
     infoEl.style.display = 'block';
-    const tool = getActiveTool();
-    infoEl.textContent = `[${t.x},${t.y}] ${TILE_TYPE_NAME[t.type] ?? t.type} elev:[${t.elevation.join(',')}] var:${t.variation} tool:${tool}`;
+    infoEl.textContent = `[${t.x},${t.y}] ${TILE_TYPE_NAME[t.type] ?? t.type} elev:[${t.elevation.join(',')}] var:${t.variation}`;
   } else {
     infoEl.style.display = 'none';
   }
 });
 
-// ---- 12. Toolbar init ----
-initToolbar((tool: string) => {
-  console.log(`[Toolbar] Selected: ${tool}`);
-  showInfo(`Tool: ${tool}`);
-});
-
-document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
-  cam.zoom = Math.min(ZOOM_MAX, cam.zoom * 0.88);
-  cam.updateProjectionMatrix();
-});
-document.getElementById('btn-zoom-out')?.addEventListener('click', () => {
-  cam.zoom = Math.max(ZOOM_MIN, cam.zoom * 1.12);
-  cam.updateProjectionMatrix();
-});
-document.getElementById('btn-info')?.addEventListener('click', () => {
-  showInfo(`Map ${MAP_W}×${MAP_H} tiles:${mapState.tiles.length}`);
-});
-
-// ---- 13. Debug overlay ----
+// ---- 12. Debug overlay ----
 const debugCanvas = document.createElement('canvas');
-debugCanvas.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:calc(100% - 120px);pointer-events:none;z-index:10';
+debugCanvas.style.cssText = `position:fixed;top:0;left:0;width:100%;height:calc(100% - ${TOOLBAR_H}px);pointer-events:none;z-index:10`;
 const debugCtx = debugCanvas.getContext('2d')!;
 document.body.appendChild(debugCanvas);
 
@@ -422,9 +295,3 @@ function animate(): void {
 }
 
 animate();
-
-// Info DOM
-const el = document.createElement('div');
-el.style.cssText = 'position:fixed;bottom:124px;right:8px;background:rgba(0,0,0,0.7);color:#0f0;padding:4px 10px;font:12px monospace;border-radius:4px;pointer-events:none;z-index:999;white-space:pre';
-el.textContent = `SimGolf 3D — ${MAP_W}×${MAP_H}  |  R=réinit  T=dessus  V=vue  D=debug`;
-document.body.appendChild(el);
