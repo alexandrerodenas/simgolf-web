@@ -757,6 +757,10 @@ export class Terrain implements AutotileGrid {
       [number,number,number,number,number,number,number,number,number] =>
       [a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z];
 
+    // DeepRough : utiliser les bordures 0005-0008 au lieu de 0002/0004
+    const isDR = tile.type === TileType.DeepRough;
+    const hash4 = (s: number) => 4 + ((tile.x * 7 + tile.y * 13 + s * 31) % 4);
+
     // Helper : interpole entre 2 valeurs 3D
     const lerp = (
       a: typeof TL, b: typeof TL, t: number
@@ -844,7 +848,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.N && diffEdges.E) {
       corners.push({
         name: 'NE', a: TR, b: center, c: M_T, d: M_R,
-        vari: 3, // tous les coins en 0004 (arrondis) — règle: 2 voisins adjacents différents
+        vari: isDR ? hash4(5) : 3, // 0004, DeepRough: 0005-0008
         uv: [
           [1, 0, 0.5, 0.5, 0.5, 0],     // Tri1: TR, C, M_T
           [1, 0, 1, 0.5, 0.5, 0.5],     // Tri2: TR, M_R, C
@@ -856,7 +860,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.E && diffEdges.S) {
       corners.push({
         name: 'SE', a: BR, b: center, c: M_R, d: M_B,
-        vari: 3,
+        vari: isDR ? hash4(6) : 3,
         uv: [
           [1, 1, 0.5, 0.5, 1, 0.5],     // Tri1: BR, C, M_R
           [1, 1, 0.5, 1, 0.5, 0.5],     // Tri2: BR, M_B, C
@@ -868,7 +872,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.S && diffEdges.W) {
       corners.push({
         name: 'SW', a: BL, b: center, c: M_B, d: M_L,
-        vari: 3,
+        vari: isDR ? hash4(7) : 3,
         uv: [
           [0, 1, 0.5, 0.5, 0.5, 1],     // Tri1: BL, C, M_B
           [0, 1, 0, 0.5, 0.5, 0.5],     // Tri2: BL, M_L, C
@@ -880,7 +884,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.W && diffEdges.N) {
       corners.push({
         name: 'NW', a: TL, b: center, c: M_L, d: M_T,
-        vari: 3,
+        vari: isDR ? hash4(8) : 3,
         uv: [
           [0, 0, 0.5, 0.5, 0, 0.5],     // Tri1: TL, C, M_L
           [0, 0, 0.5, 0, 0.5, 0.5],     // Tri2: TL, M_T, C
@@ -913,18 +917,19 @@ export class Terrain implements AutotileGrid {
 
     // Nord
     if (diffEdges.N) {
+      const vEdge = isDR ? hash4(1) : 1;
       const iTL = lerp(TL, BL, S);
       const iTR = lerp(TR, BR, S);
       const key = `${edgeKey}:N`;
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(TL, TR, iTR),
         texCoordIndices: [0, 0, 1, 0, 1, S],
         textureKey: key, isOverlay: true,
       });
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(TL, iTR, iTL),
         texCoordIndices: [0, 0, 1, S, 0, S],
@@ -934,18 +939,19 @@ export class Terrain implements AutotileGrid {
 
     // Est
     if (diffEdges.E) {
+      const vEdge = isDR ? hash4(2) : 1;
       const iTR = lerp(TR, TL, S);
       const iBR = lerp(BR, BL, S);
       const key = `${edgeKey}:E`;
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(TR, BR, iBR),
         texCoordIndices: [1, 0, 1, 1, 1-S, 1],
         textureKey: key, isOverlay: true,
       });
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(TR, iBR, iTR),
         texCoordIndices: [1, 0, 1-S, 1, 1-S, 0],
@@ -955,18 +961,19 @@ export class Terrain implements AutotileGrid {
 
     // Sud
     if (diffEdges.S) {
+      const vEdge = isDR ? hash4(3) : 1;
       const iBL = lerp(BL, TL, S);
       const iBR = lerp(BR, TR, S);
       const key = `${edgeKey}:S`;
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(BR, BL, iBL),
         texCoordIndices: [1, 1, 0, 1, 0, 1-S],
         textureKey: key, isOverlay: true,
       });
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(BR, iBL, iBR),
         texCoordIndices: [1, 1, 0, 1-S, 1, 1-S],
@@ -976,18 +983,19 @@ export class Terrain implements AutotileGrid {
 
     // Ouest
     if (diffEdges.W) {
+      const vEdge = isDR ? hash4(4) : 1;
       const iTL = lerp(TL, TR, S);
       const iBL = lerp(BL, BR, S);
       const key = `${edgeKey}:W`;
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(BL, TL, iTL),
         texCoordIndices: [0, 1, 0, 0, S, 0],
         textureKey: key, isOverlay: true,
       });
       passes.push({
-        type: tile.type, variation: 1, suffix: geomWithSub,
+        type: tile.type, variation: vEdge, suffix: geomWithSub,
         subType: tile.subType, mask: 0,
         vertexPositions: tri(BL, iTL, iBL),
         texCoordIndices: [0, 1, S, 0, S, 1],
