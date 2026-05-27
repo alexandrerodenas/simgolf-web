@@ -844,7 +844,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.N && diffEdges.E) {
       const nPri = getTerrainPriority(tile.neighborE!.type);
       const tPri = getTerrainPriority(tile.type);
-      const useRounded = nPri >= tPri; // voisin plus clair ou égal → 0004, plus sombre → 0003
+      const useRounded = tPri >= nPri; // tuile plus claire ou égale → 0004 (arrondi)
       corners.push({
         name: 'NE', a: TR, b: center, c: M_T, d: M_R,
         vari: useRounded ? 3 : 2,
@@ -859,7 +859,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.E && diffEdges.S) {
       const nPri = getTerrainPriority(tile.neighborE!.type);
       const tPri = getTerrainPriority(tile.type);
-      const useRounded = nPri >= tPri;
+      const useRounded = tPri >= nPri;
       corners.push({
         name: 'SE', a: BR, b: center, c: M_R, d: M_B,
         vari: useRounded ? 3 : 2,
@@ -874,7 +874,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.S && diffEdges.W) {
       const nPri = getTerrainPriority(tile.neighborS!.type);
       const tPri = getTerrainPriority(tile.type);
-      const useRounded = nPri >= tPri;
+      const useRounded = tPri >= nPri;
       corners.push({
         name: 'SW', a: BL, b: center, c: M_B, d: M_L,
         vari: useRounded ? 3 : 2,
@@ -889,7 +889,7 @@ export class Terrain implements AutotileGrid {
     if (diffEdges.W && diffEdges.N) {
       const nPri = getTerrainPriority(tile.neighborW!.type);
       const tPri = getTerrainPriority(tile.type);
-      const useRounded = nPri >= tPri;
+      const useRounded = tPri >= nPri;
       corners.push({
         name: 'NW', a: TL, b: center, c: M_L, d: M_T,
         vari: useRounded ? 3 : 2,

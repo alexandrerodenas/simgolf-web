@@ -422,17 +422,38 @@ export function generateGridRough(
     }
   }
 
-  // Rochers au sud-est (quelques rochers éparpillés)
+  // Rochers éparpillés (textures et orientations variées)
   const rockPositions = [
+    // Groupe sud-est existant
     [28, 14], [29, 15], [27, 16],
     [29, 18], [28, 17],
     [32, 22], [33, 21], [31, 23],
+    // Nouveaux : nord-ouest
+    [3, 3], [5, 5], [2, 7], [7, 4],
+    // Nouveaux : centre-droite
+    [9, 18], [11, 20], [13, 19],
+    // Nouveaux : sud-ouest
+    [5, 30], [7, 33], [3, 35],
+    // Nouveaux : nord-est
+    [32, 3], [35, 5], [33, 8],
+    // Nouveaux : sud
+    [10, 36], [15, 34], [20, 37], [25, 35],
+    // Nouveaux : centre
+    [14, 12], [18, 14], [22, 11],
+    // Nouveaux : est
+    [35, 18], [37, 22], [34, 26], [36, 30],
   ];
   for (const [rx, ry] of rockPositions) {
     const idx = ry * width + rx;
     if (idx >= 0 && idx < tiles.length) {
       tiles[idx].type = TileType.Rock;
-      tiles[idx].variation = 0;
+      tiles[idx].variation = (rx * 7 + ry * 13) % 5; // 0-4 pour differents visuels
+      tiles[idx].elevation = [
+        (rx * 3 + ry * 7) % 2,
+        (rx * 5 + ry * 11) % 2,
+        (rx * 7 + ry * 13) % 2,
+        (rx * 9 + ry * 17) % 2,
+      ];
     }
   }
 
