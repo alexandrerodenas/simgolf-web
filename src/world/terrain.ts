@@ -457,6 +457,41 @@ export function generateGridRough(
     }
   }
 
+  // Deep Rough par plaques
+  const deepRoughPatches = [
+    // Plaque nord-ouest
+    { x: 6, y: 10, w: 3, h: 3 },
+    // Plaque est
+    { x: 34, y: 12, w: 2, h: 2 },
+    // Plaque sud
+    { x: 12, y: 28, w: 3, h: 2 },
+    // Plaque centre-droite
+    { x: 27, y: 26, w: 2, h: 2 },
+    // Languette pres du pond
+    { x: 15, y: 5, w: 2, h: 1 },
+    // Plaque au nord du green
+    { x: 18, y: 28, w: 3, h: 2 },
+  ];
+  for (const p of deepRoughPatches) {
+    for (let dy = 0; dy < p.h; dy++) {
+      for (let dx = 0; dx < p.w; dx++) {
+        const tx = p.x + dx;
+        const ty = p.y + dy;
+        const idx = ty * width + tx;
+        if (idx >= 0 && idx < tiles.length && tiles[idx].type === TileType.Rough) {
+          tiles[idx].type = TileType.DeepRough;
+          tiles[idx].variation = 0;
+          tiles[idx].elevation = [
+            (tx * 5 + ty * 11) % 2,
+            (tx * 7 + ty * 13) % 2,
+            (tx * 3 + ty * 17) % 2,
+            (tx * 9 + ty * 7) % 2,
+          ];
+        }
+      }
+    }
+  }
+
   // Re-link neighbors (resetTerrain le fait déjà via linkNeighbors)
   terrain.computeAllRenderPasses();
 
