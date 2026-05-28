@@ -812,6 +812,10 @@ export class Terrain implements AutotileGrid {
     // Ex: WaterShallow/Middle/Deep sont même famille → pas de bordure entre eux
     const sameFamily = (a: ITile | null, b: ITile | null): boolean => {
       if (!a || !b) return false;
+      // DeepRough ↔ Rough : pas de bordure
+      const isDRvR = (a.type === TileType.DeepRough && b.type === TileType.Rough)
+                  || (a.type === TileType.Rough && b.type === TileType.DeepRough);
+      if (isDRvR) return true;
       return getTerrainPriority(a.type) === getTerrainPriority(b.type);
     };
     const diffEdges = {
